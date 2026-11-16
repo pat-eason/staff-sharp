@@ -1,0 +1,150 @@
+{
+  "domains": [
+    {
+      "key": "system_design",
+      "name": "System Design",
+      "short": "Design",
+      "blurb": "Scoping, APIs, data models, caching, partitioning and the tradeoffs behind large systems.",
+      "concepts": ["requirements-scoping", "api-design", "data-modeling", "caching", "sharding-partitioning", "replication", "load-balancing", "async-queues", "consistency-tradeoffs", "multi-region", "rate-limiting", "search", "storage-choice", "idempotency", "backpressure", "cost-modeling", "webhooks", "real-time"]
+    },
+    {
+      "key": "distributed_systems",
+      "name": "Distributed Systems & Data",
+      "short": "Distributed",
+      "blurb": "Consensus, clocks, consistency models, transactions, streams and the failure modes between nodes.",
+      "concepts": ["consensus", "clocks-ordering", "cap-pacelc", "consistency-models", "transaction-isolation", "distributed-transactions", "outbox-saga", "event-sourcing-cqrs", "exactly-once", "leader-election", "quorums", "crdts", "stream-processing", "schema-evolution", "indexing", "replication-lag", "partial-failure"]
+    },
+    {
+      "key": "reliability",
+      "name": "Reliability & Operations",
+      "short": "Reliability",
+      "blurb": "SLOs, incident response, observability, capacity, graceful degradation and safe operations.",
+      "concepts": ["slos-error-budgets", "incident-response", "observability", "alerting", "capacity-planning", "graceful-degradation", "retries-timeouts", "circuit-breakers", "chaos-engineering", "postmortems", "on-call", "disaster-recovery", "deploy-safety", "dependency-failure", "runbooks", "kubernetes-ops"]
+    },
+    {
+      "key": "debugging",
+      "name": "Debugging & Bug Hunting",
+      "short": "Debugging",
+      "blurb": "Finding the real bug fast: races, leaks, deadlocks, time, encoding and production forensics.",
+      "concepts": ["race-conditions", "memory-leaks", "deadlocks", "off-by-one", "null-handling", "timezones-dates", "floating-point", "resource-leaks", "error-handling", "retry-storms", "cache-invalidation", "encoding", "concurrency", "heisenbugs", "production-debugging", "bisecting", "log-analysis"]
+    },
+    {
+      "key": "code_quality",
+      "name": "Code Review & Quality",
+      "short": "Code Quality",
+      "blurb": "Reviewing for correctness and design, testing strategy, abstractions, refactoring and debt.",
+      "concepts": ["review-practice", "api-ergonomics", "abstraction", "coupling-cohesion", "readability", "testing-strategy", "test-design", "error-handling", "refactoring", "technical-debt", "design-patterns", "type-design", "maintainability", "documentation", "concurrency"]
+    },
+    {
+      "key": "performance",
+      "name": "Performance & Scalability",
+      "short": "Performance",
+      "blurb": "Profiling, latency budgets, query tuning, memory, concurrency models and tail latency.",
+      "concepts": ["profiling", "latency-budgets", "n-plus-one", "database-indexing", "query-optimization", "caching", "concurrency-models", "memory-gc", "batching", "connection-pooling", "load-testing", "tail-latency", "algorithmic-complexity", "serialization", "network"]
+    },
+    {
+      "key": "security",
+      "name": "Security",
+      "short": "Security",
+      "blurb": "AuthN/Z, injection, secrets, threat modeling, supply chain, tenancy isolation and privacy.",
+      "concepts": ["authn-authz", "oauth-oidc", "session-management", "injection", "xss-csrf", "secrets-management", "threat-modeling", "supply-chain", "encryption", "least-privilege", "multi-tenancy", "ssrf", "input-validation", "audit-logging", "privacy-pii", "zero-trust"]
+    },
+    {
+      "key": "delivery",
+      "name": "Delivery & Engineering Practices",
+      "short": "Delivery",
+      "blurb": "CI/CD, feature flags, migrations, compatibility, release safety and developer experience.",
+      "concepts": ["ci-cd", "feature-flags", "progressive-delivery", "database-migrations", "backward-compatibility", "versioning", "monorepo-tooling", "trunk-based-development", "release-management", "testing-in-production", "build-systems", "developer-experience", "dependency-management", "infrastructure-as-code"]
+    },
+    {
+      "key": "leadership",
+      "name": "Technical Leadership & Strategy",
+      "short": "Leadership",
+      "blurb": "Strategy, RFCs, decisions, influence without authority, mentoring and stakeholder work.",
+      "concepts": ["technical-strategy", "rfc-writing", "architecture-decisions", "influence", "mentoring-sponsorship", "stakeholder-management", "build-vs-buy", "tech-debt-strategy", "org-design", "roadmapping", "conflict-resolution", "staff-archetypes", "communicating-up", "hiring", "culture"]
+    },
+    {
+      "key": "execution",
+      "name": "Day-in-the-Life & Execution",
+      "short": "Execution",
+      "blurb": "Prioritizing the day, navigating ambiguity, scoping, unblocking, saying no and landing projects.",
+      "concepts": ["prioritization", "ambiguity", "scoping", "planning", "unblocking", "context-switching", "delegation", "saying-no", "meetings", "risk-management", "cross-team-dependencies", "project-rescue", "launch-readiness", "glue-work"]
+    },
+    {
+      "key": "problem_solving",
+      "name": "Problem Solving & Estimation",
+      "short": "Problem Solving",
+      "blurb": "Back-of-envelope math, algorithms and data structures, decomposition and first principles.",
+      "concepts": ["back-of-envelope", "algorithms", "data-structures", "complexity", "decomposition", "first-principles", "root-cause-analysis", "modeling", "probability", "tradeoff-analysis", "queueing-theory", "graphs", "concurrency-primitives"]
+    },
+    {
+      "key": "ai_systems",
+      "name": "AI & LLM Systems",
+      "short": "AI Systems",
+      "blurb": "LLM fundamentals, RAG, evals, agent design, guardrails, cost and AI-assisted engineering.",
+      "concepts": ["llm-fundamentals", "prompt-design", "rag", "embeddings-vector-search", "evals", "agent-design", "tool-use", "guardrails", "cost-latency", "context-management", "fine-tuning", "hallucination", "ai-assisted-development", "llm-observability", "model-selection", "prompt-injection"]
+    }
+  ],
+  "skills": [
+    { "key": "recall", "name": "Recall", "blurb": "Knows the fact, term or mechanism." },
+    { "key": "apply", "name": "Apply", "blurb": "Uses the idea correctly in a concrete case." },
+    { "key": "analyze", "name": "Analyze", "blurb": "Diagnoses, compares and reasons about tradeoffs." },
+    { "key": "design", "name": "Design", "blurb": "Builds an open-ended solution from constraints." },
+    { "key": "lead", "name": "Lead", "blurb": "Exercises judgment with people, ambiguity and org context." }
+  ],
+  "types": [
+    { "key": "mcq", "name": "Multiple choice" },
+    { "key": "multi", "name": "Select all that apply" },
+    { "key": "free_text", "name": "Written answer" },
+    { "key": "numeric", "name": "Estimation" },
+    { "key": "ordering", "name": "Put in order" },
+    { "key": "diagram", "name": "Diagram" },
+    { "key": "code_review", "name": "Code review" },
+    { "key": "bug_hunt", "name": "Bug hunt" }
+  ],
+  "languages": [
+    { "key": "ts", "name": "TypeScript / JavaScript" },
+    { "key": "go", "name": "Go" },
+    { "key": "rust", "name": "Rust" },
+    { "key": "csharp", "name": "C#" },
+    { "key": "java", "name": "Java" }
+  ],
+  "archetypes": [
+    { "key": "tech_lead", "name": "Tech Lead", "blurb": "Guides the approach and execution of a particular team." },
+    { "key": "architect", "name": "Architect", "blurb": "Owns direction and quality across a critical area." },
+    { "key": "solver", "name": "Solver", "blurb": "Digs deep into arbitrarily hard problems and lands them." },
+    { "key": "right_hand", "name": "Right Hand", "blurb": "Extends an executive's attention, borrowing their scope." }
+  ],
+  "components": [
+    { "key": "client", "name": "Client" },
+    { "key": "mobile_app", "name": "Mobile app" },
+    { "key": "web_app", "name": "Web app" },
+    { "key": "dns", "name": "DNS" },
+    { "key": "cdn", "name": "CDN" },
+    { "key": "waf", "name": "WAF / firewall" },
+    { "key": "load_balancer", "name": "Load balancer" },
+    { "key": "api_gateway", "name": "API gateway" },
+    { "key": "auth", "name": "Auth service" },
+    { "key": "rate_limiter", "name": "Rate limiter" },
+    { "key": "service", "name": "Service" },
+    { "key": "worker", "name": "Worker" },
+    { "key": "scheduler", "name": "Scheduler / cron" },
+    { "key": "queue", "name": "Queue" },
+    { "key": "stream", "name": "Event stream / log" },
+    { "key": "pubsub", "name": "Pub/sub" },
+    { "key": "cache", "name": "Cache" },
+    { "key": "database", "name": "Database" },
+    { "key": "read_replica", "name": "Read replica" },
+    { "key": "object_storage", "name": "Object storage" },
+    { "key": "search_index", "name": "Search index" },
+    { "key": "data_warehouse", "name": "Data warehouse" },
+    { "key": "lock_service", "name": "Coordination / lock service" },
+    { "key": "config_store", "name": "Config / feature flags" },
+    { "key": "observability", "name": "Observability" },
+    { "key": "external_api", "name": "Third-party API" },
+    { "key": "llm", "name": "LLM / model" },
+    { "key": "vector_store", "name": "Vector store" },
+    { "key": "websocket_gateway", "name": "WebSocket gateway" },
+    { "key": "note", "name": "Note" }
+  ]
+}

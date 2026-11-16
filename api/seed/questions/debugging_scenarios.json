@@ -1,0 +1,848 @@
+{
+  "file": "debugging_scenarios",
+  "questions": [
+    {
+      "id": "dbgs-alb-keepalive-502-01",
+      "domain": "debugging",
+      "concepts": [
+        "production-debugging",
+        "log-analysis"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Rare 502s that get worse overnight",
+      "prompt": "A Node.js API behind an AWS Application Load Balancer returns a small trickle of 502s. They are rarer at peak and more common overnight, and the app has no log line for any of the failed requests. Given the evidence, what is the most likely cause?",
+      "context": "**ALB access log (502 rows only, fields trimmed)**\n```\n2026-11-12T03:14:07.551Z elb_status=502 target_status=- request_processing_time=0.000 target_processing_time=-1 response_processing_time=-1 target=10.8.3.41:3000\n2026-11-12T03:14:52.103Z elb_status=502 target_status=- request_processing_time=0.000 target_processing_time=-1 response_processing_time=-1 target=10.8.1.17:3000\n2026-11-12T03:21:30.877Z elb_status=502 target_status=- request_processing_time=0.000 target_processing_time=-1 response_processing_time=-1 target=10.8.3.41:3000\n```\n\n**Rates**\n| Window | Requests/s | 502 rate |\n| --- | --- | --- |\n| 14:00 to 15:00 | 4,100 | 0.002% |\n| 03:00 to 04:00 | 60 | 0.11% |\n\n**Config and health**\n```\nALB idle timeout:            60s\nNode 18 http.Server:         defaults (keepAliveTimeout 5000ms)\nkubectl get pods -l app=api: 12/12 Running, RESTARTS 0\nevent loop lag p99:          9ms\ntarget health:               healthy, no flapping in 7 days\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "The app closes idle keep-alive connections after 5 s while the ALB keeps them for 60 s, so the ALB sometimes sends a request on a socket the app is closing"
+        },
+        {
+          "id": "b",
+          "text": "Event-loop stalls occasionally exceed the ALB's response deadline, so the ALB gives up and returns 502 before the app writes a response"
+        },
+        {
+          "id": "c",
+          "text": "Targets briefly fail health checks during low traffic and the ALB drops the requests that were in flight to them"
+        },
+        {
+          "id": "d",
+          "text": "Pods are OOM-killed mid-request at night when batch jobs share the node, resetting the connection before any response"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Fits every clue: no app log (request never reached the handler), target_processing_time -1 (connection failed), and more 502s when connections sit idle between 5 s and 60 s.",
+        "b": "A slow handler would still log the request and show a positive target_processing_time; event-loop lag is 9 ms.",
+        "c": "Target health is stable for a week; this does not explain the inverse relationship with traffic.",
+        "d": "RESTARTS is 0 on every pod, and an OOM kill would produce bursts, not a steady trickle."
+      },
+      "explanation": "This is the keep-alive timeout race. The ALB reuses pooled connections to targets for up to 60 s of idleness, but Node's server closes idle sockets after 5 s. When the app's FIN crosses the ALB's next request on the wire, the request lands on a closing socket, the ALB records target_processing_time -1, and the app never sees it. Low traffic makes it worse because more connections sit idle long enough to cross the 5 s line but stay within the ALB's 60 s window. The fix is to make the upstream's idle timeout longer than the proxy's: set `server.keepAliveTimeout` to about 65 s (and `headersTimeout` above it). Latency or health theories fail because the app has no record of the request at all.\n\n**Takeaway:** in any proxy chain, each hop's idle timeout must be longer than the hop in front of it, or you get rare, unlogged 502s.",
+      "tags": [
+        "classic",
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "dbgs-jwt-clock-skew-01",
+      "domain": "debugging",
+      "concepts": [
+        "clock-skew",
+        "log-analysis"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Fresh tokens rejected as not yet valid on some pods",
+      "prompt": "Users are bounced to the login page right after signing in, but only when their request lands on certain pods. What should you check next?",
+      "context": "```\n# orders-api pod orders-api-7f9c-xk2lp (node ip-10-4-7-21)\n2026-11-15T14:02:11.204Z WARN auth rejected token sub=u_88213 err=\"NotBeforeError: jwt not active\" nbf=2026-11-15T14:05:48Z kid=k-2026-10\n2026-11-15T14:02:11.958Z WARN auth rejected token sub=u_10442 err=\"NotBeforeError: jwt not active\" nbf=2026-11-15T14:05:49Z kid=k-2026-10\n\n# auth-svc (issuer), same moment, different node\n2026-11-15T14:05:48.117Z INFO token issued sub=u_88213 kid=k-2026-10 ttl=900s\n```\n\n- Every rejecting pod is scheduled on node `ip-10-4-7-21`; pods on the other 9 nodes accept the same tokens.\n- No signature errors anywhere; the same `kid` verifies fine elsewhere.\n- The node was replaced from a new AMI two days ago.",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Check time synchronization on node ip-10-4-7-21 (for example `chronyc tracking`) for a clock offset of a few minutes"
+        },
+        {
+          "id": "b",
+          "text": "Check whether the pods on that node have a different `TZ` environment variable than the issuer"
+        },
+        {
+          "id": "c",
+          "text": "Check whether the pods on that node cached an old JWKS and are verifying with a stale public key"
+        },
+        {
+          "id": "d",
+          "text": "Add a 5-minute clock tolerance to the verifier so tokens issued slightly in the future are accepted"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The pod's log time is about 3 minutes 37 seconds behind the issuer's for the same token, and only one freshly built node is affected: a clock that isn't syncing.",
+        "b": "JWT time claims are epoch seconds; a time zone setting changes display, not the epoch value used for nbf/exp checks.",
+        "c": "A stale key produces a signature failure, not a not-before failure, and the same kid verifies on other nodes.",
+        "d": "Leeway hides the symptom and leaves a node whose clock also breaks TLS validity checks, log correlation and cron timing."
+      },
+      "explanation": "The token was issued at 14:05:48 by the issuer's clock and rejected at 14:02:11 by the pod's clock: the verifying node is about 3.5 minutes behind real time, so `nbf` looks like the future. Scoping to one node that was rebuilt from a new AMI points at time sync (chrony or NTP not running, or blocked from reaching its source). Confirm with `chronyc tracking` or `timedatectl` on the node, fix the sync, and add a node-level clock offset alert. A small leeway (30 to 60 s) is normal practice, but widening it to minutes to cover a broken node is masking.\n\n**Takeaway:** when time-based validation fails only on some hosts, compare clocks across the hosts before touching keys or code.",
+      "references": [
+        "RFC 7519, JSON Web Token, section 4.1.5 (nbf)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-jvm-dns-cache-01",
+      "domain": "debugging",
+      "concepts": [
+        "cache-invalidation",
+        "production-debugging"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "One service still dialing the old IP 40 minutes after failover",
+      "prompt": "During a regional failover, `inventory.internal` was repointed to a new address. Every caller recovered within a minute except `order-api`, which kept failing until it was restarted 39 minutes later. Which explanation fits all the evidence?",
+      "context": "**#inc-4471 (Slack)**\n> **09:12** maria: inventory failover done, `inventory.internal` CNAME now resolves to the us-west target. Record TTL is 30s.\n> **09:13** ken: cart, search, pricing all green.\n> **09:20** ken: order-api still erroring, see below\n\n**order-api (Java 17) logs**\n```\n09:19:58.402 DEBUG http-pool opened new connection to inventory.internal/10.20.3.17:8443\n09:19:58.405 ERROR java.net.ConnectException: Connection refused (inventory.internal/10.20.3.17:8443)\n09:34:12.881 DEBUG http-pool opened new connection to inventory.internal/10.20.3.17:8443\n09:34:12.884 ERROR java.net.ConnectException: Connection refused (inventory.internal/10.20.3.17:8443)\n```\n\n**From inside an order-api pod at 09:25**\n```\n$ getent hosts inventory.internal\n10.20.9.44      inventory.internal\n$ dig +short inventory.internal\ninv-usw2.internal.\n10.20.9.44\n```\n\n**09:51** restarted order-api, recovered immediately.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "The JVM's in-process DNS cache kept the old address, for example because `networkaddress.cache.ttl` is set to cache forever in the base image"
+        },
+        {
+          "id": "b",
+          "text": "The HTTP client kept reusing pooled keep-alive connections that were established to the old target before the failover"
+        },
+        {
+          "id": "c",
+          "text": "The node-local DNS cache (or nscd) on order-api's nodes was serving the stale record past its TTL"
+        },
+        {
+          "id": "d",
+          "text": "The CNAME's effective TTL was far longer than 30 s because an upstream resolver ignored it and cached the old target"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The only cache left: the OS resolver path (getent) and DNS itself (dig) both return the new IP from the same pod, yet the process keeps opening new connections to the old one, and a restart fixes it.",
+        "b": "The logs show new connections being opened, and refused, against the old IP; reused sockets would not need a new connect.",
+        "c": "`getent hosts` goes through glibc NSS and the node-local cache, and it returns the new address from the same pod.",
+        "d": "Every other caller recovered within a minute, and dig from the affected pod already sees the new target."
+      },
+      "explanation": "Work down the resolution stack and eliminate layers with evidence. DNS is correct (dig), the OS resolver path is correct (getent), and the process is still opening new TCP connections to 10.20.3.17. What remains is a cache inside the process, and \"fixed by restart\" confirms it. In the JVM, `InetAddress` caches lookups according to `networkaddress.cache.ttl`; a hardening baseline that sets it to -1 (cache forever) produces exactly this. Some HTTP clients and connection pools also resolve once and pin the address. Fix by setting a short positive TTL (for example 30 to 60 s) and adding a failover game day that checks every caller, not just the ones that alert.\n\n**Takeaway:** when DNS changes don't take, test each caching layer from inside the affected process's environment, and suspect the runtime once the OS answers correctly.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "dbgs-gc-pause-gap-01",
+      "domain": "debugging",
+      "concepts": [
+        "gc-pauses",
+        "log-analysis"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Gateway timeouts while the service's own latency looks fine",
+      "prompt": "The gateway reports clustered 2.5 s timeouts calling `checkout-svc`, but the service's own request-duration histogram shows p99 at 40 ms. Which explanation fits all of the evidence?",
+      "context": "**One timed-out request (distributed trace)**\n```\ngateway   span  start 14:03:16.950  duration 2500ms  status=DEADLINE_EXCEEDED\ncheckout  span  start 14:03:19.931  duration   18ms  status=OK   (pod checkout-6d4-p8r2)\n```\n\n**checkout-6d4-p8r2 around 14:03**\n| Metric | 14:03:00 | 14:03:15 | 14:03:30 |\n| --- | --- | --- | --- |\n| Tomcat busy threads (max 200) | 14 | 12 | 61 |\n| heap used after last GC | 7.4 GB / 8 GB | 7.7 GB / 8 GB | 7.6 GB / 8 GB |\n| jvm_gc_pause_seconds_max{action=\"end of major GC\"} | 0 | 2.98 | 2.98 |\n| node TCP retransmits/s | 3 | 2 | 3 |\n\nchrony offset at 14:03: gateway node 0.3 ms, checkout node 0.4 ms.\n\n- Every timeout on a given pod falls inside the same ~3 s window; different pods have their windows at different times.\n- Old-gen usage after each collection has risen steadily since the last deploy six days ago.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Stop-the-world full GC freezes the whole JVM for about 3 s; requests wait in the socket buffer and the handler timer only starts after the pause, so server metrics never see it"
+        },
+        {
+          "id": "b",
+          "text": "Requests queue in Tomcat's accept queue behind a saturated worker pool, and the duration histogram only measures time after a worker picks the request up"
+        },
+        {
+          "id": "c",
+          "text": "Clock skew between the gateway and checkout nodes shifts the spans, so the requests were actually fast and the gateway's deadline accounting is wrong"
+        },
+        {
+          "id": "d",
+          "text": "Packet loss between the gateway and the pod causes TCP retransmission backoff, delaying delivery of the request by several seconds"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Matches the per-pod clustering, the 2.98 s major GC pause in the same window, the near-full old gen, and the 3 s gap before the server span starts.",
+        "b": "Plausible in general, and it would also hide wait time from the histogram, but only 12 of 200 threads were busy when the requests arrived.",
+        "c": "Offsets are under a millisecond, and the gateway's deadline is measured on one clock: real time did elapse.",
+        "d": "Retransmits are flat, and network loss would not cluster all of one pod's timeouts into a single window that lines up with GC."
+      },
+      "explanation": "The server span starts 2.98 s after the gateway sent the request, which is exactly the major GC pause on that pod. During a stop-the-world collection no application thread runs: the kernel accepts and buffers the bytes, but nothing reads them, so the request timer inside the handler begins only after the pause. That is why the service's own histogram looks healthy (a form of coordinated omission) while callers time out. The rising old-gen floor after each GC says the pauses are a symptom of growing live data, likely a leak, so the next steps are a heap dump diff and, separately, measuring latency from the caller's side rather than only inside the handler. The busy-thread count rules out accept-queue waiting, and sub-millisecond offsets rule out skew.\n\n**Takeaway:** when callers and the callee disagree about latency, look for time the callee cannot see: GC pauses, queues and accept backlogs.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "dbgs-pool-nested-deadlock-01",
+      "domain": "debugging",
+      "concepts": [
+        "deadlocks",
+        "resource-leaks"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Connection pool exhausted while the database is idle",
+      "prompt": "During a flash sale, `order-api` starts failing with pool timeouts. The database is nearly idle. When traffic is cut, the service recovers on its own within about 30 seconds. What is the root cause?",
+      "context": "**order-api log**\n```\n12:38:04.117 ERROR HikariPool-1 - Connection is not available, request timed out after 30000ms (total=50, active=50, idle=0, waiting=187)\n```\n\n**pg_stat_activity (application_name = order-api)**\n```\n count | state               | wait_event_type | wait_event | xact_age\n-------+---------------------+-----------------+------------+-----------\n    50 | idle in transaction | Client          | ClientRead | 29s to 58s\n```\nNo order-api session is waiting on a lock (`pg_locks` shows every lock granted). DB CPU 6%.\n\n**Thread dump: 50 of the 200 Tomcat threads look like this**\n```\n\"http-nio-8080-exec-41\" WAITING\n  at java.util.concurrent.SynchronousQueue.poll(...)\n  at com.zaxxer.hikari.util.ConcurrentBag.borrow(ConcurrentBag.java:162)\n  at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:181)\n  at org.springframework.jdbc.datasource.DataSourceTransactionManager.doBegin(...)\n  at org.springframework.transaction.support.AbstractPlatformTransactionManager.startTransaction(...)   [propagation=REQUIRES_NEW]\n  at com.acme.audit.AuditService.record(AuditService.java:42)\n  at com.acme.orders.OrderService.place(OrderService.java:118)   [@Transactional]\n```\nThe other 137 waiting threads are at `OrderService.place` entry, also in `getConnection`.\n\nIn-flight `place` calls normally peak at about 30; during the sale they reached 180.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Each order holds one connection and then blocks waiting for a second one for its REQUIRES_NEW audit write; once 50 orders hold one each, none can get a second"
+        },
+        {
+          "id": "b",
+          "text": "The orders' `UPDATE` statements hold row locks on hot rows, and the other transactions are queued behind those locks inside the database"
+        },
+        {
+          "id": "c",
+          "text": "A code path borrows connections and never returns them, so the pool slowly leaks until every connection is gone"
+        },
+        {
+          "id": "d",
+          "text": "The pool of 50 is simply too small for 180 concurrent orders; raising it to 200 to match the Tomcat thread count fixes the problem"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Exactly the dump: 50 threads inside a transaction (idle in transaction on the DB side) each waiting in getConnection for a second connection. It clears only when the inner acquire times out and the outer transaction rolls back.",
+        "b": "No session is waiting on a lock, and the DB sessions are idle in transaction waiting on the client, not blocked.",
+        "c": "A leak would not recover by itself after traffic drops, and it would not track concurrency so sharply.",
+        "d": "It moves the threshold but keeps the deadlock: with 200 threads and 200 connections, 200 concurrent orders can each hold one and wait forever for another."
+      },
+      "explanation": "This is a pool-induced deadlock. `place` opens a transaction (connection #1) and calls `AuditService.record`, whose REQUIRES_NEW propagation suspends the outer transaction and needs connection #2. Under normal load there are spare connections, so it works. When 50 orders enter at once they take all 50 connections, and each one then waits for a second connection that only another waiting order could free. The DB sees 50 sessions idle in transaction, because the app threads holding them are blocked in the pool. It clears only when the 30 s acquire timeout fires and the outer transactions roll back. Fixes: remove nested acquisition (write the audit row in the same transaction, or after commit via an outbox or async path), or size the pool so it cannot deadlock (HikariCP's guidance is threads × (connections per thread − 1) + 1) and cap concurrency in front of it.\n\n**Takeaway:** a code path that needs two connections from the same pool at once will deadlock that pool under enough concurrency, whatever the pool size.",
+      "references": [
+        "HikariCP wiki: About Pool Sizing"
+      ],
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "dbgs-ephemeral-port-exhaustion-01",
+      "domain": "debugging",
+      "concepts": [
+        "resource-leaks"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "cannot assign requested address under steady load",
+      "prompt": "A Go worker that calls one internal HTTPS endpoint starts failing about 90 seconds after load ramps to 900 requests/s. Which diagnosis and fix are right?",
+      "context": "```\n2026-11-13T10:41:22Z ERROR pricing-worker: Post \"https://quotes.internal/v1/price\": dial tcp 10.30.1.8:443: connect: cannot assign requested address\n```\n\n```\n$ ss -s\nTCP:   28463 (estab 41, closed 28396, orphaned 0, timewait 28390)\n\n$ ss -tan state time-wait | awk '{print $4}' | sort | uniq -c | sort -rn | head -2\n  28351 10.30.1.8:443\n     39 10.30.7.2:5432\n\n$ cat /proc/sys/net/ipv4/ip_local_port_range\n32768\t60999\n\n$ ulimit -n; ls /proc/$(pgrep pricing-worker)/fd | wc -l\n1048576\n214\n```\n\nRecent change: \"Make the quotes client configurable per job\". Each job now builds its own `http.Client` with a new `http.Transport`.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Ephemeral ports to that one destination are used up by sockets in TIME_WAIT because every request opens a new connection; share one Transport so connections are reused"
+        },
+        {
+          "id": "b",
+          "text": "The process has hit its file descriptor limit because response bodies are never closed; raise `ulimit -n` and close the bodies"
+        },
+        {
+          "id": "c",
+          "text": "The quotes service's listen backlog is full, so the kernel refuses new connections; scale the quotes service or raise its `somaxconn`"
+        },
+        {
+          "id": "d",
+          "text": "TIME_WAIT sockets are lingering too long; set `net.ipv4.tcp_tw_recycle=1` on the worker nodes so they are reclaimed immediately"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "28,351 TIME_WAIT sockets to one ip:port against a 28,232-port local range is the whole story. A per-job Transport has its own empty pool, so nothing is reused.",
+        "b": "FD exhaustion reports \"too many open files\" (EMFILE); this process has 214 open descriptors against a limit of 1,048,576.",
+        "c": "A full backlog on the server shows up as timeouts or connection refused, not a local EADDRNOTAVAIL from the client's own kernel.",
+        "d": "`tcp_tw_recycle` was removed in Linux 4.12 and broke clients behind NAT before that; it treats the symptom anyway."
+      },
+      "explanation": "EADDRNOTAVAIL on connect means the client kernel cannot find a free local (source) port for that destination. The local range 32768 to 60999 gives 28,232 ports, and an actively closed socket sits in TIME_WAIT for 60 s on Linux, so a client can sustain only about 470 new connections per second to a single ip:port. At 900 requests/s with no connection reuse, the ports run out in well under two minutes, which matches the 90 s onset. In Go, each `http.Transport` owns its connection pool, so building one per job defeats keep-alive. Share a single Transport (or Client), drain and close response bodies so connections return to the pool, and set `MaxIdleConnsPerHost` high enough for the concurrency. Widening the port range or enabling `tcp_tw_reuse` only buys headroom.\n\n**Takeaway:** read the errno literally; EADDRNOTAVAIL on connect is local port exhaustion, and the fix is connection reuse, not kernel tuning.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-internal-tls-expiry-01",
+      "domain": "debugging",
+      "concepts": [
+        "certificate-expiry",
+        "log-analysis"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Every caller of an internal service fails at the same second",
+      "prompt": "At 09:00:03 UTC every service that calls `ledger.internal` through its Envoy sidecar starts failing. No deploys or config changes happened today, and the public API, which terminates TLS at the edge, is fine. What should you check first?",
+      "context": "```\n[2026-11-14T09:00:03.118Z] \"POST /v2/entries HTTP/1.1\" 503 UF upstream_reset_before_response_started{connection_failure,TLS_error:_268435581:SSL_routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED} - \"ledger.internal\"\n[2026-11-14T09:00:03.402Z] \"GET /v2/balances/a_7712 HTTP/1.1\" 503 UF upstream_reset_before_response_started{connection_failure,TLS_error:_268435581:SSL_routines:OPENSSL_internal:CERTIFICATE_VERIFY_FAILED} - \"ledger.internal\"\n```\n\n| Caller | First failure (UTC) |\n| --- | --- |\n| billing | 09:00:03 |\n| payouts | 09:00:03 |\n| reporting | 09:00:04 |",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "Inspect the certificate chain ledger.internal presents (`openssl s_client -showcerts`) and check the notAfter dates on the leaf and intermediates"
+        },
+        {
+          "id": "b",
+          "text": "Roll back the most recent ledger deploy, since a simultaneous failure across callers points to a bad server release"
+        },
+        {
+          "id": "c",
+          "text": "Restart the Envoy sidecars on the calling services to clear stale TLS sessions and upstream connections"
+        },
+        {
+          "id": "d",
+          "text": "Raise Envoy's upstream connect timeout, because the TLS handshake is taking longer than the configured limit"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "A verify failure that starts on the hour for every caller with no change is the signature of an expired leaf or intermediate certificate.",
+        "b": "There was no deploy, and a bad release would not cause a certificate verification failure.",
+        "c": "Restarting changes nothing if the server's certificate is no longer valid; new handshakes fail the same way.",
+        "d": "The handshake is not slow; it completes far enough for the client to reject the certificate."
+      },
+      "explanation": "CERTIFICATE_VERIFY_FAILED from every client at the same second, with no change, points at time: something in the chain crossed its notAfter at 09:00 UTC. Internal hops are the usual victims because they use certificates from a private CA or a manual process that nobody monitors, while the public edge has automated renewal. Check the presented chain with `openssl s_client -connect ledger.internal:443 -showcerts` and read the dates on every certificate (intermediates expire too). Then renew, and add expiry monitoring on every TLS hop with alerts weeks ahead.\n\n**Takeaway:** a failure that starts on a round timestamp everywhere at once with no change is almost always an expiry: certificate, token, license or cron.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-metrics-label-cardinality-01",
+      "domain": "debugging",
+      "concepts": [
+        "memory-leaks"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Steady memory growth traced to the metrics library",
+      "prompt": "A Node.js service's memory grows about 40 MB per hour until it is OOM-killed every two days. A heap snapshot diff points at the metrics client. What is the cause?",
+      "context": "**Heap snapshot diff (6 hours apart), top retained growth**\n```\n+ 1,412,887 objects  entries retained by prom-client Histogram 'http_request_duration_seconds'.hashMap\n+   211,044 objects  (string) label values\n```\n\n**Sample label sets from `/metrics`**\n```\nhttp_request_duration_seconds_bucket{route=\"/api/v2/listings/88213/photos/9912\",status=\"200\",le=\"0.1\"} 1\nhttp_request_duration_seconds_bucket{route=\"/api/v2/listings/88214/photos/120\",status=\"200\",le=\"0.1\"} 1\nhttp_request_duration_seconds_bucket{route=\"/api/v2/listings/90017\",status=\"404\",le=\"0.1\"} 1\n```\n`/metrics` response size: 3 MB last week, 180 MB today.",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "The `route` label uses the raw URL path, so every listing and photo ID creates a new time series that the client keeps forever"
+        },
+        {
+          "id": "b",
+          "text": "Prometheus is scraping too slowly, so samples pile up in the client's buffer between scrapes"
+        },
+        {
+          "id": "c",
+          "text": "Request handlers register event listeners on a shared emitter and never remove them"
+        },
+        {
+          "id": "d",
+          "text": "Histogram buckets are too fine-grained; reducing the bucket count will stop the growth"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Each unique label combination is a new child series held for the life of the process. IDs in the path make the set unbounded.",
+        "b": "Prometheus pulls the current values; the client does not buffer samples between scrapes.",
+        "c": "A listener leak would show up as listener arrays on an emitter, not as entries in the histogram's map.",
+        "d": "Fewer buckets shrink each series by a constant factor, but the number of series still grows without bound."
+      },
+      "explanation": "Metric clients keep one child per unique combination of label values, and they never evict it. Using the raw path as a label turns every resource ID into a new series, so memory grows with the number of distinct IDs ever seen, and the scrape payload (and Prometheus's own storage) grows with it. Use the route template (`/api/v2/listings/:id/photos/:photoId`) from the router, never user-controlled or ID-like values, and put IDs in traces or logs instead. Many teams also guard cardinality in code review or with a series-count alert.\n\n**Takeaway:** a metric label must come from a small, bounded set; anything ID-shaped belongs in logs or traces.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-thread-dump-deadlock-01",
+      "domain": "debugging",
+      "concepts": [
+        "deadlocks",
+        "concurrency"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Reading a thread dump from a hung inventory service",
+      "prompt": "The inventory service stopped serving reservations 20 minutes ago; CPU is near zero. You take a thread dump. Which statements are supported by the dump? Select all that apply.",
+      "context": "```\n\"pool-3-thread-4\" #41 prio=5 tid=0x00007f3a2c1b9800 nid=0x2f03 waiting for monitor entry\n   java.lang.Thread.State: BLOCKED (on object monitor)\n\tat com.acme.inventory.StockLedger.transfer(StockLedger.java:88)\n\t- waiting to lock <0x00000006c1a2b3d0> (a com.acme.inventory.Bin)\n\t- locked <0x00000006c1a2b388> (a com.acme.inventory.Bin)\n\tat com.acme.inventory.RebalanceJob.run(RebalanceJob.java:54)\n\n\"http-nio-8080-exec-12\" #77 prio=5 tid=0x00007f3a2c3f1000 nid=0x2f4a waiting for monitor entry\n   java.lang.Thread.State: BLOCKED (on object monitor)\n\tat com.acme.inventory.StockLedger.transfer(StockLedger.java:88)\n\t- waiting to lock <0x00000006c1a2b388> (a com.acme.inventory.Bin)\n\t- locked <0x00000006c1a2b3d0> (a com.acme.inventory.Bin)\n\tat com.acme.orders.ReserveController.reserve(ReserveController.java:131)\n\n\"http-nio-8080-exec-3\" #68 ... BLOCKED (on object monitor)\n\tat com.acme.inventory.StockLedger.transfer(StockLedger.java:86)\n\t- waiting to lock <0x00000006c1a2b388> (a com.acme.inventory.Bin)\n   ... 38 more threads BLOCKED waiting to lock <0x00000006c1a2b388> or <0x00000006c1a2b3d0>\n\nFound one Java-level deadlock:\n\"pool-3-thread-4\": waiting to lock monitor 0x00007f39f4004e28 (object 0x00000006c1a2b3d0, a com.acme.inventory.Bin), which is held by \"http-nio-8080-exec-12\"\n\"http-nio-8080-exec-12\": waiting to lock monitor 0x00007f39f40051a8 (object 0x00000006c1a2b388, a com.acme.inventory.Bin), which is held by \"pool-3-thread-4\"\n```\n\n`StockLedger.transfer(from, to, qty)` does `synchronized (from) { synchronized (to) { ... } }` (lines 86 and 88).",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Two threads took the same two Bin monitors in opposite order: the rebalance job moved stock A→B while a reservation moved B→A"
+        },
+        {
+          "id": "b",
+          "text": "The other blocked threads are victims queued on the deadlocked monitors and will stay blocked until the process restarts"
+        },
+        {
+          "id": "c",
+          "text": "Adding a request timeout to the HTTP handlers would make the JVM release the monitors held by timed-out requests"
+        },
+        {
+          "id": "d",
+          "text": "Acquiring the two Bin locks in a global order (for example by bin ID) inside `transfer` would prevent this deadlock"
+        },
+        {
+          "id": "e",
+          "text": "The thread pool is starved for CPU; adding more worker threads would let the blocked transfers finish"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "The two deadlocked threads each hold the monitor the other wants, with from and to swapped.",
+        "b": "Intrinsic monitors cannot be interrupted or timed out, and the deadlock never resolves, so everything queued behind it waits forever.",
+        "c": "A timeout fires in another thread or in the client; it cannot make a BLOCKED thread give up a `synchronized` monitor.",
+        "d": "With a consistent order, no thread can hold the higher ID while waiting for the lower one, so the cycle cannot form.",
+        "e": "CPU is near zero and the threads are BLOCKED, not runnable; more threads just add more victims."
+      },
+      "explanation": "The JVM even names the cycle: `pool-3-thread-4` holds bin ...388 and wants ...3d0, while `exec-12` holds ...3d0 and wants ...388. Nested `synchronized(from) { synchronized(to) }` deadlocks whenever two transfers between the same pair of bins run in opposite directions. Every other thread that touches either bin then queues forever, which is why the service is hung with idle CPU. `synchronized` gives no timeout or interrupt, so recovery means a restart. Fix by ordering lock acquisition (lower bin ID first), by using a single lock for the transfer, or by `ReentrantLock.tryLock` with a timeout and retry. Catch these in production with periodic thread dumps or `ThreadMXBean.findDeadlockedThreads()`.\n\n**Takeaway:** a hung process with idle CPU calls for a thread dump first; lock-order cycles are named in it outright.",
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "dbgs-mojibake-double-encoding-01",
+      "domain": "debugging",
+      "concepts": [
+        "encoding"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 4,
+      "title": "Names turning into JosÃ© after an importer change",
+      "prompt": "Customer names with accents show up garbled in the admin UI and in CSV exports. Which statements are correct? Select all that apply.",
+      "context": "```\nmysql> SELECT name, HEX(name) FROM customers WHERE id = 551023;\n+---------------------+----------------------------------+\n| name                | HEX(name)                        |\n+---------------------+----------------------------------+\n| JosÃ© MuÃ±oz        | 4A6F73C383C2A9204D75C383C2B16F7A |\n+---------------------+----------------------------------+\n\nmysql> SHOW FULL COLUMNS FROM customers LIKE 'name';\n... Collation: utf8mb4_0900_ai_ci ...\n```\n\n- Only rows written by the nightly CSV importer since 2026-10-02 are affected; rows created in the web app are fine.\n- On 2026-10-02 the importer moved to a new base image and a new database driver config.\n- The source CSV files are valid UTF-8 (checked with `iconv -f utf-8 -t utf-8`).",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "The stored bytes are double-encoded: the UTF-8 bytes were read as Latin-1 somewhere on the write path, and those characters were then encoded to UTF-8 again"
+        },
+        {
+          "id": "b",
+          "text": "The database contents are correct; the admin UI and the CSV export are not declaring UTF-8, so the bytes are being rendered with the wrong charset"
+        },
+        {
+          "id": "c",
+          "text": "Running `ALTER TABLE customers CONVERT TO CHARACTER SET utf8mb4` will repair the affected rows in place"
+        },
+        {
+          "id": "d",
+          "text": "For this row, `CONVERT(CAST(CONVERT(name USING latin1) AS BINARY) USING utf8mb4)` returns `José Muñoz`"
+        },
+        {
+          "id": "e",
+          "text": "Investigation should start on the importer's write path (how it decodes the file and the connection charset it declares), not the readers"
+        }
+      ],
+      "answer": [
+        "a",
+        "d",
+        "e"
+      ],
+      "optionNotes": {
+        "a": "`é` is UTF-8 C3 A9. Here it is stored as C3 83 C2 A9, which is UTF-8 for the two Latin-1 characters `Ã` (C3) and `©` (A9).",
+        "b": "The hex dump shows the bytes in the table are already wrong; with a display-only bug, HEX(name) would start 4A6F73C3A9.",
+        "c": "The column is already utf8mb4; converting again leaves the double-encoded characters as they are, because they are valid utf8mb4.",
+        "d": "Converting to latin1 turns `Ã©` back into the bytes C3 A9, and reinterpreting those bytes as utf8mb4 yields `é`. Run it only on affected rows, or it damages good ones.",
+        "e": "The corruption is scoped to one writer and starts the day that writer changed; readers and other rows are unaffected."
+      },
+      "explanation": "Always look at the bytes before theorizing. `HEX(name)` shows C3 83 C2 A9 where `é` (C3 A9) should be: each original byte was treated as a Latin-1 character and re-encoded as UTF-8. That is a write-path bug, typically a client sending UTF-8 bytes on a connection that declares latin1 (so the server converts them again), or code decoding the file as ISO-8859-1 before writing. Because only importer rows since 2026-10-02 are affected, start there: the driver's connection charset and the file decoding in the new image. Repair the scoped rows with the latin1 round trip, tested on a copy first and limited by writer and date, and add a test that imports a non-ASCII fixture and compares bytes. MySQL's `latin1` is really cp1252, which is what makes the round trip work for most characters.\n\n**Takeaway:** for mojibake, inspect the stored bytes in hex, find the hop that decoded with the wrong charset, and repair only the rows that hop wrote.",
+      "tags": [
+        "gotcha",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-retry-storm-amplification-01",
+      "domain": "debugging",
+      "concepts": [
+        "retry-storms",
+        "error-handling"
+      ],
+      "skill": "lead",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "The database recovered but the service did not",
+      "prompt": "You are incident commander. The database recovered at 14:05, but inventory-svc is still drowning. Which actions would actually end this storm and keep it from recurring? Select all that apply.",
+      "context": "**Timeline**\n```\n13:58:10  inventory-db primary failover begins\n13:58:50  failover complete\n14:00     inventory-svc p99 > 5 s, error rate 70%\n14:05     inventory-db healthy, CPU 22%\n14:20     inventory-svc still at 100% CPU on all 20 pods (autoscaler at max)\n```\n\n**Call chain and retry policy**\n| Layer | Retries | Backoff | Timeout |\n| --- | --- | --- | --- |\n| mobile SDK | 3 | fixed 200 ms | 10 s |\n| API gateway | 2 on 5xx and timeout | none | 5 s |\n| cart-svc → inventory-svc | 3 | fixed 100 ms | 1 s |\n\n**inventory-svc at 14:20**\n- 6.1× baseline request rate, while user sessions are at baseline\n- 85% of requests time out at cart-svc's 1 s deadline; inventory-svc keeps working on them after the caller has given up\n- `x-attempt` header distribution: 1 (14%), 2 (19%), 3 (21%), 4 (46%)",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Shed load at inventory-svc now (reject fast with 503 above a concurrency limit) or turn off cart-svc's retries by flag, so the backlog can drain"
+        },
+        {
+          "id": "b",
+          "text": "Make one layer own retries, with a retry budget that caps retries at about 10% of requests, and have the other layers stop retrying"
+        },
+        {
+          "id": "c",
+          "text": "Replace the fixed delays on the remaining retries with exponential backoff and full jitter"
+        },
+        {
+          "id": "d",
+          "text": "Cut cart-svc's inventory timeout from 1 s to 300 ms so failing calls free their threads sooner"
+        },
+        {
+          "id": "e",
+          "text": "Add a gateway retry for 503s from load shedding, so users don't see the shed requests as errors"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "The trigger is gone; the load is self-sustaining. Breaking the loop (shedding, or removing one layer of retries) is what lets the service recover.",
+        "b": "Layered retries multiply: 4 × 3 × 4 = up to 48 attempts at inventory-svc per user action. One retry owner with a budget bounds amplification.",
+        "c": "Fixed delays keep clients synchronized into waves; jittered exponential backoff spreads out and reduces retry load.",
+        "d": "With the service already slower than 1 s, a 300 ms deadline makes nearly every call time out, which triggers more retries and more abandoned work.",
+        "e": "That defeats load shedding: rejected requests come straight back, multiplied by the gateway's retry count."
+      },
+      "explanation": "This is a metastable failure: the database blip is over, but retries now generate more load than the service can serve, so most requests time out and are retried again. The `x-attempt` distribution (46% of traffic on a fourth attempt) and 6.1× load at baseline sessions confirm it. To end it, break the feedback loop: shed load fast at the overloaded service or disable a layer of retries. To prevent it, give each call chain one retry owner with a budget, use exponential backoff with jitter, propagate deadlines so the service stops work the caller abandoned, and treat 503 from shedding as do-not-retry. Shortening timeouts under overload or retrying shed requests feeds the storm.\n\n**Takeaway:** retries multiply across layers, so give each call chain one retry owner with a budget, and recover from a storm by cutting the load, not by adding retries.",
+      "references": [
+        "Beyer et al., Site Reliability Engineering (O'Reilly 2016), chapter 22: Addressing Cascading Failures"
+      ],
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-heisenbug-debugger-01",
+      "domain": "debugging",
+      "concepts": [
+        "heisenbugs",
+        "race-conditions",
+        "concurrency"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "A corruption bug that vanishes when you look at it",
+      "prompt": "Explain what the evidence suggests about the bug, and lay out how you would find the root cause and prove it is fixed. Be specific about tools and techniques.",
+      "context": "**#matching-eng (Slack)**\n> **dev-a:** about 1 in 50k fills under peak load has the quantity of a *different* order. Never seen locally.\n> **dev-b:** started after we moved the matcher from 4-core to 32-core hosts last month.\n> **dev-a:** I added DEBUG logging inside the matching loop and ran the staging load test for 3 days. Zero occurrences. Turned the logging off and got 2 the next morning.\n> **dev-c:** I attached a debugger with breakpoints in `applyFill` on a staging box. Couldn't trigger it at all.\n> **dev-b:** the matcher reuses `Fill` objects from a pool to cut GC pressure; that went in about the same time.\n> **lead:** can we just add a mutex around `applyFill` and move on?",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Reads the evidence as a timing-dependent concurrency bug (data race or use-after-release), and explains that logging and breakpoints change timing and add synchronization (log locks, I/O, paused threads), which is why it disappears",
+          "Names the object pool as the prime suspect: a Fill returned to the pool while another thread still holds a reference, so a later order overwrites it",
+          "Uses a race detector or sanitizer (Go -race, ThreadSanitizer, or the platform equivalent) on a stress test, rather than more logging",
+          "Uses low-perturbation observation: in-memory ring-buffer tracing, invariant checks at the point of the fill (the Fill's order ID matches the order), and a state dump when an invariant fails",
+          "Raises the odds of reproduction on purpose: more cores, higher contention, injected yields or scheduler perturbation, or disabling the pool behind a flag to see if the bug disappears",
+          "Proves the fix statistically: measures the failure rate before the fix, then runs enough iterations after it that zero failures is meaningful, and rejects a blind mutex as an unexplained fix"
+        ],
+        "redFlags": [
+          "Adds a mutex or sleep and calls it fixed without explaining the mechanism",
+          "Adds more synchronous logging in production as the main plan",
+          "Blames hardware or the compiler before ruling out a race",
+          "Declares victory after a few days without failures, with no baseline failure rate"
+        ],
+        "exemplar": "A bug that vanishes under logging or a debugger is timing-sensitive, almost always a race. Logging serializes threads on the logger's lock and adds I/O delay; breakpoints stop threads outright. The move to 32 cores raised real parallelism, and `Fill` pooling arrived at the same time, which fits use-after-release: one thread returns a Fill to the pool while another still writes to it, and the next order picks up the recycled object.\n\nPlan: (1) Run the matcher's stress test under the race detector (Go `-race` or TSan) on a many-core host; it usually names the two conflicting accesses. (2) Add cheap invariants: stamp each pooled Fill with a generation counter and the owning order ID, assert in `applyFill` that they match, and on failure dump a per-thread in-memory ring buffer of recent events. That keeps timing intact. (3) Disable pooling behind a flag; if the rate drops to zero under the same load, that strongly implicates it. (4) Raise contention to reproduce faster. A blind mutex might hide the bug and costs throughput, so I'd add synchronization only at the proven conflict. Proof: measure the rate first (about 1 per 50k), then run several million fills after the fix with zero failures, and keep the invariant check in production as a canary."
+      },
+      "explanation": "Heisenbugs are diagnosed by reasoning about what the observation changed. Logging and debuggers add synchronization and delay, so a bug they hide is a race. The pool change plus the higher core count points to use-after-release. Good answers swap perturbing tools for race detectors, invariants and in-memory traces, push the reproduction rate up on purpose, and prove the fix against a measured baseline rate.\n\n**Takeaway:** when observing a bug makes it vanish, change how you observe (race detectors, invariants, ring buffers), not how hard you look.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "dbgs-bisect-flaky-lockfile-01",
+      "domain": "debugging",
+      "concepts": [
+        "bisecting",
+        "flaky-tests"
+      ],
+      "skill": "apply",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Bisect blames the lockfile for a flaky regression",
+      "prompt": "A teammate wants to revert commit `2e67f11` and ship 4.18.1. How much do you trust this bisect result, and what would you do instead? Quantify where you can.",
+      "context": "The e2e test `checkout › applies loyalty discount` fails on about 30% of runs on 4.18.0. Nobody has seen it fail on 4.17.0. The engineer ran the test once at each bisect step.\n\n```\n$ git bisect log\ngit bisect start\n# bad: [a91f3c2] Release 4.18.0\ngit bisect bad a91f3c2\n# good: [5d02e7b] Release 4.17.0\ngit bisect good 5d02e7b\n# good: [7e1b9a0] feat(cart): persist promo codes across sessions\ngit bisect good 7e1b9a0\n# bad: [3c44d18] refactor(pricing): move rounding into Money\ngit bisect bad 3c44d18\n# good: [0f9a2e1] fix(loyalty): tier lookup cache\ngit bisect good 0f9a2e1\n# bad: [c81d5f4] chore: bump node to 20.18\ngit bisect bad c81d5f4\n# good: [9ab33e0] test: add loyalty fixtures\ngit bisect good 9ab33e0\n# bad: [2e67f11] chore(deps): update lockfile\ngit bisect bad 2e67f11\n# first bad commit: [2e67f11] chore(deps): update lockfile\n```\n\n`2e67f11` only changes `package-lock.json`: 41 packages, including `decimal.js` 10.4.3 → 10.5.0, `date-fns` 3.6.0 → 4.1.0 (transitive), and several security patches.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Explains that with a 30% failure rate a single passing run proves little: a bad commit passes one run 70% of the time, so every `good` mark is suspect while `bad` marks are reliable (provided the flake is new in 4.18)",
+          "Quantifies the runs needed: about 9 consecutive passes to be 95% sure a commit is good (0.7^9 ≈ 0.04), and verifies 4.17.0 really is good by running it many times, since the flake may predate it",
+          "Re-runs the bisect with `git bisect run` and a script that repeats the test N times and fails on any failure (exit 125 to skip commits that don't build)",
+          "If the lockfile is confirmed, narrows further inside it: applies the 41 package changes in halves, or starts with the plausible ones (decimal.js for discount math, date-fns), and reads their changelogs",
+          "Rejects reverting the whole lockfile: it rolls back security patches and hides the real cause; pins or fixes the specific package instead, and adds a deterministic test for the behavior"
+        ],
+        "redFlags": [
+          "Trusts a bisect over a flaky test that ran once per step",
+          "Reverts the entire lockfile, including security patches",
+          "Assumes the `good` endpoint is good without re-running it",
+          "Quarantines the test as flaky without finding the cause"
+        ],
+        "exemplar": "I don't trust it yet. Each step ran the test once against a 30% failure rate. A `bad` mark is real (the test failed), but a bad commit gets marked `good` 70% of the time, and this bisect relied on four `good` calls: 4.17.0, 7e1b9a0, 0f9a2e1 and 9ab33e0. If any of them was wrong, the real culprit sits earlier than 2e67f11 and the search went into the wrong half. So first, prove 4.17.0 is good: run it 20 times. If it never fails, a hidden 30% flake would survive that only 0.7^20 ≈ 0.08% of the time.\n\nThen rerun with `git bisect run ./repeat.sh`, where the script runs the test 10 times and exits 1 on any failure (0.7^10 ≈ 2.8% false-good per step), and exits 125 if a commit doesn't build. If it lands on the lockfile again, bisect inside it: apply half the package bumps, test, repeat. decimal.js is my first suspect for a discount test, and date-fns 4 is a major version. Then pin or fix that one package, keep the security patches, and write a deterministic unit test for the rounding or date behavior so the e2e test isn't the only guard."
+      },
+      "explanation": "Bisect assumes a deterministic oracle. With a flaky test, `good` marks are the weak point, and one wrong mark sends the search into the wrong half. Repeat each step enough times that a pass means something, verify both endpoints, automate with `git bisect run`, and if a dependency commit is blamed, keep bisecting inside it rather than reverting everything.\n\n**Takeaway:** bisect is only as reliable as its test; make the oracle trustworthy (repeat runs, verified endpoints) before trusting the commit it names.",
+      "references": [
+        "git-bisect documentation (git-scm.com/docs/git-bisect)"
+      ],
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "dbgs-timezone-daily-report-01",
+      "domain": "debugging",
+      "concepts": [
+        "timezones-dates",
+        "off-by-one"
+      ],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 2,
+      "title": "Daily sales report off by one day for West Coast stores",
+      "prompt": "Explain what causes each of the two symptoms, how you would fix them, and how you would test the fix so it stays fixed.",
+      "context": "**Support ticket (store in Los Angeles)**\n> Your daily report says Nov 14 sales were $18,210, but our POS says $21,960. The Nov 15 report includes sales from the evening of the 14th. Also, when I pick Nov 14 in the date picker, the page header says \"Nov 13\".\n\n**Report query**\n```sql\n-- orders.created_at is `timestamp without time zone`; the app writes UTC\nSELECT date(created_at) AS day, sum(total) AS sales\nFROM orders\nWHERE store_id = $1 AND created_at >= $2 AND created_at < $3\nGROUP BY 1 ORDER BY 1;\n```\n\n**Header component**\n```ts\nconst picked = new Date(searchParams.get('day')); // e.g. \"2026-11-14\"\nheader.textContent = picked.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n```",
+      "language": null,
+      "estSeconds": 420,
+      "rubric": {
+        "keyPoints": [
+          "Identifies that the SQL groups by the UTC date, so orders after 16:00 Pacific (UTC-8 in mid-November) fall into the next day's bucket",
+          "Fixes the SQL by converting to the store's IANA time zone before truncating, for example `date((created_at AT TIME ZONE 'UTC') AT TIME ZONE s.timezone)`, and computes the range bounds as the store's local midnights converted to UTC",
+          "Identifies that `new Date(\"2026-11-14\")` parses a date-only string as UTC midnight, which displays as Nov 13 in negative-offset zones",
+          "Fixes the UI by treating the day as a calendar date (parse the components, use a plain-date type such as Temporal.PlainDate, or format with timeZone 'UTC'), not as an instant",
+          "Tests with fixed time zones on both sides of UTC, including DST transition days (23- and 25-hour days), and runs the suite with a non-UTC TZ"
+        ],
+        "redFlags": [
+          "Subtracts 8 hours as a hard-coded offset (breaks with DST and other zones)",
+          "Uses the server's or browser's local time zone instead of the store's",
+          "Fixes only one of the two bugs"
+        ],
+        "exemplar": "Two separate bugs. First, the report: `created_at` holds UTC, and `date(created_at)` cuts days at UTC midnight. Los Angeles is UTC-8 after the Nov 1 DST change, so anything sold after 4 pm local lands in the next day. The fix is to bucket by the store's day: `date((created_at AT TIME ZONE 'UTC') AT TIME ZONE s.timezone)`, with each store's IANA zone stored on the store, and the WHERE bounds computed as the store's local midnights converted to UTC so the index still applies. Longer term, use `timestamptz`.\n\nSecond, the header: `new Date('2026-11-14')` treats a date-only ISO string as UTC midnight, and `toLocaleDateString` renders it in the browser's zone, which is 4 pm on Nov 13 in LA. The picked day is a calendar date, not an instant: parse year, month and day yourself or use `Temporal.PlainDate`, or format with `timeZone: 'UTC'`.\n\nTests: fixtures for stores in America/Los_Angeles and Asia/Tokyo with orders at 23:30 and 00:30 local, both DST change days, and a CI job that runs the frontend tests with `TZ=America/Los_Angeles`."
+      },
+      "explanation": "Off-by-one-day bugs almost always come from cutting days in the wrong zone or treating a calendar date as an instant. The report must bucket in the store's zone, and the UI must keep a picked date as a date. Tests in non-UTC zones and across DST changes keep both fixed.\n\n**Takeaway:** store instants in UTC, decide explicitly which zone defines a business's day, and carry calendar dates as dates, never as midnight timestamps.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-cdn-cache-poisoning-01",
+      "domain": "debugging",
+      "concepts": [
+        "cache-poisoning",
+        "cache-invalidation"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Homepage HTML loading scripts from a domain we don't own",
+      "prompt": "You're the senior engineer on call. Explain what happened, what you do in the next 30 minutes and why, and what permanent fixes you would require before closing the incident.",
+      "context": "**#inc-web-2291 (Slack)**\n> **10:42 support:** users say the homepage looks broken; two say they got a strange \"session expired, log in again\" popup.\n> **10:46 eng:** view-source on www shows `<script src=\"https://assets-cdn-cache.net/app.8f2c.js\">`. That isn't our domain.\n> **10:49 eng:** prod build output and the origin config both point at `static.example.com`.\n\n**Origin code (asset URL helper)**\n```ts\nconst host = req.headers['x-forwarded-host'] ?? config.publicHost;\nreturn `https://${host === config.publicHost ? config.assetHost : host}/${file}`;\n```\n\n**CDN config**\n```\ncache key:      scheme + host + path + query\nHTML response:  Cache-Control: public, max-age=600, s-maxage=3600\n```\n\n**CDN log for `/`**\n```\n10:31:07.204 GET / 200 MISS  client=203.0.113.77  x-forwarded-host=assets-cdn-cache.net\n10:31:07.981 GET / 200 HIT   client=198.51.100.12\n10:31:08.330 GET / 200 HIT   client=192.0.2.40\n... 412,880 HITs since\n```",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Identifies web cache poisoning: the origin reflects the unkeyed `X-Forwarded-Host` header into cacheable HTML, so one crafted request at 10:31:07 was cached and served to every visitor",
+          "Treats it as a security incident, not only an outage: attacker-controlled JavaScript on the homepage is effectively stored XSS for all visitors (the fake login popup suggests credential phishing), so security is paged and logs are preserved",
+          "Contains in the right order: stop the edge passing or trusting `X-Forwarded-Host` (or add it to the cache key) first, then purge the cached HTML, then verify from several locations that the correct asset host is served",
+          "Scopes impact: the exposure window (10:31 to the purge), which cached pages were affected, how many sessions loaded the script, and decides on forced session invalidation and password-reset prompts",
+          "Permanent fixes: the origin never builds URLs from client-controllable headers (use config, or trust forwarding headers only from the CDN against an allowlist), a CSP `script-src` allowlist and Subresource Integrity on scripts, and a review of every unkeyed input that changes a cacheable response"
+        ],
+        "redFlags": [
+          "Only purges the cache and closes the incident (the next crafted request poisons it again)",
+          "Treats it as a CDN bug or availability problem and does not involve security",
+          "Ignores the users who already loaded the malicious script"
+        ],
+        "exemplar": "This is web cache poisoning. Our origin trusts `X-Forwarded-Host` to build asset URLs, and the CDN does not include that header in the cache key. At 10:31:07 someone sent one request with `X-Forwarded-Host: assets-cdn-cache.net`; the CDN cached the resulting HTML for an hour, and since then about 400k visitors have loaded a script from a domain we don't control. The fake login popup means it is phishing credentials, so this is a security incident: I'd page security now and preserve the CDN and origin logs.\n\nNext 30 minutes: first, at the edge, strip or overwrite `X-Forwarded-Host` (or add it to the cache key) so the purge cannot be re-poisoned. Then purge all cached HTML and temporarily shorten the HTML TTL. Verify from several regions that pages reference `static.example.com`. With security, scope the window (10:31 to the purge) and the affected pages, and decide on invalidating sessions and prompting password resets for users active in that window.\n\nPermanent: the origin never derives URLs from request headers (use config, or an allowlist with forwarding headers trusted only from the CDN), add CSP `script-src` and SRI for our bundles, and audit every unkeyed header or cookie that changes cacheable output, with an automated test that sends one."
+      },
+      "explanation": "The CDN log tells the story: a single MISS with a hostile `X-Forwarded-Host`, then hundreds of thousands of HITs. The key judgments are recognizing it as stored XSS rather than a broken page, closing the hole before purging so the cache isn't poisoned again, and scoping the users already exposed. Permanent fixes remove trust in client-controlled headers and add defense in depth (CSP, SRI).\n\n**Takeaway:** any request input that changes a cacheable response must be in the cache key or ignored; otherwise one request can poison everyone.",
+      "references": [
+        "James Kettle, Practical Web Cache Poisoning (PortSwigger Research, 2018)"
+      ],
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "dbgs-slow-query-stale-stats-01",
+      "domain": "debugging",
+      "concepts": [
+        "query-plans",
+        "production-debugging"
+      ],
+      "skill": "apply",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "A 40 ms query takes 38 s after a tenant import",
+      "prompt": "Read the plan and the table stats. Explain why the query got slow, how you would confirm it, and what you would do now and longer term.",
+      "context": "After Sunday's migration of a large new tenant (account 8812, 30M events) into the shared `events` table, the account's activity page times out. The same query for other accounts still takes about 40 ms.\n\n```\nEXPLAIN (ANALYZE, BUFFERS) SELECT e.*, s.device FROM events e JOIN sessions s ON s.id = e.session_id\nWHERE e.account_id = 8812 AND e.created_at >= '2026-11-01';\n\nNested Loop  (cost=1.13..17.19 rows=1 width=48) (actual time=0.412..37882.115 rows=482113 loops=1)\n  Buffers: shared hit=1204331 read=688102\n  ->  Index Scan using events_account_created_idx on events e  (cost=0.57..8.59 rows=1 width=40) (actual time=0.031..1290.774 rows=482113 loops=1)\n        Index Cond: ((account_id = 8812) AND (created_at >= '2026-11-01'))\n  ->  Index Scan using sessions_pkey on sessions s  (cost=0.56..8.58 rows=1 width=16) (actual time=0.075..0.076 rows=1 loops=482113)\n        Index Cond: (id = e.session_id)\nExecution Time: 37941.552 ms\n```\n\n```\nSELECT n_live_tup, n_mod_since_analyze, last_autoanalyze FROM pg_stat_user_tables WHERE relname = 'events';\n n_live_tup  | n_mod_since_analyze | last_autoanalyze\n-------------+---------------------+------------------------\n 930112004   |            30112004 | 2026-10-28 03:12:44+00\n```\nautovacuum_analyze_scale_factor = 0.1 (default).",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Spots the misestimate: the planner expected 1 row from events but got 482,113, so it chose a nested loop that ran 482k index probes into sessions (about 0.076 ms × 482k ≈ 37 s)",
+          "Explains why the stats are stale: 30M changed rows is about 3% of 930M, below the 10% autoanalyze threshold (about 93M), so the table has not been analyzed since before the tenant existed and account 8812 is not in the statistics",
+          "Confirms by checking `pg_stats` for `account_id` (8812 absent from the most-common-values list) and by comparing estimated and actual rows node by node",
+          "Immediate fix: run `ANALYZE events` (sampled, and its lock does not block reads or writes), then re-run EXPLAIN to see a hash or merge join and a sane estimate",
+          "Longer term: per-table analyze thresholds for very large tables, ANALYZE as a step in bulk-load and migration runbooks, a higher statistics target on skewed columns like `account_id`, and plan-regression detection (pg_stat_statements, auto_explain)"
+        ],
+        "redFlags": [
+          "Adds another index (the right index is already used)",
+          "Disables nested loops globally (`enable_nestloop = off`)",
+          "Runs VACUUM FULL or restarts the database",
+          "Blames the hardware or the buffer cache without reading the estimates"
+        ],
+        "exemplar": "The plan's estimates are wrong. The planner thought account 8812 had about 1 row since Nov 1, so a nested loop into `sessions` looked cheap. It actually returned 482k rows, and the inner index scan ran 482k times at about 0.076 ms each: 37 s. The outer scan alone took 1.3 s.\n\nWhy: the 30M-row import is only about 3% of a 930M-row table. Autoanalyze waits for 10% (93M) changed rows, so the last stats are from Oct 28, before account 8812 existed. To the planner it is a rare value. I'd confirm with `pg_stats` (8812 missing from `most_common_vals`) and the gap between estimated and actual rows in the plan.\n\nNow: `ANALYZE events;` reads a sample and takes only a lock that coexists with reads and writes. Then re-run EXPLAIN and expect a hash join and a realistic row count. Longer term: lower `autovacuum_analyze_scale_factor` (or set a fixed threshold) for this table, make ANALYZE a step in every bulk import, raise the statistics target on `account_id` because tenants are very skewed, and alert on plan regressions using pg_stat_statements and auto_explain."
+      },
+      "explanation": "Most sudden query regressions with no code change are plan changes, and most bad plans start with a bad row estimate. Read estimated against actual rows first; here the gap is 1 against 482k, and the stats age and the autoanalyze threshold explain why. ANALYZE fixes it now; analyze steps in bulk loads and tuned thresholds keep it fixed.\n\n**Takeaway:** when a query plan goes bad, compare estimated and actual rows before adding indexes or hints; stale statistics after bulk loads are the usual cause.",
+      "references": [
+        "PostgreSQL documentation: Routine Vacuuming, Updating Planner Statistics"
+      ],
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "dbgs-intermittent-failure-sequence-01",
+      "domain": "debugging",
+      "concepts": [
+        "production-debugging",
+        "heisenbugs"
+      ],
+      "skill": "lead",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Working an intermittent production failure",
+      "prompt": "Since Tuesday, about 0.5% of checkout requests fail with a generic 500. There is no obvious pattern, and the on-call engineer has started reading random stack traces. Put a sound debugging sequence in order.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        {
+          "id": "1",
+          "text": "Assess customer impact and mitigate first if it warrants it (flag off or roll back), with a comms cadence"
+        },
+        {
+          "id": "2",
+          "text": "Pin the failure down precisely: exact error signature, start time, and a query that counts it"
+        },
+        {
+          "id": "3",
+          "text": "Slice the failures by host, zone, version, endpoint, tenant and payload to find what is overrepresented"
+        },
+        {
+          "id": "4",
+          "text": "Correlate the start time and the overrepresented slice with deploys, config, flag and infrastructure changes"
+        },
+        {
+          "id": "5",
+          "text": "Form a falsifiable hypothesis and test it, ideally by triggering the failure on purpose"
+        },
+        {
+          "id": "6",
+          "text": "Ship the fix and verify the failure count drops to zero against baseline over a representative window"
+        },
+        {
+          "id": "7",
+          "text": "Add a regression test and an alert on the signature, and write up the cause"
+        }
+      ],
+      "explanation": "Mitigation comes first because users are paying for the bug while you debug. Then turn \"0.5% of 500s\" into a precise, countable signature: without a counter you can't slice, and you can't prove a fix later. Slicing finds the dimension where failures concentrate (one zone, one version, one tenant), which turns a vague problem into a narrow one, and correlating that slice's start time with changes usually suggests the cause. A hypothesis is only confirmed when you can make the failure happen on purpose or make it stop. For an intermittent bug, verified means the counter stays at zero for a window long enough that the old rate would have produced failures. Reading random stack traces before defining and slicing the signature is the classic time sink.\n\n**Takeaway:** for intermittent failures, define a countable signature first; it drives slicing, hypothesis testing and proof of the fix.",
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "dbgs-memory-leak-sequence-01",
+      "domain": "debugging",
+      "concepts": [
+        "memory-leaks"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Chasing a slow memory leak to its source",
+      "prompt": "A JVM service is OOM-killed about every two days. Put the investigation steps in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        {
+          "id": "1",
+          "text": "Confirm it is a leak: memory after full GC (the live set) climbs steadily, not just peak heap usage"
+        },
+        {
+          "id": "2",
+          "text": "Locate it: compare process RSS with heap used to tell a heap leak from native or off-heap growth"
+        },
+        {
+          "id": "3",
+          "text": "Take a heap dump early in the pod's life, then another from the same pod after significant growth"
+        },
+        {
+          "id": "4",
+          "text": "Diff the dumps for the types whose retained size grew, and follow their retainer path to a GC root"
+        },
+        {
+          "id": "5",
+          "text": "Map the retainer to code (an unbounded cache, listener list or map), form the hypothesis and fix it"
+        },
+        {
+          "id": "6",
+          "text": "Verify with a canary or soak test: live set stays flat over a window longer than the old OOM interval"
+        }
+      ],
+      "explanation": "First prove it's a leak: a high heap that drops after full GC is a sizing question, while a rising post-GC floor is a leak. Then decide where it is, because a heap dump is useless for native growth (thread stacks, direct buffers, JNI); RSS rising while heap stays flat calls for native memory tracking instead. Two dumps from the same process, spaced apart, let you diff growth rather than guess from one snapshot, and the retainer path to a GC root shows which reference keeps the objects alive. Verification has to run longer than the old failure interval, or \"no OOM yet\" means nothing.\n\n**Takeaway:** for a leak, diff two snapshots and follow the retainer chain; one snapshot shows what is big, not what is growing.",
+      "tags": [
+        "on-the-job"
+      ]
+    }
+  ]
+}

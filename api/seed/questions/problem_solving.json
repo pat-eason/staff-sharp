@@ -1,0 +1,739 @@
+{
+  "file": "problem_solving",
+  "questions": [
+    {
+      "id": "ps-event-storage-3yr-01",
+      "domain": "problem_solving",
+      "concepts": ["back-of-envelope"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Raw disk for three years of audit events",
+      "prompt": "Finance wants every audit event kept for 3 years before you commit to a storage budget. Estimate the total disk you need to provision, in decimal terabytes.\n\nAssumptions:\n- 20,000 events per second, flat around the clock\n- 500 bytes per event before compression\n- Compression reduces size 4x\n- Replication factor 3\n- 365-day years; ignore indexes, headroom and growth",
+      "language": null,
+      "estSeconds": 120,
+      "numeric": { "answer": 710, "unit": "TB", "fullCreditRatio": 1.5, "zeroCreditRatio": 4 },
+      "explanation": "- Ingest: 20,000 × 500 B = 10 MB/s\n- Per day: 10 MB/s × 86,400 s = 864 GB/day\n- Per year: 864 GB × 365 ≈ 315 TB\n- Three years raw: ≈ 946 TB\n- After 4x compression: ≈ 237 TB\n- After 3x replication: ≈ **710 TB**\n\nThe common slips are forgetting replication (237 TB, a 3x miss) or applying it before compression and then dividing twice. Compression and replication multiply, so order does not matter as long as each is applied exactly once.\n\nTakeaway: anchor on bytes per second, convert with 86,400 s/day and ~31.5M s/year, then apply every multiplier (compression, replication, headroom) explicitly and once.",
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "ps-video-origin-egress-01",
+      "domain": "problem_solving",
+      "concepts": ["back-of-envelope"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Origin egress for a live sports stream",
+      "prompt": "You are sizing origin egress for a live match. Estimate the peak bandwidth the origin must serve to the CDN, in Gbps.\n\nAssumptions:\n- 200,000 concurrent viewers at peak\n- Adaptive bitrate mix: 40% watch at 8 Mbps, 40% at 4 Mbps, 20% at 1.5 Mbps\n- The CDN serves 95% of bytes from its edge caches; the remaining 5% of bytes come from origin\n- Ignore protocol overhead",
+      "language": null,
+      "estSeconds": 120,
+      "numeric": { "answer": 51, "unit": "Gbps", "fullCreditRatio": 1.4, "zeroCreditRatio": 4 },
+      "explanation": "- Weighted average bitrate: 0.4 × 8 + 0.4 × 4 + 0.2 × 1.5 = 3.2 + 1.6 + 0.3 = 5.1 Mbps\n- Total viewer egress: 200,000 × 5.1 Mbps = 1,020,000 Mbps ≈ 1,020 Gbps (about 1 Tbps)\n- Origin share: 5% × 1,020 Gbps ≈ **51 Gbps**\n\nThe tempting mistake is to size origin for the full 1 Tbps, which is a 20x overbuy, or to use the top rung (8 Mbps) for everyone, which overstates by about 1.6x. The CDN byte hit ratio is the biggest lever: dropping from 95% to 90% doubles origin egress to about 102 Gbps, which is why origin shielding and long segment TTLs matter for live events.\n\nTakeaway: weight by the real bitrate mix, then let the cache hit ratio carry most of the sizing, and stress-test what a few points of hit ratio do to the origin.",
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "ps-servers-for-qps-az-01",
+      "domain": "problem_solving",
+      "concepts": ["back-of-envelope", "modeling"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Fleet size that survives losing an availability zone",
+      "prompt": "How many servers do you need in total?\n\nAssumptions:\n- Peak load: 120,000 requests per second\n- Each request costs 8 ms of CPU time on one core (CPU-bound, no blocking)\n- Each server has 16 cores\n- Run at no more than 60% CPU at peak\n- Servers are split evenly across 3 availability zones, and the fleet must still meet the 60% target at peak after losing any one zone",
+      "language": null,
+      "estSeconds": 150,
+      "numeric": { "answer": 150, "unit": "servers", "fullCreditRatio": 1.2, "zeroCreditRatio": 2 },
+      "explanation": "- One core at 100%: 1,000 ms / 8 ms = 125 req/s\n- At the 60% target: 75 req/s per core\n- Per server: 16 × 75 = 1,200 req/s\n- Servers needed to carry peak: 120,000 / 1,200 = 100\n- Survive one of three zones: the remaining two zones (2/3 of the fleet) must hold 100 servers, so total = 100 × 3/2 = **150**\n\nAnswering 100 forgets the zone failure; answering 133 (adding one zone's worth, 100 / 3, on top) is a common slip. The correct framing is N = needed × zones / (zones − 1). The same arithmetic explains why 3-zone deployments are cheaper than 2-zone ones for the same resilience: 2 zones require 2x the needed capacity, 3 zones only 1.5x.\n\nTakeaway: size for the degraded state you promise to survive, not the healthy one.",
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "ps-littles-law-db-pool-01",
+      "domain": "problem_solving",
+      "concepts": ["queueing-theory"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 1,
+      "title": "How many DB connections are actually in use",
+      "prompt": "A service handles 4,000 requests per second. Each request checks out one database connection and holds it for 25 ms on average. The service runs 20 pods, each with a pool of max 10 connections (200 total).\n\nOn average, how many connections are checked out across the whole fleet at any moment?",
+      "language": null,
+      "estSeconds": 60,
+      "numeric": { "answer": 100, "unit": "connections", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "Little's law: L = λ × W.\n\n- λ = 4,000 req/s, W = 0.025 s\n- L = 4,000 × 0.025 = **100 connections** in use on average\n\nThat is 5 per pod against a pool of 10, so the pool is 50% utilized on average. Because arrivals are bursty and hold times have a tail, the pool will saturate well before average utilization reaches 100%: if a slow query pushes hold time to 50 ms, average demand becomes 200 and every pod queues.\n\nTakeaway: Little's law turns throughput and latency into concurrency, which is the number every pool, semaphore and thread limit is really sized against.",
+      "tags": ["classic"]
+    },
+    {
+      "id": "ps-mm1-latency-at-90-01",
+      "domain": "problem_solving",
+      "concepts": ["queueing-theory"],
+      "skill": "analyze",
+      "type": "numeric",
+      "difficulty": 4,
+      "title": "Mean latency of a single worker at 90% utilization",
+      "prompt": "A single-threaded signing service behaves like an M/M/1 queue: Poisson arrivals, exponentially distributed service time with a mean of 4 ms, one worker, FIFO.\n\nAt 225 requests per second, what is the mean time a request spends in the system (waiting plus service), in milliseconds?",
+      "language": null,
+      "estSeconds": 120,
+      "numeric": { "answer": 40, "unit": "ms", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "- Capacity μ = 1 / 4 ms = 250 req/s\n- Utilization ρ = λ / μ = 225 / 250 = 0.9\n- M/M/1 mean time in system: W = S / (1 − ρ) = 4 ms / 0.1 = **40 ms**\n\nAt 200 req/s (ρ = 0.8) the same service averages 20 ms; at 237.5 req/s (ρ = 0.95) it averages 80 ms. Latency doubles for each halving of the idle fraction, which is why a box that looks fine at 80% CPU falls over at 95%. The tempting answer, 4 ms, treats utilization as free until it hits 100%.\n\nTakeaway: queueing delay grows as 1 / (1 − ρ), so latency-sensitive single servers need real headroom, not just enough capacity.",
+      "references": ["Harchol-Balter, Performance Modeling and Design of Computer Systems (2013), Chapter 13 (M/M/1)"],
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "ps-cache-hit-rate-db-load-01",
+      "domain": "problem_solving",
+      "concepts": ["back-of-envelope", "first-principles"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 1,
+      "title": "Database load when the cache hit rate dips",
+      "prompt": "A read path serves 50,000 reads per second through a cache. Every miss becomes exactly one database read. After a deploy changed the cache key format, the hit rate dropped from 98% to 94%.\n\nHow many reads per second now reach the database?",
+      "language": null,
+      "estSeconds": 60,
+      "numeric": { "answer": 3000, "unit": "reads/second", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "- Before: 50,000 × (1 − 0.98) = 1,000 reads/s\n- After: 50,000 × (1 − 0.94) = **3,000 reads/s**\n\nA 4-point drop in hit rate tripled database load, because what matters is the miss rate (2% → 6%), not the hit rate. Dashboards that show hit rate on a 0 to 100% axis make this look like a rounding error.\n\nTakeaway: reason about cache health in miss rate, because downstream load scales with misses and small hit-rate changes near 100% are large multipliers.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "ps-fanout-tail-latency-01",
+      "domain": "problem_solving",
+      "concepts": ["probability"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "How often a 100-way fan-out page is slow",
+      "prompt": "A search page fans out to 100 leaf shards in parallel and waits for all of them. Each leaf independently takes longer than 1 second on 1% of calls (its p99 is 1 s).\n\nWhat percentage of page loads take longer than 1 second?",
+      "language": null,
+      "estSeconds": 75,
+      "numeric": { "answer": 63.4, "unit": "percent", "fullCreditRatio": 1.2, "zeroCreditRatio": 2.5 },
+      "explanation": "The page is fast only if all 100 leaves are fast:\n\n- P(all fast) = 0.99^100 ≈ e^(−100 × 0.01005) ≈ 0.366\n- P(page slow) = 1 − 0.366 ≈ **63.4%**\n\nThe tempting answer, 1%, assumes the page inherits a single leaf's tail. With fan-out, the leaf p99 becomes the page's typical case. To get a page p99 of 1 s you would need each leaf to be slow on only about 0.01% of calls (leaf p99.99), or use hedged requests or partial results.\n\nTakeaway: in fan-out systems the parent's latency is driven by the leaves' far tail, so set leaf SLOs at p99.9 or beyond and design for partial answers.",
+      "references": ["Dean and Barroso, The Tail at Scale, Communications of the ACM (2013)"],
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "ps-id-collision-birthday-01",
+      "domain": "problem_solving",
+      "concepts": ["probability", "first-principles"],
+      "skill": "analyze",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Collision odds for 8-character random share links",
+      "prompt": "A PR proposes share-link IDs of 8 characters drawn uniformly at random from base62 (`[A-Za-z0-9]`), with no collision check on insert. The product expects 10 million links in total.\n\nWhat is the probability, in percent, that at least two links ever get the same ID?",
+      "context": "Useful values: 62^4 = 14,776,336 and 62^8 ≈ 2.18 × 10^14.",
+      "language": null,
+      "estSeconds": 150,
+      "numeric": { "answer": 20.5, "unit": "percent", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "Birthday bound: with n items drawn from N values, the expected number of colliding pairs is about n² / (2N), and P(at least one) ≈ 1 − e^(−n² / 2N).\n\n- N = 62^8 ≈ 2.18 × 10^14\n- n² / 2 = (10^7)² / 2 = 5 × 10^13\n- Expected pairs λ ≈ 5 × 10^13 / 2.18 × 10^14 ≈ 0.229\n- P(collision) ≈ 1 − e^(−0.229) ≈ **20.5%**\n\nIntuition says 10M out of 218 trillion is safe (a 0.005% fill), but collisions grow with n², not n. Fixes: add a uniqueness constraint and retry on conflict, or use more entropy (11 base62 chars ≈ 65 bits gives about 1 in a million at this volume).\n\nTakeaway: random IDs collide around √N, so either size the ID space against n² or enforce uniqueness at write time.",
+      "tags": ["interview", "gotcha"]
+    },
+    {
+      "id": "ps-kafka-backlog-drain-01",
+      "domain": "problem_solving",
+      "concepts": ["queueing-theory", "back-of-envelope"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "When will the consumer backlog clear",
+      "prompt": "A consumer group fell behind during an outage. You have fixed the bug and scaled consumers so the group can now process up to 12,000 messages per second. Producers keep publishing at a steady 9,000 messages per second. Current lag is 18 million messages.\n\nIncident command asks when lag will reach zero. How many minutes?",
+      "language": null,
+      "estSeconds": 75,
+      "numeric": { "answer": 100, "unit": "minutes", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "The backlog only shrinks at the surplus rate:\n\n- Net drain = 12,000 − 9,000 = 3,000 msg/s\n- Time = 18,000,000 / 3,000 = 6,000 s = **100 minutes**\n\nDividing by the full 12,000/s gives 25 minutes, a 4x under-promise to incident command. The same arithmetic shows why a little extra capacity matters so much during recovery: at 15,000/s the drain time drops to 50 minutes.\n\nTakeaway: recovery time is backlog divided by surplus capacity, so always subtract the arrival rate before you promise a time.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "ps-quorum-availability-01",
+      "domain": "problem_solving",
+      "concepts": ["probability"],
+      "skill": "analyze",
+      "type": "numeric",
+      "difficulty": 4,
+      "title": "Monthly downtime of a 2-of-3 quorum",
+      "prompt": "A config store runs 3 replicas and needs a majority (2 of 3) up to serve. Each replica is independently up 99% of the time.\n\nHow many minutes per 30-day month should you expect the store to be unavailable?",
+      "language": null,
+      "estSeconds": 150,
+      "numeric": { "answer": 12.9, "unit": "minutes/month", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "The store is down when 2 or 3 replicas are down (q = 0.01):\n\n- P(exactly 2 down) = 3 × q² × (1 − q) = 3 × 0.0001 × 0.99 = 0.000297\n- P(all 3 down) = q³ = 0.000001\n- P(unavailable) = 0.000298, so availability ≈ 99.970%\n- Minutes: 0.000298 × 43,200 min ≈ **12.9 minutes/month**\n\nEach replica alone would be down about 432 minutes a month, so the quorum is about 33x better. The tempting answers are q³ (only 0.04 min, as if any one replica were enough) or 3q (about 1,300 min, as if any failure took the store down).\n\nTakeaway: independence math is optimistic: correlated failures (a shared deploy, zone or bad config) usually dominate, so spread replicas across failure domains before trusting the formula.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "ps-lru-structure-choice-01",
+      "domain": "problem_solving",
+      "concepts": ["data-structures"],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Data structure behind an O(1) LRU cache",
+      "prompt": "You need an in-process cache with a fixed capacity where `get`, `put` and evicting the least recently used entry are all O(1). Which structure gives you that?",
+      "language": null,
+      "estSeconds": 45,
+      "options": [
+        { "id": "a", "text": "A min-heap keyed by last-access time, plus a hash map from key to heap entry" },
+        { "id": "b", "text": "A hash map from key to node in a doubly linked list kept in recency order" },
+        { "id": "c", "text": "A balanced binary search tree keyed by last-access time, plus a hash map" },
+        { "id": "d", "text": "A hash map plus an array of keys kept sorted by last-access time" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Every access changes a key's priority, which is an O(log n) sift in a heap.",
+        "b": "The map finds the node in O(1); unlinking and moving it to the head, or dropping the tail, are O(1) pointer updates.",
+        "c": "Correct behavior, but every access is an O(log n) delete and reinsert.",
+        "d": "Moving a key to the end of an array shifts O(n) elements."
+      },
+      "explanation": "A hash map gives O(1) lookup of the node; a doubly linked list gives O(1) move-to-front and O(1) eviction from the tail, because you hold a direct pointer and never search. Heaps and trees are the right tools when priority is an arbitrary value, but recency only ever moves an item to one end, so you do not need ordering by value at all.\n\nTakeaway: match the structure to the only operations you need; recency updates always go to one end, which a linked list does in constant time.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "ps-top-k-slow-queries-01",
+      "domain": "problem_solving",
+      "concepts": ["complexity"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Top 100 slowest queries from 2 billion log rows",
+      "prompt": "A nightly job streams 2 billion query-log rows from object storage and must output the 100 slowest queries. It runs on one machine with 4 GB of memory, and the rows do not fit in memory. Which approach fits best?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "External merge sort by duration descending, then read the first 100 rows" },
+        { "id": "b", "text": "Keep a min-heap of the 100 slowest seen so far; replace the root when a slower row arrives" },
+        { "id": "c", "text": "Build a max-heap from all rows, then pop 100 times" },
+        { "id": "d", "text": "Load rows into an array and run quickselect for the 100th largest" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Correct but does O(n log n) work and writes the whole dataset to disk to keep 100 rows.",
+        "b": "One pass, O(n log k) time with k = 100, and O(k) memory.",
+        "c": "Heapify is O(n), but it needs all 2 billion rows in memory.",
+        "d": "Average O(n) time, but again needs every row in memory at once."
+      },
+      "explanation": "A bounded min-heap of size k holds the current top k; its root is the smallest of them, so each new row is compared against the root in O(1) and replaces it in O(log k) only when it is slower. With k = 100, log k ≈ 7, so the job is effectively linear in n with constant memory, and it parallelizes by merging per-partition heaps. The tempting answers are all correct algorithms that ignore the memory constraint or do far more work than needed.\n\nTakeaway: when k is much smaller than n, a bounded heap turns a sort problem into a single streaming pass.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "ps-bloom-filter-sizing-01",
+      "domain": "problem_solving",
+      "concepts": ["probability", "data-structures"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Memory for a crawler's seen-URL Bloom filter",
+      "prompt": "A web crawler tracks 1 billion seen URLs. You propose a Bloom filter with a 1% false positive rate and the optimal number of hash functions, so a URL that was never crawled is wrongly skipped 1% of the time. Roughly how much memory does the filter need?",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "About 120 MB" },
+        { "id": "b", "text": "About 1.2 GB" },
+        { "id": "c", "text": "About 4 GB" },
+        { "id": "d", "text": "About 32 GB" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "That is about 1 bit per URL, which gives a false positive rate near 60%.",
+        "b": "About 9.6 bits per element at 1% with k ≈ 7, so 9.6 Gbit ≈ 1.2 GB.",
+        "c": "That is a 32-bit hash per URL in a hash set: more memory and still collision-prone.",
+        "d": "That is storing a 32-byte SHA-256 digest per URL, the exact-set baseline the filter replaces."
+      },
+      "explanation": "For an optimal Bloom filter, bits per element m/n = −ln(p) / (ln 2)² and k = (m/n) × ln 2.\n\n- p = 0.01: −ln(0.01) = 4.605; (ln 2)² = 0.480; m/n ≈ 9.6 bits\n- k ≈ 9.6 × 0.693 ≈ 7 hash functions\n- 1 × 10^9 × 9.6 bits = 9.6 × 10^9 bits ≈ **1.2 GB**\n\nEach additional 10x reduction in false positives costs about 4.8 more bits per element (0.1% needs about 14.4 bits). The filter never gives false negatives, so the crawler never re-crawls a URL it has seen, but 1% of new URLs are silently skipped, which may or may not be acceptable for coverage.\n\nTakeaway: remember the rule of thumb of about 10 bits per element for 1%, and decide explicitly which side of the error (skip versus re-fetch) your product can tolerate.",
+      "references": ["Broder and Mitzenmacher, Network Applications of Bloom Filters: A Survey, Internet Mathematics (2004)"],
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "ps-hll-weekly-uniques-01",
+      "domain": "problem_solving",
+      "concepts": ["data-structures", "tradeoff-analysis"],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Unique users for any date range at warehouse scale",
+      "prompt": "An analytics table stores exact daily unique users per country, computed nightly with `COUNT(DISTINCT user_id)` over about 1 billion events a day. Product now wants unique users for any date range (week, month, custom) per country, answered interactively, and is fine with about 1% error. What should you store?",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Keep the exact daily counts and sum them over the requested range" },
+        { "id": "b", "text": "A HyperLogLog sketch per country per day, merged (unioned) over the requested range" },
+        { "id": "c", "text": "A count-min sketch of user IDs per country per day, summed over the range" },
+        { "id": "d", "text": "Nothing new: run exact `COUNT(DISTINCT)` over raw events for each request on a larger warehouse" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Users active on several days are counted once per day, so weekly uniques are overstated.",
+        "b": "HLL sketches are a few KB each, union losslessly, and estimate distinct counts with about 1% error at 16K registers.",
+        "c": "Count-min estimates how often each item appears; it does not estimate how many distinct items there are.",
+        "d": "Exact, but scanning 30 billion events per interactive query is slow and expensive."
+      },
+      "explanation": "Distinct counts are not additive, so daily totals cannot be summed. HyperLogLog stores registers whose union is the element-wise max, which means a 30-day sketch equals the merge of thirty daily sketches with no loss beyond the base error. At 2^14 registers (about 12 KB in the dense form) the standard error is about 1.04 / √16384 ≈ 0.8%. Storage is tiny (countries × days × 12 KB) and a range query merges a few dozen sketches. HLL does not answer intersections (users in both A and B) well; inclusion-exclusion on sketches amplifies error.\n\nTakeaway: when a metric is not additive, store a mergeable sketch at the finest grain and compose it at query time.",
+      "references": ["Flajolet, Fusy, Gandouet and Meunier, HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm (AofA 2007)"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "ps-mod-n-rehash-fraction-01",
+      "domain": "problem_solving",
+      "concepts": ["first-principles"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Keys that move when a cache cluster grows from 10 to 11",
+      "prompt": "A memcached tier of 10 nodes routes keys with `hash(key) % N`. Ops adds an 11th node during a traffic peak and the database falls over a minute later. Roughly what fraction of keys mapped to a different node after the change?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "About 9%, the share the new node takes over" },
+        { "id": "b", "text": "About 50%, since half the keys land on a different side of the ring" },
+        { "id": "c", "text": "About 91%, nearly every key" },
+        { "id": "d", "text": "Exactly 100%, every key moves" }
+      ],
+      "answer": ["c"],
+      "optionNotes": {
+        "a": "That is what consistent hashing would move, not modulo hashing.",
+        "b": "There is no ring here; modulo routing has no notion of sides.",
+        "c": "A key stays only when h mod 10 equals h mod 11, which holds for 10 of every 110 hash values.",
+        "d": "Close, but keys whose hash mod 110 is below 10 keep their node."
+      },
+      "explanation": "Over any 110 consecutive hash values (the LCM of 10 and 11), h mod 10 = h mod 11 only for h = 0..9, so 10/110 = 1/11 of keys stay and **10/11 ≈ 91%** move. Effectively the whole cache goes cold at once, and every miss falls through to the database at peak. Consistent hashing (or rendezvous hashing) moves only about 1/11 ≈ 9% of keys, the share the new node should own.\n\nTakeaway: modulo routing turns any membership change into a full cache flush, so use consistent or rendezvous hashing for anything whose capacity changes in production.",
+      "references": ["Karger et al., Consistent Hashing and Random Trees (STOC 1997)"],
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "ps-union-find-identity-01",
+      "domain": "problem_solving",
+      "concepts": ["graphs"],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Grouping customer records that share any identifier",
+      "prompt": "You have 50 million customer records. Two records belong to the same person if they share an email, a phone number or a device ID, and the relation is transitive (A shares email with B, B shares phone with C, so A, B and C are one person). New records stream in all day and must be assigned to a person immediately. Which approach fits best?",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Union-find with path compression and union by rank, plus a map from each identifier to a record" },
+        { "id": "b", "text": "Store records as a graph and run a BFS from each new record to find its connected component" },
+        { "id": "c", "text": "Sort records by email and merge neighbors, then sort by phone and merge neighbors, once each" },
+        { "id": "d", "text": "Compare each new record against all existing records on all three identifiers" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Each new record does a few find and union calls, near O(1) amortized (inverse Ackermann).",
+        "b": "Correct components, but each BFS can touch a whole large component; cost grows with component size.",
+        "c": "A single pass per attribute misses chains that alternate attributes; you would need to iterate to a fixpoint.",
+        "d": "O(n) per insert, which is 50 million comparisons per new record."
+      },
+      "explanation": "This is connected components under incremental edge insertion, which is exactly what union-find (disjoint set union) is for. For a new record, look up each of its identifiers; for any already seen, union the new record with that identifier's existing record, then register the identifiers. With path compression and union by rank, operations run in amortized O(α(n)), effectively constant. The limitation to name in a design review: union-find does not support splitting, so un-merging a bad link (a shared family phone) needs a rebuild or a different model.\n\nTakeaway: when a relation is transitive and edges only get added, reach for union-find; the hard design work is how you handle the rare split.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "ps-sweep-line-tie-break-01",
+      "domain": "problem_solving",
+      "concepts": ["algorithms"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Peak concurrent sessions overcounted by the sweep",
+      "prompt": "Billing charges by peak concurrent sessions. Sessions are half-open intervals `[start, end)` in whole seconds. The job turns each session into a `+1` event at `start` and a `-1` event at `end`, sorts events by timestamp with a stable sort (starts were emitted first), and tracks the running maximum. A customer whose clients reconnect every hour on the hour disputes their bill. What change makes the computation correct?",
+      "context": "```\ncustomer=acme  computed_peak=19,840  licensed_seats=10,000\nsession sample: [09:00:00, 10:00:00) [10:00:00, 11:00:00) [10:00:00, 11:00:00) ...\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "At equal timestamps, apply `-1` (end) events before `+1` (start) events" },
+        { "id": "b", "text": "At equal timestamps, apply `+1` events before `-1` events so new sessions are never missed" },
+        { "id": "c", "text": "Replace the sweep with a balanced tree of active sessions keyed by end time" },
+        { "id": "d", "text": "Bucket events into 1-second bins and take the largest count of starts in any bin" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "With half-open intervals, a session ending at t is no longer active at t, so ends must apply first.",
+        "b": "This is what the job already does, and it double-counts every client at the reconnect instant.",
+        "c": "Same O(n log n) work, and it reproduces the bug unless the tree uses the same tie-break rule.",
+        "d": "Counts arrivals per second, not concurrency; it ignores sessions that started earlier."
+      },
+      "explanation": "At 10:00:00 each client has one session ending and one starting. Applying starts first momentarily counts both, so the peak roughly doubles (about 19,840 against 10,000 real seats). For `[start, end)` semantics, an interval ending at t and one starting at t do not overlap, so sort by (timestamp, delta) with `-1` before `+1`. For closed intervals `[start, end]` the opposite rule is correct. The algorithm (sort plus sweep, O(n log n)) was right; the tie-break encodes the interval semantics and is where the bug lives.\n\nTakeaway: in sweep-line algorithms, the tie-break at equal coordinates is part of the specification, so derive it from whether your intervals are open or closed.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "ps-sliding-window-brute-force-01",
+      "domain": "problem_solving",
+      "concepts": ["algorithms", "complexity"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Detecting login bursts that straddle bucket boundaries",
+      "prompt": "Security wants an alert when any user has more than 100 failed logins within any 5-minute window. The current job counts failures per user in fixed buckets (12:00 to 12:05, 12:05 to 12:10, ...) and alerts when a bucket exceeds 100. A red-team test with 180 failures between 12:03 and 12:07 raised no alert. You process a time-ordered event stream. What should replace the buckets?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Per user, keep a queue of failure timestamps; drop those older than 5 minutes on each event and alert when more than 100 remain" },
+        { "id": "b", "text": "Shrink buckets to 1 minute and alert when any bucket exceeds 20 failures" },
+        { "id": "c", "text": "Keep 5-minute buckets but lower the threshold to 50 so straddling bursts are caught" },
+        { "id": "d", "text": "On each failure, query the last 5 minutes of failures for that user from the database" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "An exact sliding window: each timestamp is added and removed once, so O(1) amortized per event.",
+        "b": "Changes the rule: 25 failures in one minute alerts, and 101 failures split across six partial buckets (10, 20, 20, 20, 20, 11) never does.",
+        "c": "Catches every real burst but also alerts on users with 51 to 100 failures, a flood of false positives.",
+        "d": "Exact, but issues a range query per event, which is expensive at attack volumes."
+      },
+      "explanation": "Fixed buckets can split a burst: 180 failures across a boundary can land as 90 + 90 and never exceed 100. A sliding window anchored at each event checks exactly the rule as written. Each timestamp enters and leaves the queue once, so cost is O(1) amortized and memory is bounded by about 101 timestamps per active user (you can stop storing once you alert). If memory is tight, a sliding-window counter (weighted previous bucket plus current) is a good approximation, but it is approximate.\n\nTakeaway: when the requirement says any window, implement a sliding window; fixed buckets can miss bursts that straddle a boundary.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "ps-offset-pagination-cost-01",
+      "domain": "problem_solving",
+      "concepts": ["complexity"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Deep pages get slower even with the right index",
+      "prompt": "`GET /orders?page=N` runs `SELECT ... ORDER BY created_at, id LIMIT 50 OFFSET 50*N`. There is a B-tree index on `(created_at, id)` and the plan uses it. Page 1 takes 3 ms; page 20,000 takes 900 ms, and a partner's export job walks every page. What is the cause and the fix?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "OFFSET still walks and discards every skipped row, so cost is O(offset + limit); switch to keyset pagination on `(created_at, id)`" },
+        { "id": "b", "text": "The index is not covering, so each skipped row triggers a heap fetch; add the selected columns to the index" },
+        { "id": "c", "text": "The database re-sorts the full result for every page; raise `work_mem` so the sort stays in memory" },
+        { "id": "d", "text": "Statistics are stale for deep pages, so the planner misestimates; run `ANALYZE` on the table" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "The index finds the start of the order quickly, but OFFSET still steps through 1 million entries to skip them.",
+        "b": "A covering index makes each skipped row cheaper but the walk is still linear in the offset.",
+        "c": "The plan uses the index for ordering, so there is no sort to spill.",
+        "d": "The plan is already the right one; the work itself is linear."
+      },
+      "explanation": "With OFFSET, the database produces rows in index order and throws away the first 50 × N, so page N costs O(N) and walking all pages costs O(N²). Keyset (seek) pagination remembers the last `(created_at, id)` returned and asks for `WHERE (created_at, id) > ($1, $2) ORDER BY created_at, id LIMIT 50`, which is an O(log n) index seek plus 50 rows for any page. It is also stable under concurrent inserts, which OFFSET is not. The tradeoff is no jumping to an arbitrary page number.\n\nTakeaway: an index makes finding the start cheap but not skipping, so expose cursors instead of page numbers for anything that can be walked deeply.",
+      "tags": ["on-the-job", "classic"]
+    },
+    {
+      "id": "ps-leaderboard-rank-structure-01",
+      "domain": "problem_solving",
+      "concepts": ["data-structures", "complexity"],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Live leaderboard with rank lookups",
+      "prompt": "A game has 20 million players and 50,000 score updates per second. The API must return the top 100, a given player's exact rank, and the 5 players above and below them, each in a few milliseconds. Which in-memory structure fits?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "A hash map from player to score plus a skip list or order-statistic tree that tracks subtree sizes" },
+        { "id": "b", "text": "A hash map from player to score; compute rank by counting players with a higher score" },
+        { "id": "c", "text": "A max-heap of all players by score, plus a hash map from player to heap index" },
+        { "id": "d", "text": "A sorted array of scores with binary search for rank" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "O(log n) update, rank and neighbor range; this is how Redis sorted sets work (skip list with span counts plus a dict).",
+        "b": "Updates are O(1) but each rank query scans 20 million entries.",
+        "c": "Top-1 is cheap, but exact rank and neighbors require walking the heap, which is O(n).",
+        "d": "Rank is O(log n), but each of the 50,000 updates per second shifts up to millions of elements."
+      },
+      "explanation": "You need ordered iteration (top 100, neighbors) and order statistics (rank of x), both under heavy updates. A balanced tree or skip list ordered by score, augmented with subtree sizes or span counts, answers rank in O(log n) by summing counts along the search path, and neighbors are a short walk from the node. A hash map from player to current score lets you find and remove the old entry before reinserting. At log₂(20M) ≈ 24 levels, 50,000 updates per second is easy on one core.\n\nTakeaway: when queries need both ordering and position, pick an ordered structure augmented with counts; heaps only know the extreme.",
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "ps-binary-search-hang-01",
+      "domain": "problem_solving",
+      "concepts": ["algorithms"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Segment index lookup that pins a CPU core",
+      "prompt": "A PR replaced a linear scan of a log segment's sparse index with this binary search. Since it shipped, most `GET /logs?since=` requests time out and the pods sit at 100% CPU. Requests without `since` (which pass target 0) are fine. Find the bug.",
+      "language": null,
+      "estSeconds": 150,
+      "code": {
+        "ts": "type IndexEntry = { ts: number; offset: number };\n\n// Returns the index of the first entry with ts >= target, or entries.length if none.\nexport function firstAtOrAfter(entries: IndexEntry[], target: number): number {\n  let lo = 0;\n  let hi = entries.length;\n  while (lo < hi) {\n    const mid = lo + Math.floor((hi - lo) / 2);\n    if (entries[mid].ts < target) {\n      lo = mid; //!issue:1\n    } else {\n      hi = mid;\n    }\n  }\n  return lo;\n}",
+        "go": "type IndexEntry struct {\n\tTs     int64\n\tOffset int64\n}\n\n// FirstAtOrAfter returns the index of the first entry with Ts >= target, or len(entries) if none.\nfunc FirstAtOrAfter(entries []IndexEntry, target int64) int {\n\tlo, hi := 0, len(entries)\n\tfor lo < hi {\n\t\tmid := lo + (hi-lo)/2\n\t\tif entries[mid].Ts < target {\n\t\t\tlo = mid //!issue:1\n\t\t} else {\n\t\t\thi = mid\n\t\t}\n\t}\n\treturn lo\n}",
+        "rust": "pub struct IndexEntry {\n    pub ts: u64,\n    pub offset: u64,\n}\n\n/// Returns the index of the first entry with ts >= target, or entries.len() if none.\npub fn first_at_or_after(entries: &[IndexEntry], target: u64) -> usize {\n    let mut lo = 0;\n    let mut hi = entries.len();\n    while lo < hi {\n        let mid = lo + (hi - lo) / 2;\n        if entries[mid].ts < target {\n            lo = mid; //!issue:1\n        } else {\n            hi = mid;\n        }\n    }\n    lo\n}",
+        "csharp": "public readonly record struct IndexEntry(long Ts, long Offset);\n\n// Returns the index of the first entry with Ts >= target, or entries.Count if none.\npublic static int FirstAtOrAfter(IReadOnlyList<IndexEntry> entries, long target)\n{\n    int lo = 0, hi = entries.Count;\n    while (lo < hi)\n    {\n        int mid = lo + (hi - lo) / 2;\n        if (entries[mid].Ts < target)\n        {\n            lo = mid; //!issue:1\n        }\n        else\n        {\n            hi = mid;\n        }\n    }\n    return lo;\n}",
+        "java": "public record IndexEntry(long ts, long offset) {}\n\n// Returns the index of the first entry with ts >= target, or entries.size() if none.\npublic static int firstAtOrAfter(List<IndexEntry> entries, long target) {\n    int lo = 0, hi = entries.size();\n    while (lo < hi) {\n        int mid = lo + (hi - lo) / 2;\n        if (entries.get(mid).ts() < target) {\n            lo = mid; //!issue:1\n        } else {\n            hi = mid;\n        }\n    }\n    return lo;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`lo = mid` does not shrink the range when `hi == lo + 1`, because `mid` rounds down to `lo`; the loop never terminates",
+          "fix": "Set `lo = mid + 1`: `entries[mid]` is known to be before the target, so it can be excluded. With the half-open invariant `[lo, hi)` every branch must strictly shrink the range."
+        }
+      ],
+      "explanation": "The search keeps the half-open range `[lo, hi)` and rounds `mid` down. When two candidates remain (`hi = lo + 1`), `mid == lo`; if that entry is before the target, `lo = mid` leaves the range unchanged and the loop spins forever. Once `lo` has moved even once, `entries[lo].ts < target` holds, so the hang hits every target greater than the first entry, which is why only `since`-less requests survive. The midpoint already avoids overflow, which is the other classic binary search bug. Fix with `lo = mid + 1`, and test the two-element and target-past-the-end cases.\n\nTakeaway: for any binary search, check that every branch strictly shrinks the range under the rounding you chose, and test ranges of size 0, 1 and 2.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "ps-lru-get-no-refresh-01",
+      "domain": "problem_solving",
+      "concepts": ["data-structures", "root-cause-analysis"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "LRU cache whose hit rate trails the simulation",
+      "prompt": "A per-worker LRU cache in front of a pricing service has a 61% hit rate in production. Replaying the same request trace through a reference LRU of the same capacity gives 88%. The hottest keys show up in the eviction log every few seconds. Find the bug.",
+      "context": "```\nevict key=price:sku-1001 age_s=4.2 hits_since_insert=3,912\nevict key=price:sku-2040 age_s=4.1 hits_since_insert=2,877\n```",
+      "language": null,
+      "estSeconds": 180,
+      "code": {
+        "ts": "// Per-worker cache; each worker owns one instance, so no locking.\nexport class LruCache<K, V> {\n  private readonly items = new Map<K, V>(); // Map iterates in insertion order\n\n  constructor(private readonly capacity: number) {}\n\n  get(key: K): V | undefined {\n    return this.items.get(key); //!issue:1\n  }\n\n  set(key: K, value: V): void {\n    if (this.items.has(key)) this.items.delete(key);\n    this.items.set(key, value);\n    if (this.items.size > this.capacity) {\n      const oldest = this.items.keys().next().value as K;\n      this.items.delete(oldest);\n    }\n  }\n}",
+        "go": "// LRU is owned by a single worker goroutine, so it does no locking.\ntype entry struct {\n\tkey   string\n\tvalue []byte\n}\n\ntype LRU struct {\n\tcap   int\n\tll    *list.List // front = most recently used\n\titems map[string]*list.Element\n}\n\nfunc (c *LRU) Get(key string) ([]byte, bool) {\n\tif el, ok := c.items[key]; ok {\n\t\treturn el.Value.(*entry).value, true //!issue:1\n\t}\n\treturn nil, false\n}\n\nfunc (c *LRU) Put(key string, value []byte) {\n\tif el, ok := c.items[key]; ok {\n\t\tel.Value.(*entry).value = value\n\t\tc.ll.MoveToFront(el)\n\t\treturn\n\t}\n\tc.items[key] = c.ll.PushFront(&entry{key, value})\n\tif c.ll.Len() > c.cap {\n\t\toldest := c.ll.Back()\n\t\tc.ll.Remove(oldest)\n\t\tdelete(c.items, oldest.Value.(*entry).key)\n\t}\n}",
+        "rust": "use std::collections::{HashMap, VecDeque};\nuse std::hash::Hash;\n\n/// Per-worker cache; each worker owns one, so no locking.\npub struct Lru<K, V> {\n    cap: usize,\n    map: HashMap<K, V>,\n    order: VecDeque<K>, // front = least recently used\n}\n\nimpl<K: Hash + Eq + Clone, V> Lru<K, V> {\n    pub fn get(&mut self, key: &K) -> Option<&V> {\n        self.map.get(key) //!issue:1\n    }\n\n    pub fn put(&mut self, key: K, value: V) {\n        if self.map.insert(key.clone(), value).is_some() {\n            self.order.retain(|k| k != &key);\n        }\n        self.order.push_back(key);\n        if self.map.len() > self.cap {\n            if let Some(old) = self.order.pop_front() {\n                self.map.remove(&old);\n            }\n        }\n    }\n}",
+        "csharp": "// Per-worker cache; each worker owns one instance, so no locking.\npublic sealed class LruCache<TKey, TValue> where TKey : notnull\n{\n    private readonly int _capacity;\n    private readonly Dictionary<TKey, LinkedListNode<(TKey Key, TValue Value)>> _map = new();\n    private readonly LinkedList<(TKey Key, TValue Value)> _list = new(); // First = most recent\n\n    public LruCache(int capacity) => _capacity = capacity;\n\n    public bool TryGet(TKey key, out TValue value)\n    {\n        if (_map.TryGetValue(key, out var node))\n        {\n            value = node.Value.Value; //!issue:1\n            return true;\n        }\n        value = default!;\n        return false;\n    }\n\n    public void Put(TKey key, TValue value)\n    {\n        if (_map.TryGetValue(key, out var existing)) _list.Remove(existing);\n        _map[key] = _list.AddFirst((key, value));\n        if (_map.Count > _capacity)\n        {\n            var last = _list.Last!;\n            _list.RemoveLast();\n            _map.Remove(last.Value.Key);\n        }\n    }\n}",
+        "java": "// Per-worker cache; each worker owns one instance, so no locking.\npublic final class LruCache<K, V> extends LinkedHashMap<K, V> {\n    private final int capacity;\n\n    public LruCache(int capacity) {\n        super(16, 0.75f, false); //!issue:1\n        this.capacity = capacity;\n    }\n\n    @Override\n    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {\n        return size() > capacity;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "A read never marks the entry as recently used, so eviction follows insertion order (FIFO) and the hottest keys are evicted on schedule",
+          "fix": "Refresh recency on every hit: re-insert the key at the most-recent end (TS: delete then set; Go: `MoveToFront`; Rust: move the key to the back of `order`; C#: move the node to `First`; Java: pass `accessOrder = true` to the `LinkedHashMap` constructor)."
+        }
+      ],
+      "explanation": "LRU means a read is a use. Here only writes move a key to the most-recent end, so a key read thousands of times still ages out as soon as `capacity` newer keys are inserted, which is exactly what the eviction log shows (thousands of hits, evicted after about 4 seconds). The structure is otherwise correct, which is why unit tests that only exercise `put` then `put` pass. In Java the third `LinkedHashMap` argument is `accessOrder`; `false` means insertion order. Add a test that reads an old key, inserts `capacity` new keys, and asserts the read key survives.\n\nTakeaway: when a cache underperforms its simulation on the same trace, test the policy itself (which entry is evicted next) rather than the data structure's mechanics.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "ps-topo-sort-silent-cycle-01",
+      "domain": "problem_solving",
+      "concepts": ["graphs"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Build orchestrator that skips packages in a cycle",
+      "prompt": "The monorepo build orchestrator uses this function to decide build order. Someone added a dependency from `billing-core` to `invoice-render`, which already depended on `billing-core`. CI went green, but neither package was built or tested, and the deploy shipped stale artifacts for both. Find the bug.",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "// Returns packages so each one comes after all of its dependencies.\n// deps maps each package to the packages it depends on; every package appears as a key.\nexport function buildOrder(deps: Map<string, string[]>): string[] {\n  const indegree = new Map<string, number>();\n  const dependents = new Map<string, string[]>();\n  for (const [pkg, ds] of deps) {\n    indegree.set(pkg, ds.length);\n    for (const d of ds) {\n      const list = dependents.get(d) ?? [];\n      list.push(pkg);\n      dependents.set(d, list);\n    }\n  }\n  const queue = [...indegree].filter(([, n]) => n === 0).map(([pkg]) => pkg);\n  const order: string[] = [];\n  for (let head = 0; head < queue.length; head++) {\n    const pkg = queue[head];\n    order.push(pkg);\n    for (const next of dependents.get(pkg) ?? []) {\n      const n = indegree.get(next)! - 1;\n      indegree.set(next, n);\n      if (n === 0) queue.push(next);\n    }\n  }\n  return order; //!issue:1\n}",
+        "go": "// BuildOrder returns packages so each one comes after all of its dependencies.\n// deps maps each package to the packages it depends on; every package appears as a key.\nfunc BuildOrder(deps map[string][]string) []string {\n\tindegree := make(map[string]int, len(deps))\n\tdependents := make(map[string][]string)\n\tfor pkg, ds := range deps {\n\t\tindegree[pkg] = len(ds)\n\t\tfor _, d := range ds {\n\t\t\tdependents[d] = append(dependents[d], pkg)\n\t\t}\n\t}\n\tvar queue []string\n\tfor pkg, n := range indegree {\n\t\tif n == 0 {\n\t\t\tqueue = append(queue, pkg)\n\t\t}\n\t}\n\torder := make([]string, 0, len(deps))\n\tfor len(queue) > 0 {\n\t\tpkg := queue[0]\n\t\tqueue = queue[1:]\n\t\torder = append(order, pkg)\n\t\tfor _, next := range dependents[pkg] {\n\t\t\tindegree[next]--\n\t\t\tif indegree[next] == 0 {\n\t\t\t\tqueue = append(queue, next)\n\t\t\t}\n\t\t}\n\t}\n\treturn order //!issue:1\n}",
+        "rust": "use std::collections::{HashMap, VecDeque};\n\n/// Returns packages so each one comes after all of its dependencies.\n/// `deps` maps each package to the packages it depends on; every package appears as a key.\npub fn build_order(deps: &HashMap<String, Vec<String>>) -> Vec<String> {\n    let mut indegree: HashMap<&str, usize> = HashMap::new();\n    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();\n    for (pkg, ds) in deps {\n        indegree.insert(pkg.as_str(), ds.len());\n        for d in ds {\n            dependents.entry(d.as_str()).or_default().push(pkg.as_str());\n        }\n    }\n    let mut queue: VecDeque<&str> = indegree\n        .iter()\n        .filter(|(_, n)| **n == 0)\n        .map(|(p, _)| *p)\n        .collect();\n    let mut order = Vec::with_capacity(deps.len());\n    while let Some(pkg) = queue.pop_front() {\n        order.push(pkg.to_string());\n        for &next in dependents.get(pkg).into_iter().flatten() {\n            let n = indegree.get_mut(next).expect(\"every package is a key\");\n            *n -= 1;\n            if *n == 0 {\n                queue.push_back(next);\n            }\n        }\n    }\n    order //!issue:1\n}",
+        "csharp": "// Returns packages so each one comes after all of its dependencies.\n// deps maps each package to the packages it depends on; every package appears as a key.\npublic static List<string> BuildOrder(IReadOnlyDictionary<string, List<string>> deps)\n{\n    var indegree = new Dictionary<string, int>();\n    var dependents = new Dictionary<string, List<string>>();\n    foreach (var (pkg, ds) in deps)\n    {\n        indegree[pkg] = ds.Count;\n        foreach (var d in ds)\n        {\n            if (!dependents.TryGetValue(d, out var list)) dependents[d] = list = new List<string>();\n            list.Add(pkg);\n        }\n    }\n    var queue = new Queue<string>(indegree.Where(kv => kv.Value == 0).Select(kv => kv.Key));\n    var order = new List<string>(deps.Count);\n    while (queue.Count > 0)\n    {\n        var pkg = queue.Dequeue();\n        order.Add(pkg);\n        if (!dependents.TryGetValue(pkg, out var nexts)) continue;\n        foreach (var next in nexts)\n        {\n            if (--indegree[next] == 0) queue.Enqueue(next);\n        }\n    }\n    return order; //!issue:1\n}",
+        "java": "// Returns packages so each one comes after all of its dependencies.\n// deps maps each package to the packages it depends on; every package appears as a key.\npublic static List<String> buildOrder(Map<String, List<String>> deps) {\n    Map<String, Integer> indegree = new HashMap<>();\n    Map<String, List<String>> dependents = new HashMap<>();\n    for (var e : deps.entrySet()) {\n        indegree.put(e.getKey(), e.getValue().size());\n        for (String d : e.getValue()) {\n            dependents.computeIfAbsent(d, k -> new ArrayList<>()).add(e.getKey());\n        }\n    }\n    Deque<String> queue = new ArrayDeque<>();\n    indegree.forEach((pkg, n) -> { if (n == 0) queue.add(pkg); });\n    List<String> order = new ArrayList<>(deps.size());\n    while (!queue.isEmpty()) {\n        String pkg = queue.poll();\n        order.add(pkg);\n        for (String next : dependents.getOrDefault(pkg, List.of())) {\n            if (indegree.merge(next, -1, Integer::sum) == 0) queue.add(next);\n        }\n    }\n    return order; //!issue:1\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "No cycle check: packages on a cycle never reach indegree 0, so they are silently left out of the returned order",
+          "fix": "After the loop, if `order` is shorter than the number of packages, fail with an error that names the packages whose indegree is still above zero (they are on or behind a cycle). Change the signature to return an error or throw, and make the orchestrator fail the build."
+        }
+      ],
+      "explanation": "Kahn's algorithm only ever emits nodes whose remaining indegree is zero. In a cycle, each node waits on the other, so neither is ever enqueued, and everything that depends on them is stuck too. The loop ends normally and returns a shorter list, and the orchestrator treats it as the complete plan: nothing on or behind the cycle is built, and CI reports success. The fix is one comparison, `order.length == deps.size`, plus a useful error listing the leftover nodes. A DFS implementation has the same trap if it tracks only visited and not in-progress (gray) nodes.\n\nTakeaway: an algorithm that can partially succeed must report it; a dependency resolver that silently drops nodes is worse than one that crashes.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "ps-interval-merge-blackouts-01",
+      "domain": "problem_solving",
+      "concepts": ["algorithms"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Deploy blackout windows that leak",
+      "prompt": "The deploy bot merges maintenance windows (minutes since midnight) from several team calendars into a blackout schedule, and refuses to deploy inside any merged window. Ops reports a deploy that ran during a declared blackout, and the schedule page lists back-to-back windows separately. Find the bugs.",
+      "context": "```\ninput:    [600,660] [540,600] [655,720]\noutput:   [600,720]\nexpected: [540,720]\n\ninput:    [100,200] [200,300]\noutput:   [100,200] [200,300]\nexpected: [100,300]\n```",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "type Window = { start: number; end: number };\n\n// Merges overlapping or touching windows, e.g. [1,3] and [3,5] become [1,5].\nexport function mergeWindows(windows: Window[]): Window[] {\n  const merged: Window[] = [];\n  for (const w of windows) { //!issue:1\n    const last = merged[merged.length - 1];\n    if (last && w.start < last.end) { //!issue:2\n      last.end = Math.max(last.end, w.end);\n    } else {\n      merged.push({ ...w });\n    }\n  }\n  return merged;\n}",
+        "go": "type Window struct{ Start, End int64 }\n\n// MergeWindows merges overlapping or touching windows, e.g. [1,3] and [3,5] become [1,5].\nfunc MergeWindows(windows []Window) []Window {\n\tvar merged []Window\n\tfor _, w := range windows { //!issue:1\n\t\tn := len(merged)\n\t\tif n > 0 && w.Start < merged[n-1].End { //!issue:2\n\t\t\tif w.End > merged[n-1].End {\n\t\t\t\tmerged[n-1].End = w.End\n\t\t\t}\n\t\t} else {\n\t\t\tmerged = append(merged, w)\n\t\t}\n\t}\n\treturn merged\n}",
+        "rust": "#[derive(Clone, Copy, Debug, PartialEq)]\npub struct Window {\n    pub start: i64,\n    pub end: i64,\n}\n\n/// Merges overlapping or touching windows, e.g. [1,3] and [3,5] become [1,5].\npub fn merge_windows(windows: &[Window]) -> Vec<Window> {\n    let mut merged: Vec<Window> = Vec::new();\n    for w in windows.iter().copied() { //!issue:1\n        if let Some(last) = merged.last_mut() {\n            if w.start < last.end { //!issue:2\n                last.end = last.end.max(w.end);\n                continue;\n            }\n        }\n        merged.push(w);\n    }\n    merged\n}",
+        "csharp": "public readonly record struct Window(long Start, long End);\n\n// Merges overlapping or touching windows, e.g. [1,3] and [3,5] become [1,5].\npublic static List<Window> MergeWindows(IEnumerable<Window> windows)\n{\n    var merged = new List<Window>();\n    foreach (var w in windows) //!issue:1\n    {\n        if (merged.Count > 0 && w.Start < merged[^1].End) //!issue:2\n        {\n            var last = merged[^1];\n            merged[^1] = last with { End = Math.Max(last.End, w.End) };\n        }\n        else\n        {\n            merged.Add(w);\n        }\n    }\n    return merged;\n}",
+        "java": "public record Window(long start, long end) {}\n\n// Merges overlapping or touching windows, e.g. [1,3] and [3,5] become [1,5].\npublic static List<Window> mergeWindows(List<Window> windows) {\n    List<Window> merged = new ArrayList<>();\n    for (Window w : windows) { //!issue:1\n        int n = merged.size();\n        if (n > 0 && w.start() < merged.get(n - 1).end()) { //!issue:2\n            Window last = merged.get(n - 1);\n            merged.set(n - 1, new Window(last.start(), Math.max(last.end(), w.end())));\n        } else {\n            merged.add(w);\n        }\n    }\n    return merged;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Input is never sorted by start, so an earlier window that arrives later is folded into the previous window without lowering its start, and its coverage is lost",
+          "fix": "Sort a copy of the input by `start` (then `end`) before the loop; the single-pass merge is only correct on sorted input."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Strict `<` means windows that touch (`start == last.end`) are not merged, contradicting the documented contract",
+          "fix": "Use `<=` so `[100,200]` and `[200,300]` become `[100,300]`."
+        }
+      ],
+      "explanation": "The one-pass merge relies on an invariant: every later window starts at or after the current merged window's start, so merging only ever needs to extend `end`. Without sorting, `[540,600]` arrives after `[600,660]`, overlaps by the comparison, and is folded in while the merged start stays at 600, so 540 to 600 disappears from the blackout and the bot deploys into it. Sorting first makes the algorithm O(n log n) and correct. The second bug is the boundary: the contract says touching windows merge, but `<` treats `[100,200]` and `[200,300]` as separate. Note the code correctly uses max for `end`, so contained windows like `[600,720]` then `[610,620]` are fine.\n\nTakeaway: when an algorithm depends on a precondition such as sorted input, enforce it inside the function, and test the equal-boundary case your contract promises.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "ps-latency-ladder-01",
+      "domain": "problem_solving",
+      "concepts": ["first-principles"],
+      "skill": "recall",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Order operations by typical latency",
+      "prompt": "A design review is arguing about whether a call can be on the hot path. Order these operations from fastest to slowest on typical modern cloud hardware.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        { "id": "1", "text": "L1 cache reference" },
+        { "id": "2", "text": "Uncontended mutex lock and unlock" },
+        { "id": "3", "text": "Main memory reference (cache miss to DRAM)" },
+        { "id": "4", "text": "Random 4 KB read from a local NVMe SSD" },
+        { "id": "5", "text": "Network round trip between two availability zones in one region" },
+        { "id": "6", "text": "Random seek on a spinning hard disk" },
+        { "id": "7", "text": "Network round trip from US East to Western Europe" }
+      ],
+      "explanation": "Rough orders of magnitude:\n\n- L1 reference: about 1 ns\n- Uncontended mutex: about 15 to 25 ns (an atomic operation or two)\n- DRAM reference: about 100 ns\n- NVMe random 4 KB read: about 20 to 100 µs\n- Cross-AZ round trip: about 0.5 to 2 ms\n- HDD seek: about 4 to 10 ms\n- US East to Western Europe round trip: about 70 to 100 ms\n\nThe commonly mis-ranked pair is NVMe versus the network: a local SSD read is now faster than a cross-zone hop, so a remote cache in another zone can be slower than reading from local flash. Each step is roughly 10x to 100x the previous one, which is what makes these numbers useful for design decisions.\n\nTakeaway: keep a mental ladder of latencies in powers of ten and check every hot-path call against it before debating micro-optimizations.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "ps-app-is-slow-decompose-01",
+      "domain": "problem_solving",
+      "concepts": ["decomposition", "first-principles"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "The CEO says the app is slow",
+      "prompt": "The CEO forwards three customer emails to engineering with one line: \"Customers say the app is slow. Fix it this quarter.\" You are the staff engineer asked to own it. Nobody has defined \"slow\", and each team believes its own service is fine. Describe how you would spend the first two weeks: how you turn this into a solvable problem, what you would measure, and how you would decide what to fix and how you will know you are done.",
+      "context": "What exists today: server-side request metrics per service (averages and p99), distributed tracing on about 10% of backend requests, no real-user monitoring in the web or mobile clients, and a support queue tagged by product area.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Turns \"slow\" into a few named user journeys (for example login, search, checkout) with user-perceived SLIs such as p75 and p95 time-to-interactive or task completion time, not per-service averages",
+          "Starts from evidence of who is affected: reads the emails and support tags, and segments by customer, platform, region and network before forming hypotheses",
+          "Adds client-side measurement (RUM) because server metrics cannot see rendering, payload size or mobile network time, and uses tracing to decompose one journey's time end to end (client, network, edge, API, database, third parties)",
+          "Ranks candidate fixes by user impact times reach against cost, picks a small number, and sets explicit numeric targets per journey (for example checkout p95 from 4.1 s to 2.0 s)",
+          "Agrees the definition of done and a cadence with the CEO and affected teams, and adds regression guards (performance budgets in CI, SLO alerts) so the gain holds"
+        ],
+        "redFlags": [
+          "Jumps to a favorite fix (add a cache, rewrite the frontend, scale up) before measuring",
+          "Uses per-service averages as the measure of user experience",
+          "Tries to make everything faster with no prioritization or target",
+          "Accepts each team's claim that its service is fine without an end-to-end view"
+        ],
+        "exemplar": "First I would make \"slow\" concrete. I would read the three emails and the support queue to find which journeys and which customers complain: say, enterprise users on mobile doing search and checkout. That gives me two or three journeys to define SLIs for, measured where users feel them: p75 and p95 time to usable result.\n\nWeek one is instrumentation and evidence. Server metrics cannot see client rendering or network time, so I add lightweight RUM to the web and mobile clients for those journeys, raise trace sampling on them, and build one waterfall per journey: client, CDN, API gateway, services, database, third parties. Teams stop arguing because we are looking at the same trace.\n\nWeek two is prioritization. I list candidate causes with their measured share of the journey time and how many users they affect, estimate cost, and pick the top two or three. Each gets an owner and a numeric target, such as checkout p95 from 4.1 s to 2.0 s for the affected segment.\n\nI would agree with the CEO up front that done means those targets hold for four weeks, report weekly against them, and add performance budgets in CI and SLO alerts so it stays fixed."
+      },
+      "explanation": "Strong answers convert an ambiguous executive complaint into measurable, user-centered targets before touching code, close the instrumentation gap on the client, decompose time end to end so teams share one picture, and prioritize a few fixes with a clear definition of done. Weak answers pick a fix first or measure what is convenient (server averages) rather than what users experience.\n\nTakeaway: the staff move on an ambiguous problem is to define the measure of success and the scope with the stakeholder before choosing any solution.",
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "ps-synchronized-latency-rca-01",
+      "domain": "problem_solving",
+      "concepts": ["root-cause-analysis", "concurrency-primitives"],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Latency spikes every ten minutes on every pod",
+      "prompt": "Walk through your reasoning from these observations to a root cause. Say what you would check to confirm it, then give an immediate mitigation and a lasting fix.",
+      "context": "- `checkout-api` p99 jumps from 120 ms to about 2.8 s for 3 to 5 seconds at :00, :10, :20, :30, :40 and :50 past each hour\n- All 48 pods spike at the same moment\n- Started Tuesday at 14:00; Tuesday's 13:55 deploy changed only the feature-flag SDK version (4.2 to 5.0)\n- During spikes: database CPU flat, Redis latency flat, pod CPU flat, GC pauses under 20 ms\n- A thread dump taken during a spike: 180 of 200 request threads are `BLOCKED` in `FlagClient.evaluate()` waiting on the same monitor\n- SDK 5.0 release notes: \"Flag definitions are now polled every 10 minutes (previously streamed).\"",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Uses the synchronization across all pods at fixed wall-clock times to rule out per-pod causes (GC, noisy neighbors, local resource limits) and points to a shared periodic trigger",
+          "Uses the flat database, Redis, CPU and GC signals to rule out resource saturation, and ties the onset time and the 10-minute period to the SDK 5.0 polling change",
+          "Reads the thread dump correctly: the poll holds the lock that `evaluate()` needs while it fetches definitions over the network, so every request blocks for the duration of the fetch",
+          "Notes that all 48 pods poll at the same aligned moment, creating a thundering herd on the flag service that makes each fetch slower and the stall longer",
+          "Proposes a falsifiable confirmation: canary one pod on SDK 4.2 and compare, log poll start and end times against the spikes, and check flag-service latency at :00",
+          "Mitigation: roll back or pin SDK 4.2. Lasting fix: refresh off the request path (fetch into a new snapshot, then swap an atomic reference so readers never block), add jitter to the poll schedule, and bound the fetch with a timeout that keeps serving the last known definitions"
+        ],
+        "redFlags": [
+          "Blames GC, the database or Redis despite flat metrics",
+          "Scales out pods or raises request timeouts",
+          "Proposes caching flag results without addressing the lock held during the fetch",
+          "Stops at correlation with the deploy without explaining the mechanism"
+        ],
+        "exemplar": "The spikes hit all 48 pods at the same wall-clock minutes, so the cause is shared and periodic, not per-pod: GC, noisy neighbors and local limits would not line up across a fleet. Database, Redis, CPU and GC are all flat, so nothing is saturated; requests are waiting, not working.\n\nThe onset matches Tuesday's deploy, which changed only the flag SDK, and the release notes say definitions are now polled every 10 minutes: the same period as the spikes. The thread dump closes the loop: 180 request threads are blocked on the monitor `evaluate()` needs. The most likely mechanism is that the poller takes that lock and holds it across the network fetch, so every flag evaluation in the process stalls for the length of the fetch. Because all pods poll at :00, the flag service also gets 48 simultaneous fetches, which makes each one slower.\n\nTo confirm, I would pin one pod to SDK 4.2 and check it does not spike, and log poll start and end times next to the latency graph.\n\nMitigation: roll back to 4.2. Lasting fix, in the SDK or a wrapper: fetch into a new immutable snapshot and swap an atomic reference, so readers never block; jitter the poll; time out the fetch and keep serving the last good snapshot."
+      },
+      "explanation": "The signal is in the shape: synchronized across the fleet, periodic, and with no resource saturation, which points to a shared trigger and a blocking wait. Connecting the period and onset to the SDK change, then using the thread dump to identify a lock held across I/O, gives a mechanism you can test rather than just a correlation. The durable fix removes I/O from under the lock (copy-on-write snapshot with an atomic swap) and de-synchronizes the fleet with jitter.\n\nTakeaway: eliminate whole classes of causes with the shape of the signal first, then demand a mechanism you can falsify before you call it root cause.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "ps-log-pipeline-payback-01",
+      "domain": "problem_solving",
+      "concepts": ["tradeoff-analysis", "modeling"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Rewrite the log pipeline or trim the volume first",
+      "prompt": "Your director has to choose between two proposals and asks you for a recommendation with numbers. Model both, state your assumptions, and recommend what to do and in what order.",
+      "context": "- Current log vendor bill: $90k per month, priced linearly per GB ingested; volume grows about 5% per month\n- **Proposal A, rewrite:** 3 engineers for 8 weeks to move ingestion to a self-managed pipeline. Projected bill afterward: $55k per month at today's volume, including the new infrastructure\n- **Proposal B, trim:** 1 engineer for 2 weeks to sample debug logs at 10% and drop two noisy health-check services. Estimated volume cut: 25%\n- Fully loaded cost: about $20k per engineer per month (roughly $4.6k per engineer-week)\n- The team's own past platform migrations have run 1.5x to 2x over their estimates",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Computes B: about 2 engineer-weeks, roughly $9k, saving about 25% of $90k, roughly $22.5k per month, so it pays back in under a month",
+          "Computes A: 24 engineer-weeks, roughly $110k (up to about $220k at a 2x overrun), saving about $35k per month at today's volume, so payback is about 3 months after delivery and delivery itself may take 12 to 16 weeks",
+          "Notes the savings are not additive: after B the bill is about $67.5k, so A's incremental saving shrinks to about 39% of that, roughly $26k per month, and must be re-evaluated against the new baseline",
+          "Accounts for growth: at 5% monthly, volume is about 1.8x in a year (1.05^12 ≈ 1.8), so a lower unit cost (A) is worth more over time than a one-time volume cut (B)",
+          "Includes opportunity cost and risk: what 24 engineer-weeks of roadmap A displaces, migration incident risk, and new on-call ownership of the pipeline",
+          "Recommends doing B now, then deciding on A with a gate on the new baseline (and a vendor price negotiation as a cheaper alternative), rather than picking one in isolation"
+        ],
+        "redFlags": [
+          "Compares the headline savings ($35k versus $22.5k) without costing the engineering time",
+          "Treats A's estimate as certain despite the team's overrun history",
+          "Adds the two savings together as if they were independent",
+          "Ignores the ongoing operating cost of owning a self-managed pipeline"
+        ],
+        "exemplar": "B first, then decide A with numbers. B costs about 2 engineer-weeks, roughly $9k, and cuts about 25% of a $90k bill, roughly $22.5k a month. It pays back in under two weeks and the risk is low, since sampling debug logs is reversible.\n\nA costs 24 engineer-weeks, about $110k, and our history says plan for 1.5x to 2x, so $165k to $220k and 12 to 16 weeks before any savings. On today's bill it saves $35k a month, a payback of 3 to 6 months after delivery. But the savings overlap: after B the bill is about $67.5k, and A's 39% unit-cost cut on that is about $26k a month, so A's payback stretches toward 4 to 8 months. Growth helps A: at 5% a month the volume is about 1.8x in a year, and a lower unit cost compounds while B is a one-time cut.\n\nA also costs what those 24 engineer-weeks would otherwise ship, and adds a pipeline we now run on call. So: ship B this sprint, use our larger volume in the vendor renewal, and bring A back in a quarter with the new baseline and growth curve. If the negotiated rate is not close to A's unit cost, A is then a clear win."
+      },
+      "explanation": "Strong answers cost the engineering time, adjust for schedule risk, recognize that the two savings overlap, and use growth to explain why unit-cost reductions and one-time volume cuts behave differently over time. The recommendation sequences the cheap, reversible option first and turns the expensive one into a gated decision with a better baseline.\n\nTakeaway: model options as cash flows on a shared baseline, including people, risk and interaction effects, and prefer sequencing cheap reversible wins ahead of large bets.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "ps-hedged-requests-model-01",
+      "domain": "problem_solving",
+      "concepts": ["modeling", "probability", "tradeoff-analysis"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Should the client hedge requests to the storage tier",
+      "prompt": "A teammate proposes hedged requests: if a read has not returned after some delay, send a duplicate to another replica and take whichever answers first. Model the effect on p99 latency and backend load with the numbers given, and say whether, when and how you would ship it.",
+      "context": "- Read path to a replicated storage tier: 30,000 reads/s, all idempotent point lookups\n- Per-request latency: p50 8 ms, p95 20 ms, p99 250 ms\n- The tail comes from stop-the-world pauses that hit one replica at a time, independently of request load; any key can be read from 3 replicas\n- Storage tier average utilization: 55%\n- The tier also serves writes, which are not idempotent",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Hedges after a delay near p95 (about 20 ms) rather than immediately, so only about 5% of reads send a duplicate, adding roughly 1,500 reads/s instead of doubling load",
+          "Bounds the new tail: a read is slower than about 40 ms only if the original exceeds 40 ms and the hedge (sent at 20 ms) also takes more than 20 ms, so P ≤ 0.05 × 0.05 = 0.25%, and p99 drops from 250 ms to at most about 40 ms",
+          "Quantifies load: about +5% requests takes utilization from 55% to roughly 58%, and cancelling the losing request recovers part of that",
+          "Restricts hedging to idempotent reads, never non-idempotent writes, unless they carry idempotency keys",
+          "Names the key assumption: slowness must be independent per replica; if the tail is caused by overload, hedging adds load where it hurts, so cap hedges with a budget (for example 5% to 10% of traffic) and disable them when the tier is saturated",
+          "Ships it as an experiment on a slice of traffic, measuring p99 and backend load against a control"
+        ],
+        "redFlags": [
+          "Hedges every request immediately, doubling load",
+          "Applies hedging to writes",
+          "Claims p99 improves without stating the independence assumption",
+          "No cap or kill switch for when the backend is overloaded"
+        ],
+        "exemplar": "Hedge reads at about the p95, 20 ms. Only reads still pending at 20 ms send a duplicate, so about 5% of traffic, roughly 1,500 extra reads/s on top of 30,000, takes the tier from about 55% to 58% utilization, less if we cancel the loser.\n\nThe tail bound: a hedged read takes longer than 40 ms only if the original is still running at 40 ms and the hedge, sent at 20 ms, takes more than 20 ms. Both are at most a 5% event, and the pauses hit replicas independently, so the probability is at most 0.05 × 0.05 = 0.25%. That is below 1%, so p99 falls from 250 ms to at most about 40 ms, and often lower.\n\nThat math depends on independence. Our tail is pauses on one replica at a time, which fits. If the tail were overload, hedges would add load to a struggling tier and make it worse. So I would add a hedge budget (no more than 10% of reads hedged per client), turn hedging off when the tier reports high utilization, and never hedge writes, which are not idempotent.\n\nShip it behind a flag to 5% of clients, compare p99 and tier load against control for a week, then ramp."
+      },
+      "explanation": "The key insight is that a well-chosen hedge delay buys most of the tail improvement for a few percent of extra load, and the probability argument (both requests slow) makes it quantitative. The answer is only safe with the stated assumptions: idempotent reads and independent slowness, enforced with a budget and a kill switch.\n\nTakeaway: before adopting a latency technique, write down the probability model it relies on and add controls for the case where that model breaks.",
+      "references": ["Dean and Barroso, The Tail at Scale, Communications of the ACM (2013)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "ps-postgres-runway-model-01",
+      "domain": "problem_solving",
+      "concepts": ["modeling", "decomposition"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Do we need to shard Postgres in the next three years",
+      "prompt": "Your VP asks: \"Do we need to shard the primary database in the next three years, and if so when do we have to start?\" Build a simple capacity model from the data below, identify the binding constraint, and give a recommendation with dates.",
+      "context": "```\nPrimary Postgres: 64 vCPU, 512 GB RAM, 16 TB max on current volume type\nPeak CPU:        45%\nPeak writes:     6,000 rows/s, WAL 60 MB/s\nWorking set:     200 GB hot data (about 384 GB of RAM is usable as cache)\nTotal data:      4 TB\nGrowth:          load and data grow 60% per year, compounding, expected for 3 years\nLargest instance in this family: 128 vCPU, 1 TB RAM (about 2x current)\nPast large data migrations here took 12 to 18 months end to end\n```\n\nUseful values: ln(1.6) ≈ 0.47; 1.6^3 ≈ 4.1.",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Uses compounding growth (1.6^t, about 4.1x in 3 years) and solves time-to-limit as t = ln(limit / current) / ln(1.6) for each resource, not linear growth",
+          "Finds CPU is the earliest constraint: 45% reaches a 70% ceiling at t = ln(1.56) / 0.47 ≈ 0.9 years on the current instance; working set (200 GB to about 384 GB of cache) is next at about 1.4 years",
+          "Quantifies vertical headroom: the 2x instance pushes the CPU limit to about 2.4 years (22.5% to 70%) and the cache limit to about 2.8 years, so vertical scaling alone does not cover 3 years",
+          "Notes storage (4 TB to 16 TB at about 2.9 years) and WAL (about 250 MB/s by year 3) are later or more easily solved, so they are not the binding constraint",
+          "Factors lead time: with 12 to 18 months to shard, work must start within about a year to land before the vertical runway ends near 2.4 years, and names cheaper levers (query tuning, read replicas for read-heavy CPU, archiving cold data) that buy time",
+          "Gives trigger metrics and a review cadence (for example peak CPU above 60% on the larger instance, cache hit ratio falling, replication lag) and a clear answer: yes, likely, start design within the next 2 to 3 quarters"
+        ],
+        "redFlags": [
+          "Uses linear growth",
+          "Treats storage as the main constraint because it is the biggest number",
+          "Answers shard now or never shard without a model",
+          "Ignores how long a sharding migration takes"
+        ],
+        "exemplar": "At 60% a year compounding, load is 1.6^t, about 4.1x in three years. For each resource, time to limit is ln(limit / today) / 0.47.\n\n- CPU: 45% to a 70% ceiling is ln(1.56) / 0.47 ≈ 0.9 years on this box\n- Cache: 200 GB to about 384 GB is ln(1.92) / 0.47 ≈ 1.4 years\n- Storage: 4 to 16 TB is ln(4) / 0.47 ≈ 2.9 years, and a volume type change can extend it\n- WAL: about 250 MB/s by year three; heavy, but not first\n\nCPU binds first. The 2x instance halves CPU to 22.5% and doubles cache, which moves CPU to ln(3.1) / 0.47 ≈ 2.4 years and cache to about 2.8 years. So vertical scaling buys us to about year 2.4, not year 3.\n\nOur large migrations take 12 to 18 months, so sharding has to start by about month 12 to land with margin. My answer is yes: upgrade the instance next quarter, spend the next two quarters on cheap runway (query tuning, moving read-heavy traffic to replicas, archiving cold rows), and start shard-key design and a dual-write path by month 9 to 12. We revisit quarterly with triggers: peak CPU above 60% on the new instance, cache hit ratio dropping, or growth above 60%."
+      },
+      "explanation": "Strong answers compute time to exhaustion for each resource under compounding growth, find the one that binds first, quantify how far vertical scaling stretches it, and compare that runway with the lead time of the alternative. That turns a yes or no question into a dated plan with triggers.\n\nTakeaway: capacity decisions are about runway versus lead time, so compute both per resource and start the long project before the short runway runs out.",
+      "tags": ["on-the-job", "interview"]
+    }
+  ]
+}

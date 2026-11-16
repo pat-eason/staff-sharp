@@ -1,0 +1,1418 @@
+{
+  "file": "security",
+  "questions": [
+    {
+      "id": "sec-orderby-injection-01",
+      "domain": "security",
+      "concepts": [
+        "injection",
+        "input-validation"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Parameterized query that is still injectable",
+      "prompt": "A SAST tool flagged this order-listing endpoint. The author replied on the PR: \"False positive, every user value goes through a bind parameter.\" The `sort` and `dir` fields come straight from the query string (`GET /orders?status=paid&sort=created_at&dir=desc`). Find the bug.",
+      "language": null,
+      "estSeconds": 180,
+      "code": {
+        "ts": "const PAGE_SIZE = 50;\n\nexport async function listOrders(db: Pool, customerId: string, q: OrderQuery) {\n  const params: unknown[] = [customerId];\n  let sql = \"SELECT id, status, total_cents, created_at FROM orders WHERE customer_id = $1\";\n  if (q.status) {\n    params.push(q.status);\n    sql += ` AND status = $${params.length}`;\n  }\n  const sort = q.sort ?? \"created_at\"; //!issue:1\n  const dir = q.dir === \"asc\" ? \"ASC\" : \"DESC\";\n  sql += ` ORDER BY ${sort} ${dir} LIMIT ${PAGE_SIZE}`; //!issue:1\n  const { rows } = await db.query(sql, params);\n  return rows;\n}",
+        "go": "const pageSize = 50\n\nfunc ListOrders(ctx context.Context, db *sql.DB, customerID string, q url.Values) (*sql.Rows, error) {\n\targs := []any{customerID}\n\tquery := \"SELECT id, status, total_cents, created_at FROM orders WHERE customer_id = $1\"\n\tif status := q.Get(\"status\"); status != \"\" {\n\t\targs = append(args, status)\n\t\tquery += fmt.Sprintf(\" AND status = $%d\", len(args))\n\t}\n\tsort := q.Get(\"sort\") //!issue:1\n\tif sort == \"\" {\n\t\tsort = \"created_at\"\n\t}\n\tdir := \"DESC\"\n\tif q.Get(\"dir\") == \"asc\" {\n\t\tdir = \"ASC\"\n\t}\n\tquery += fmt.Sprintf(\" ORDER BY %s %s LIMIT %d\", sort, dir, pageSize) //!issue:1\n\treturn db.QueryContext(ctx, query, args...)\n}",
+        "rust": "const PAGE_SIZE: i64 = 50;\n\npub async fn list_orders(pool: &PgPool, customer_id: Uuid, q: &OrderQuery) -> sqlx::Result<Vec<OrderRow>> {\n    let mut sql = String::from(\n        \"SELECT id, status, total_cents, created_at FROM orders WHERE customer_id = $1\",\n    );\n    if q.status.is_some() {\n        sql.push_str(\" AND status = $2\");\n    }\n    let sort = q.sort.as_deref().unwrap_or(\"created_at\"); //!issue:1\n    let dir = if q.dir.as_deref() == Some(\"asc\") { \"ASC\" } else { \"DESC\" };\n    sql.push_str(&format!(\" ORDER BY {sort} {dir} LIMIT {PAGE_SIZE}\")); //!issue:1\n\n    let mut query = sqlx::query_as::<_, OrderRow>(&sql).bind(customer_id);\n    if let Some(status) = &q.status {\n        query = query.bind(status);\n    }\n    query.fetch_all(pool).await\n}",
+        "csharp": "private const int PageSize = 50;\n\npublic async Task<IEnumerable<OrderRow>> ListOrders(Guid customerId, OrderQuery q)\n{\n    var sql = new StringBuilder(\n        \"SELECT id, status, total_cents, created_at FROM orders WHERE customer_id = @CustomerId\");\n    if (!string.IsNullOrEmpty(q.Status))\n    {\n        sql.Append(\" AND status = @Status\");\n    }\n    var sort = q.Sort ?? \"created_at\"; //!issue:1\n    var dir = q.Dir == \"asc\" ? \"ASC\" : \"DESC\";\n    sql.Append($\" ORDER BY {sort} {dir} LIMIT {PageSize}\"); //!issue:1\n\n    await using var conn = await _dataSource.OpenConnectionAsync();\n    return await conn.QueryAsync<OrderRow>(sql.ToString(), new { CustomerId = customerId, q.Status });\n}",
+        "java": "private static final int PAGE_SIZE = 50;\n\npublic List<OrderRow> listOrders(UUID customerId, OrderQuery q) throws SQLException {\n    StringBuilder sql = new StringBuilder(\n        \"SELECT id, status, total_cents, created_at FROM orders WHERE customer_id = ?\");\n    List<Object> params = new ArrayList<>(List.of(customerId));\n    if (q.status() != null) {\n        sql.append(\" AND status = ?\");\n        params.add(q.status());\n    }\n    String sort = q.sort() != null ? q.sort() : \"created_at\"; //!issue:1\n    String dir = \"asc\".equals(q.dir()) ? \"ASC\" : \"DESC\";\n    sql.append(\" ORDER BY \").append(sort).append(' ').append(dir).append(\" LIMIT \").append(PAGE_SIZE); //!issue:1\n    try (Connection c = dataSource.getConnection();\n         PreparedStatement ps = c.prepareStatement(sql.toString())) {\n        for (int i = 0; i < params.size(); i++) ps.setObject(i + 1, params.get(i));\n        try (ResultSet rs = ps.executeQuery()) {\n            return OrderRow.readAll(rs);\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The user-supplied `sort` value is concatenated into the ORDER BY clause, so it is SQL, not data",
+          "fix": "Map the requested sort key through a fixed allowlist to a known column identifier (for example {\"created\": \"created_at\", \"total\": \"total_cents\"}) and reject anything else with 400. Keep the direction mapped to the literal ASC/DESC as it already is."
+        }
+      ],
+      "explanation": "Bind parameters only work for values. Identifiers and keywords (column names in ORDER BY, table names, sort direction) cannot be bound, so code that otherwise parameterizes everything often falls back to string building exactly here. A `sort` of `(CASE WHEN (SELECT substr(password_hash,1,1) FROM users WHERE id=1)='a' THEN created_at ELSE total_cents END)` turns the sort order into a boolean oracle for blind extraction, and on drivers that allow stacked statements it can be worse. The direction is safe because it is mapped to one of two literals; the column needs the same treatment through an allowlist. Quoting the identifier with the driver's escaping helper is a weaker second choice because it still lets callers sort by any column, including ones they should not see. Takeaway: anything that becomes SQL structure must come from a closed set you control, never from the request.",
+      "references": [
+        "OWASP SQL Injection Prevention Cheat Sheet"
+      ],
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-idor-invoice-tenant-01",
+      "domain": "security",
+      "concepts": [
+        "multi-tenancy",
+        "authn-authz"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Invoice lookup that crosses tenants",
+      "prompt": "A customer's admin reports that by changing the invoice id in the URL they could see another company's invoice. Every user is authenticated and the role check passes. Find the bug.",
+      "language": null,
+      "estSeconds": 120,
+      "code": {
+        "ts": "router.get(\"/api/invoices/:invoiceId\", requireAuth, async (req, res) => {\n  const user = req.user!; // { id, tenantId, roles }\n  if (!user.roles.includes(\"billing:read\")) {\n    return res.status(403).json({ error: \"forbidden\" });\n  }\n  const invoice = await db.invoice.findUnique({ where: { id: req.params.invoiceId } }); //!issue:1\n  if (!invoice) {\n    return res.status(404).json({ error: \"not found\" });\n  }\n  logger.info(\"invoice viewed\", { invoiceId: invoice.id, userId: user.id, tenantId: user.tenantId });\n  res.json(toInvoiceDto(invoice));\n});",
+        "go": "func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {\n\tuser := auth.UserFrom(r.Context())\n\tif !user.HasRole(\"billing:read\") {\n\t\thttp.Error(w, \"forbidden\", http.StatusForbidden)\n\t\treturn\n\t}\n\tid := chi.URLParam(r, \"invoiceID\")\n\trow := h.db.QueryRowContext(r.Context(),\n\t\t\"SELECT id, tenant_id, number, total_cents, status FROM invoices WHERE id = $1\", id) //!issue:1\n\tvar inv Invoice\n\terr := row.Scan(&inv.ID, &inv.TenantID, &inv.Number, &inv.TotalCents, &inv.Status)\n\tif errors.Is(err, sql.ErrNoRows) {\n\t\thttp.Error(w, \"not found\", http.StatusNotFound)\n\t\treturn\n\t}\n\tif err != nil {\n\t\thttp.Error(w, \"internal error\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\th.log.Info(\"invoice viewed\", \"invoice_id\", inv.ID, \"user_id\", user.ID, \"tenant_id\", user.TenantID)\n\twriteJSON(w, http.StatusOK, toInvoiceDTO(inv))\n}",
+        "rust": "pub async fn get_invoice(\n    State(db): State<PgPool>,\n    user: AuthUser,\n    Path(invoice_id): Path<Uuid>,\n) -> Result<Json<InvoiceDto>, ApiError> {\n    if !user.has_role(\"billing:read\") {\n        return Err(ApiError::Forbidden);\n    }\n    let invoice = sqlx::query_as::<_, Invoice>(\n        \"SELECT id, tenant_id, number, total_cents, status FROM invoices WHERE id = $1\", //!issue:1\n    )\n    .bind(invoice_id)\n    .fetch_optional(&db)\n    .await?\n    .ok_or(ApiError::NotFound)?;\n    tracing::info!(%invoice_id, user_id = %user.id, tenant_id = %user.tenant_id, \"invoice viewed\");\n    Ok(Json(InvoiceDto::from(invoice)))\n}",
+        "csharp": "[HttpGet(\"api/invoices/{invoiceId:guid}\")]\n[Authorize(Policy = \"billing:read\")]\npublic async Task<ActionResult<InvoiceDto>> GetInvoice(Guid invoiceId)\n{\n    var tenantId = User.GetTenantId();\n    var invoice = await _db.Invoices\n        .AsNoTracking()\n        .SingleOrDefaultAsync(i => i.Id == invoiceId); //!issue:1\n    if (invoice is null)\n    {\n        return NotFound();\n    }\n    _logger.LogInformation(\"Invoice {InvoiceId} viewed in tenant {TenantId}\", invoiceId, tenantId);\n    return Ok(InvoiceDto.From(invoice));\n}",
+        "java": "@GetMapping(\"/api/invoices/{invoiceId}\")\n@PreAuthorize(\"hasAuthority('billing:read')\")\npublic ResponseEntity<InvoiceDto> getInvoice(@PathVariable UUID invoiceId,\n                                             @AuthenticationPrincipal AppUser user) {\n    Optional<Invoice> invoice = invoiceRepository.findById(invoiceId); //!issue:1\n    if (invoice.isEmpty()) {\n        return ResponseEntity.notFound().build();\n    }\n    log.info(\"Invoice {} viewed by user {} in tenant {}\", invoiceId, user.getId(), user.getTenantId());\n    return ResponseEntity.ok(InvoiceDto.from(invoice.get()));\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The invoice is fetched by id alone; nothing checks it belongs to the caller's tenant",
+          "fix": "Scope the query by the authenticated tenant (WHERE id = $1 AND tenant_id = $2, or a repository method that always takes the tenant) and return 404, not 403, when it does not match so ids from other tenants are indistinguishable from missing ones."
+        }
+      ],
+      "explanation": "This is an insecure direct object reference: authentication and a role check say who the user is and what kind of action they may take, but not which objects they may take it on. Unguessable UUIDs reduce the odds of discovery but are not authorization, because ids leak through URLs, emails, logs and support tickets. The durable fix is structural: make the tenant a required argument of every data-access call (or enforce it with row-level security) so forgetting it is a compile error or a database error rather than a silent leak. The handler already has the tenant id and only uses it for logging, which is the classic tell. Takeaway: in a multi-tenant system, every lookup by id must be a lookup by (tenant, id).",
+      "references": [
+        "OWASP API Security Top 10 (2023): API1 Broken Object Level Authorization"
+      ],
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-ssrf-link-preview-01",
+      "domain": "security",
+      "concepts": [
+        "ssrf",
+        "input-validation"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Link preview fetcher leaks cloud credentials",
+      "prompt": "Chat messages containing a URL get an Open Graph preview. The preview service runs on a cloud VM with an instance role that can read several S3 buckets. A pentester obtained that role's temporary credentials through the preview endpoint without using any of the blocked host names. Find how.",
+      "context": "Pentest note: \"Posting `https://preview-test.attacker.example/a` in chat produced a preview whose description field contained a JSON document with `AccessKeyId`, `SecretAccessKey` and `Token`.\"",
+      "language": null,
+      "estSeconds": 300,
+      "code": {
+        "ts": "const BLOCKED_HOSTS = new Set([\"localhost\", \"127.0.0.1\", \"0.0.0.0\", \"metadata.google.internal\"]);\nconst MAX_BYTES = 512 * 1024;\n\nexport async function fetchPreview(rawUrl: string): Promise<LinkPreview> {\n  const url = new URL(rawUrl);\n  if (url.protocol !== \"https:\" && url.protocol !== \"http:\") {\n    throw new BadRequest(\"unsupported scheme\");\n  }\n  if (BLOCKED_HOSTS.has(url.hostname) || url.hostname.endsWith(\".internal\")) { //!issue:1\n    throw new BadRequest(\"blocked host\");\n  }\n  const res = await fetch(url, {\n    redirect: \"follow\", //!issue:2\n    signal: AbortSignal.timeout(3000),\n    headers: { \"User-Agent\": \"AcmePreviewBot/1.0\" },\n  });\n  const html = await readCapped(res, MAX_BYTES);\n  return parseOpenGraph(html, url);\n}",
+        "go": "var blockedHosts = map[string]bool{\n\t\"localhost\": true, \"127.0.0.1\": true, \"0.0.0.0\": true, \"metadata.google.internal\": true,\n}\n\nvar previewClient = &http.Client{Timeout: 3 * time.Second} //!issue:2\n\nfunc FetchPreview(ctx context.Context, rawURL string) (*LinkPreview, error) {\n\tu, err := url.Parse(rawURL)\n\tif err != nil || (u.Scheme != \"http\" && u.Scheme != \"https\") {\n\t\treturn nil, ErrBadURL\n\t}\n\thost := u.Hostname()\n\tif blockedHosts[host] || strings.HasSuffix(host, \".internal\") { //!issue:1\n\t\treturn nil, ErrBlockedHost\n\t}\n\treq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treq.Header.Set(\"User-Agent\", \"AcmePreviewBot/1.0\")\n\tresp, err := previewClient.Do(req)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer resp.Body.Close()\n\tbody, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn parseOpenGraph(body, u), nil\n}",
+        "rust": "const BLOCKED_HOSTS: &[&str] = &[\"localhost\", \"127.0.0.1\", \"0.0.0.0\", \"metadata.google.internal\"];\n\nstatic CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {\n    reqwest::Client::builder() //!issue:2\n        .timeout(Duration::from_secs(3))\n        .user_agent(\"AcmePreviewBot/1.0\")\n        .build()\n        .expect(\"http client\")\n});\n\npub async fn fetch_preview(raw_url: &str) -> Result<LinkPreview, PreviewError> {\n    let url = Url::parse(raw_url).map_err(|_| PreviewError::BadUrl)?;\n    if url.scheme() != \"http\" && url.scheme() != \"https\" {\n        return Err(PreviewError::BadUrl);\n    }\n    let host = url.host_str().ok_or(PreviewError::BadUrl)?;\n    if BLOCKED_HOSTS.contains(&host) || host.ends_with(\".internal\") { //!issue:1\n        return Err(PreviewError::BlockedHost);\n    }\n    let resp = CLIENT.get(url.clone()).send().await?;\n    let body = read_capped(resp, 512 * 1024).await?;\n    Ok(parse_open_graph(&body, &url))\n}",
+        "csharp": "private static readonly HashSet<string> BlockedHosts = new(StringComparer.OrdinalIgnoreCase)\n    { \"localhost\", \"127.0.0.1\", \"0.0.0.0\", \"metadata.google.internal\" };\n\nprivate static readonly HttpClient Client = new(new SocketsHttpHandler\n{\n    AllowAutoRedirect = true, //!issue:2\n    MaxAutomaticRedirections = 10,\n    ConnectTimeout = TimeSpan.FromSeconds(3),\n});\n\npublic async Task<LinkPreview> FetchPreview(string rawUrl, CancellationToken ct)\n{\n    if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) ||\n        (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))\n    {\n        throw new BadRequestException(\"unsupported url\");\n    }\n    if (BlockedHosts.Contains(uri.Host) || uri.Host.EndsWith(\".internal\", StringComparison.OrdinalIgnoreCase)) //!issue:1\n    {\n        throw new BadRequestException(\"blocked host\");\n    }\n    using var request = new HttpRequestMessage(HttpMethod.Get, uri);\n    request.Headers.UserAgent.ParseAdd(\"AcmePreviewBot/1.0\");\n    using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);\n    var html = await ReadCappedAsync(response.Content, 512 * 1024, ct);\n    return OpenGraph.Parse(html, uri);\n}",
+        "java": "private static final Set<String> BLOCKED_HOSTS =\n    Set.of(\"localhost\", \"127.0.0.1\", \"0.0.0.0\", \"metadata.google.internal\");\n\nprivate static final HttpClient CLIENT = HttpClient.newBuilder()\n    .followRedirects(HttpClient.Redirect.NORMAL) //!issue:2\n    .connectTimeout(Duration.ofSeconds(3))\n    .build();\n\npublic LinkPreview fetchPreview(String rawUrl) throws IOException, InterruptedException {\n    URI uri = URI.create(rawUrl);\n    String scheme = uri.getScheme();\n    if (!\"http\".equals(scheme) && !\"https\".equals(scheme)) {\n        throw new BadRequestException(\"unsupported scheme\");\n    }\n    String host = uri.getHost();\n    if (host == null || BLOCKED_HOSTS.contains(host) || host.endsWith(\".internal\")) { //!issue:1\n        throw new BadRequestException(\"blocked host\");\n    }\n    HttpRequest request = HttpRequest.newBuilder(uri)\n        .header(\"User-Agent\", \"AcmePreviewBot/1.0\")\n        .timeout(Duration.ofSeconds(3))\n        .GET()\n        .build();\n    HttpResponse<InputStream> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofInputStream());\n    String html = readCapped(response.body(), 512 * 1024);\n    return OpenGraph.parse(html, uri);\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The destination is checked by host-name string against a short blocklist, not by the IP address the request will actually connect to",
+          "fix": "Resolve the host, reject every resolved address in loopback, private (10/8, 172.16/12, 192.168/16), link-local (169.254/16, which includes the metadata endpoint), CGNAT, IPv6 ULA/link-local and IPv4-mapped forms, then connect to the validated IP so DNS rebinding cannot swap it. Better still, send all outbound fetches through an egress proxy on a network segment that cannot reach internal ranges, and require IMDSv2 with a hop limit of 1."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Redirects are followed automatically, so a public URL that passes the check can bounce the request to an internal address",
+          "fix": "Disable automatic redirects, and for each hop (capped at a small number) re-run the full scheme and resolved-IP validation before following it."
+        }
+      ],
+      "explanation": "The blocklist never mentions 169.254.169.254, and even if it did, string checks are trivially bypassed: an attacker-controlled DNS name that resolves to a link-local or RFC 1918 address, alternative IP encodings (decimal `2852039166`, IPv6-mapped `[::ffff:169.254.169.254]`), or DNS rebinding between check and connect. The second hole is that the client follows redirects, so `https://preview-test.attacker.example/a` can answer `302 Location: http://169.254.169.254/latest/meta-data/iam/security-credentials/<role>` and the preview faithfully renders the credentials. Validation has to happen on the resolved address at connect time, for every hop. Defense in depth matters here because SSRF filters are notoriously leaky: IMDSv2 (session token via PUT, hop limit 1) blocks the simple GET, and an isolated egress proxy removes internal reachability entirely. This is the same class of bug behind the 2019 Capital One breach. Takeaway: a server that fetches user-supplied URLs should validate where it connects, not what the URL says, and should live where internal targets are unreachable anyway.",
+      "references": [
+        "OWASP Server-Side Request Forgery Prevention Cheat Sheet"
+      ],
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-jwt-alg-confusion-01",
+      "domain": "security",
+      "concepts": [
+        "authn-authz"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 4,
+      "title": "Hand-rolled JWT verifier accepts forged admin tokens",
+      "prompt": "A red team minted a token with `\"role\": \"admin\"` that this verifier accepted. They had no access to any private key or shared secret. The caller passes the IdP's RSA public key PEM, which is also published at the IdP's JWKS endpoint. The signature comparison is constant-time. Find the bug.",
+      "language": null,
+      "estSeconds": 360,
+      "code": {
+        "ts": "import { createHmac, createVerify, timingSafeEqual } from \"node:crypto\";\n\n// Tokens come from our IdP (RS256). A few older internal services still mint HS256.\nexport function verifyToken(token: string, keyPem: string): Claims {\n  const [h, p, s] = token.split(\".\");\n  if (!h || !p || !s) throw new AuthError(\"malformed token\");\n  const header = JSON.parse(b64urlDecode(h).toString(\"utf8\"));\n  const signingInput = `${h}.${p}`;\n  const sig = b64urlDecode(s);\n  let ok = false;\n  switch (header.alg) { //!issue:1\n    case \"RS256\":\n      ok = createVerify(\"RSA-SHA256\").update(signingInput).verify(keyPem, sig);\n      break;\n    case \"HS256\": {\n      const mac = createHmac(\"sha256\", keyPem).update(signingInput).digest(); //!issue:1\n      ok = mac.length === sig.length && timingSafeEqual(mac, sig);\n      break;\n    }\n    default:\n      throw new AuthError(`unsupported alg ${header.alg}`);\n  }\n  if (!ok) throw new AuthError(\"bad signature\");\n  const claims = JSON.parse(b64urlDecode(p).toString(\"utf8\")) as Claims;\n  if (claims.exp * 1000 < Date.now()) throw new AuthError(\"expired\");\n  return claims;\n}",
+        "go": "// Tokens come from our IdP (RS256). A few older internal services still mint HS256.\nfunc VerifyToken(token string, keyPEM []byte) (*Claims, error) {\n\tparts := strings.Split(token, \".\")\n\tif len(parts) != 3 {\n\t\treturn nil, ErrMalformed\n\t}\n\tvar header struct {\n\t\tAlg string `json:\"alg\"`\n\t}\n\tif err := decodeSegment(parts[0], &header); err != nil {\n\t\treturn nil, ErrMalformed\n\t}\n\tsigningInput := []byte(parts[0] + \".\" + parts[1])\n\tsig, err := base64.RawURLEncoding.DecodeString(parts[2])\n\tif err != nil {\n\t\treturn nil, ErrMalformed\n\t}\n\tswitch header.Alg { //!issue:1\n\tcase \"RS256\":\n\t\tpub, err := parseRSAPublicKey(keyPEM)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tdigest := sha256.Sum256(signingInput)\n\t\tif err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err != nil {\n\t\t\treturn nil, ErrBadSignature\n\t\t}\n\tcase \"HS256\":\n\t\tmac := hmac.New(sha256.New, keyPEM) //!issue:1\n\t\tmac.Write(signingInput)\n\t\tif !hmac.Equal(mac.Sum(nil), sig) {\n\t\t\treturn nil, ErrBadSignature\n\t\t}\n\tdefault:\n\t\treturn nil, ErrUnsupportedAlg\n\t}\n\tvar claims Claims\n\tif err := decodeSegment(parts[1], &claims); err != nil {\n\t\treturn nil, ErrMalformed\n\t}\n\tif time.Now().Unix() > claims.Exp {\n\t\treturn nil, ErrExpired\n\t}\n\treturn &claims, nil\n}",
+        "rust": "// Tokens come from our IdP (RS256). A few older internal services still mint HS256.\npub fn verify_token(token: &str, key_pem: &str) -> Result<Claims, AuthError> {\n    let mut parts = token.split('.');\n    let (h, p, s) = match (parts.next(), parts.next(), parts.next(), parts.next()) {\n        (Some(h), Some(p), Some(s), None) => (h, p, s),\n        _ => return Err(AuthError::Malformed),\n    };\n    let header: Header = decode_segment(h)?;\n    let signing_input = format!(\"{h}.{p}\");\n    let sig = URL_SAFE_NO_PAD.decode(s).map_err(|_| AuthError::Malformed)?;\n    match header.alg.as_str() { //!issue:1\n        \"RS256\" => {\n            let key = RsaPublicKey::from_public_key_pem(key_pem)?;\n            let verifier = VerifyingKey::<Sha256>::new(key);\n            let signature = Signature::try_from(sig.as_slice())?;\n            verifier\n                .verify(signing_input.as_bytes(), &signature)\n                .map_err(|_| AuthError::BadSignature)?;\n        }\n        \"HS256\" => {\n            let mut mac = Hmac::<Sha256>::new_from_slice(key_pem.as_bytes())?; //!issue:1\n            mac.update(signing_input.as_bytes());\n            mac.verify_slice(&sig).map_err(|_| AuthError::BadSignature)?;\n        }\n        other => return Err(AuthError::UnsupportedAlg(other.to_string())),\n    }\n    let claims: Claims = decode_segment(p)?;\n    if claims.exp < now_unix() {\n        return Err(AuthError::Expired);\n    }\n    Ok(claims)\n}",
+        "csharp": "// Tokens come from our IdP (RS256). A few older internal services still mint HS256.\npublic static Claims VerifyToken(string token, string keyPem)\n{\n    var parts = token.Split('.');\n    if (parts.Length != 3) throw new AuthException(\"malformed token\");\n    var header = JsonSerializer.Deserialize<JwtHeader>(Base64Url.DecodeFromChars(parts[0]))!;\n    var signingInput = Encoding.ASCII.GetBytes($\"{parts[0]}.{parts[1]}\");\n    var sig = Base64Url.DecodeFromChars(parts[2]);\n    bool ok;\n    switch (header.Alg) //!issue:1\n    {\n        case \"RS256\":\n            using (var rsa = RSA.Create())\n            {\n                rsa.ImportFromPem(keyPem);\n                ok = rsa.VerifyData(signingInput, sig, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);\n            }\n            break;\n        case \"HS256\":\n            var mac = HMACSHA256.HashData(Encoding.UTF8.GetBytes(keyPem), signingInput); //!issue:1\n            ok = CryptographicOperations.FixedTimeEquals(mac, sig);\n            break;\n        default:\n            throw new AuthException($\"unsupported alg {header.Alg}\");\n    }\n    if (!ok) throw new AuthException(\"bad signature\");\n    var claims = JsonSerializer.Deserialize<Claims>(Base64Url.DecodeFromChars(parts[1]))!;\n    if (claims.Exp < DateTimeOffset.UtcNow.ToUnixTimeSeconds()) throw new AuthException(\"expired\");\n    return claims;\n}",
+        "java": "// Tokens come from our IdP (RS256). A few older internal services still mint HS256.\npublic static Claims verifyToken(String token, String keyPem) throws GeneralSecurityException, IOException {\n    String[] parts = token.split(\"\\\\.\");\n    if (parts.length != 3) throw new AuthException(\"malformed token\");\n    Base64.Decoder b64 = Base64.getUrlDecoder();\n    JwtHeader header = JSON.readValue(b64.decode(parts[0]), JwtHeader.class);\n    byte[] signingInput = (parts[0] + \".\" + parts[1]).getBytes(StandardCharsets.US_ASCII);\n    byte[] sig = b64.decode(parts[2]);\n    boolean ok = switch (header.alg()) { //!issue:1\n        case \"RS256\" -> {\n            Signature verifier = Signature.getInstance(\"SHA256withRSA\");\n            verifier.initVerify(Pem.parseRsaPublicKey(keyPem));\n            verifier.update(signingInput);\n            yield verifier.verify(sig);\n        }\n        case \"HS256\" -> {\n            Mac mac = Mac.getInstance(\"HmacSHA256\");\n            mac.init(new SecretKeySpec(keyPem.getBytes(StandardCharsets.UTF_8), \"HmacSHA256\")); //!issue:1\n            yield MessageDigest.isEqual(mac.doFinal(signingInput), sig);\n        }\n        default -> throw new AuthException(\"unsupported alg \" + header.alg());\n    };\n    if (!ok) throw new AuthException(\"bad signature\");\n    Claims claims = JSON.readValue(b64.decode(parts[1]), Claims.class);\n    if (claims.exp() < Instant.now().getEpochSecond()) throw new AuthException(\"expired\");\n    return claims;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The algorithm is taken from the attacker-controlled token header, and the HS256 branch uses the public RSA key as the HMAC secret (algorithm confusion)",
+          "fix": "Pin the expected algorithm server-side per key: verify IdP tokens only with RS256 against keys from the JWKS selected by `kid`, and verify legacy HS256 tokens, if they must exist, in a separate code path with its own secret and issuer. Prefer a maintained JWT library configured with an explicit algorithm allowlist, and also check iss and aud."
+        }
+      ],
+      "explanation": "The attacker sets `\"alg\": \"HS256\"` in the header, computes HMAC-SHA256 over the header and payload using the public key PEM text as the secret, and the verifier dutifully recomputes the same MAC with the same public bytes. The constant-time comparison is correct and irrelevant: the problem is that the token chooses how it is verified. RFC 8725 calls this out directly: the verifier must decide which algorithm is acceptable for a given key, never the token. The same flaw family includes `alg: none` and verifiers that pick an embedded `jwk` or `jku` from the header. The tempting wrong diagnosis is the comparison or the expiry check; both are fine here. Takeaway: a key and its algorithm are one unit chosen by the verifier, and the token header is untrusted input like any other.",
+      "references": [
+        "RFC 8725: JSON Web Token Best Current Practices"
+      ],
+      "tags": [
+        "gotcha",
+        "classic"
+      ]
+    },
+    {
+      "id": "sec-review-auth-middleware-01",
+      "domain": "security",
+      "concepts": [
+        "authn-authz",
+        "oauth-oidc",
+        "session-management"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review the new bearer-token middleware",
+      "prompt": "This PR adds shared authentication middleware for the `orders-api`, which sits behind the same IdP as about 30 other internal and partner-facing APIs. The service also mounts `/health`, `/docs` (OpenAPI UI), `/public/*` (static assets) and `/publications/:id/drafts` (authenticated). Review it as you would before approving. List every issue you would block or comment on.",
+      "language": null,
+      "estSeconds": 480,
+      "code": {
+        "ts": "const PUBLIC_PREFIXES = [\"/health\", \"/docs\", \"/public\"];\n\nexport function requireAuth(keys: JwksCache) {\n  return async (req: Request, res: Response, next: NextFunction) => {\n    if (PUBLIC_PREFIXES.some((p) => req.path.startsWith(p))) return next(); //!issue:1\n    const header = req.headers.authorization ?? \"\";\n    const token = header.startsWith(\"Bearer \")\n      ? header.slice(7)\n      : String(req.query.access_token ?? \"\"); //!issue:2\n    try {\n      const claims = await verifyJwt(token, keys, { issuer: ISSUER, algorithms: [\"RS256\"] }); //!issue:3\n      req.user = { id: claims.sub, tenantId: claims.tenant_id, scopes: claims.scope.split(\" \") };\n      return next();\n    } catch (err) {\n      if (err instanceof TokenExpiredError) {\n        // Avoid logging users out mid-session when clocks drift; the client refreshes soon anyway.\n        const stale = decodeUnverified(token); //!issue:5\n        req.user = { id: stale.sub, tenantId: stale.tenant_id, scopes: stale.scope.split(\" \") }; //!issue:5\n        return next();\n      }\n      logger.warn(\"token rejected\", { token, path: req.path, err }); //!issue:4\n      return res.status(401).json({ error: \"unauthorized\" });\n    }\n  };\n}",
+        "go": "var publicPrefixes = []string{\"/health\", \"/docs\", \"/public\"}\n\nfunc RequireAuth(keys *JWKSCache, log *slog.Logger) func(http.Handler) http.Handler {\n\treturn func(next http.Handler) http.Handler {\n\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t\tfor _, p := range publicPrefixes {\n\t\t\t\tif strings.HasPrefix(r.URL.Path, p) { //!issue:1\n\t\t\t\t\tnext.ServeHTTP(w, r)\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t}\n\t\t\ttoken, ok := strings.CutPrefix(r.Header.Get(\"Authorization\"), \"Bearer \")\n\t\t\tif !ok {\n\t\t\t\ttoken = r.URL.Query().Get(\"access_token\") //!issue:2\n\t\t\t}\n\t\t\tclaims, err := VerifyJWT(token, keys, VerifyOptions{Issuer: issuer, Algorithms: []string{\"RS256\"}}) //!issue:3\n\t\t\tif errors.Is(err, ErrTokenExpired) {\n\t\t\t\t// Avoid logging users out mid-session when clocks drift; the client refreshes soon anyway.\n\t\t\t\tclaims, err = DecodeUnverified(token) //!issue:5\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\tlog.Warn(\"token rejected\", \"token\", token, \"path\", r.URL.Path, \"err\", err) //!issue:4\n\t\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tctx := WithUser(r.Context(), UserFromClaims(claims))\n\t\t\tnext.ServeHTTP(w, r.WithContext(ctx))\n\t\t})\n\t}\n}",
+        "rust": "const PUBLIC_PREFIXES: &[&str] = &[\"/health\", \"/docs\", \"/public\"];\n\npub async fn require_auth(\n    State(keys): State<Arc<JwksCache>>,\n    Query(q): Query<HashMap<String, String>>,\n    mut req: Request,\n    next: Next,\n) -> Result<Response, StatusCode> {\n    let path = req.uri().path().to_owned();\n    if PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p)) { //!issue:1\n        return Ok(next.run(req).await);\n    }\n    let token = match req.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok()) {\n        Some(v) if v.starts_with(\"Bearer \") => v[7..].to_owned(),\n        _ => q.get(\"access_token\").cloned().unwrap_or_default(), //!issue:2\n    };\n    let opts = VerifyOptions { issuer: ISSUER, algorithms: &[Algorithm::RS256] }; //!issue:3\n    let claims = match verify_jwt(&token, &keys, &opts) {\n        Ok(c) => c,\n        // Avoid logging users out mid-session when clocks drift; the client refreshes soon anyway.\n        Err(AuthError::Expired) => decode_unverified(&token).map_err(|_| StatusCode::UNAUTHORIZED)?, //!issue:5\n        Err(e) => {\n            tracing::warn!(%token, %path, error = %e, \"token rejected\"); //!issue:4\n            return Err(StatusCode::UNAUTHORIZED);\n        }\n    };\n    req.extensions_mut().insert(AuthUser::from(claims));\n    Ok(next.run(req).await)\n}",
+        "csharp": "public sealed class RequireAuthMiddleware(RequestDelegate next, IJwtVerifier verifier, ILogger<RequireAuthMiddleware> log)\n{\n    private static readonly string[] PublicPrefixes = [\"/health\", \"/docs\", \"/public\"];\n\n    public async Task InvokeAsync(HttpContext ctx)\n    {\n        var path = ctx.Request.Path.Value ?? \"\";\n        if (PublicPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase))) //!issue:1\n        {\n            await next(ctx);\n            return;\n        }\n        var header = ctx.Request.Headers.Authorization.ToString();\n        var token = header.StartsWith(\"Bearer \") ? header[7..] : ctx.Request.Query[\"access_token\"].ToString(); //!issue:2\n        try\n        {\n            var claims = await verifier.VerifyAsync(token, new VerifyOptions { Issuer = Issuer, Algorithms = [\"RS256\"] }); //!issue:3\n            ctx.User = claims.ToPrincipal();\n        }\n        catch (SecurityTokenExpiredException)\n        {\n            // Avoid logging users out mid-session when clocks drift; the client refreshes soon anyway.\n            ctx.User = JwtDecoder.DecodeUnverified(token).ToPrincipal(); //!issue:5\n        }\n        catch (SecurityTokenException ex)\n        {\n            log.LogWarning(ex, \"Token rejected {Token} on {Path}\", token, path); //!issue:4\n            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;\n            return;\n        }\n        await next(ctx);\n    }\n}",
+        "java": "public class RequireAuthFilter extends OncePerRequestFilter {\n    private static final List<String> PUBLIC_PREFIXES = List.of(\"/health\", \"/docs\", \"/public\");\n    private final JwtVerifier verifier;\n\n    public RequireAuthFilter(JwtVerifier verifier) { this.verifier = verifier; }\n\n    @Override\n    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)\n            throws ServletException, IOException {\n        String path = req.getRequestURI();\n        if (PUBLIC_PREFIXES.stream().anyMatch(path::startsWith)) { //!issue:1\n            chain.doFilter(req, res);\n            return;\n        }\n        String header = Objects.requireNonNullElse(req.getHeader(\"Authorization\"), \"\");\n        String token = header.startsWith(\"Bearer \") ? header.substring(7) : req.getParameter(\"access_token\"); //!issue:2\n        try {\n            Claims claims = verifier.verify(token, VerifyOptions.issuer(ISSUER).algorithms(\"RS256\")); //!issue:3\n            req.setAttribute(AUTH_USER, AuthUser.from(claims));\n        } catch (TokenExpiredException e) {\n            // Avoid logging users out mid-session when clocks drift; the client refreshes soon anyway.\n            req.setAttribute(AUTH_USER, AuthUser.from(JwtDecoder.decodeUnverified(token))); //!issue:5\n        } catch (JwtException e) {\n            log.warn(\"Token rejected {} on {}\", token, path, e); //!issue:4\n            res.sendError(HttpServletResponse.SC_UNAUTHORIZED);\n            return;\n        }\n        chain.doFilter(req, res);\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Public-path check is a raw prefix match, so `/publications/:id/drafts` (and any future `/healthz-admin`, `/docsign` route) skips authentication",
+          "fix": "Match exact paths or whole segments (`/public/`), declare public routes explicitly in the router instead of in middleware, and make authentication the default with opt-out per route."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Falls back to an `access_token` query parameter, which puts bearer tokens in access logs, proxy logs, browser history and Referer headers",
+          "fix": "Accept bearer tokens only in the Authorization header. If a download link needs auth, issue a short-lived, single-purpose signed URL instead."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Audience is never checked, so a token the IdP minted for any of the other APIs or clients is accepted here",
+          "fix": "Require `aud` to contain this API's identifier (for example `https://orders-api`) and check the scopes the endpoint needs."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "Rejected tokens are logged in full, turning the log pipeline into a credential store",
+          "fix": "Never log tokens; log the `jti`, `kid`, issuer and failure reason, or a truncated hash if correlation is needed."
+        },
+        {
+          "id": "5",
+          "severity": "critical",
+          "summary": "Expired tokens are accepted by decoding them without verification, so expiry and revocation mean nothing and a stolen token works forever",
+          "fix": "Reject expired tokens with 401 so the client refreshes. Handle clock drift with a small verification leeway (30 to 60 seconds), never by trusting unverified claims."
+        }
+      ],
+      "explanation": "The most dangerous line is the clock-drift 'convenience': once a token expires, its claims are trusted without any signature check, so a leaked token from last year still works and short token lifetimes buy nothing. Missing audience validation is the next most important because every API sharing the IdP becomes a way in: a token stolen from a low-trust partner integration works against orders. The prefix match is the kind of bug that ships quietly and is found by a pentester months later, which is why public routes should be an explicit allowlist in the router. Query-string tokens and logged tokens both leak credentials into systems with far weaker access control than the API itself. A strong review also notes that `algorithms: [\"RS256\"]` and the issuer check are correct, so the author knows what to keep. Takeaway: auth middleware should fail closed on every ambiguity, and convenience fallbacks are where credentials leak.",
+      "references": [
+        "RFC 6750: OAuth 2.0 Bearer Token Usage",
+        "RFC 8725: JSON Web Token Best Current Practices"
+      ],
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-review-avatar-upload-01",
+      "domain": "security",
+      "concepts": [
+        "input-validation",
+        "xss-csrf"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review the avatar upload endpoint",
+      "prompt": "A product engineer wrote this avatar upload endpoint for the main web app (`https://app.acme.com`). Clients call `PUT /api/users/me/avatar?filename=me.png` with the image as the raw body. Review it before it ships and list every issue.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "// Served as static files at /uploads by the same web server as the app.\nconst UPLOAD_ROOT = path.resolve(\"public/uploads\"); //!issue:4\nconst ALLOWED_TYPES = new Set([\"image/png\", \"image/jpeg\", \"image/gif\", \"image/svg+xml\"]);\n\nrouter.put(\n  \"/api/users/me/avatar\",\n  requireAuth,\n  express.raw({ type: () => true, limit: \"2gb\" }), //!issue:3\n  async (req, res) => {\n    const contentType = req.get(\"content-type\") ?? \"\";\n    if (!ALLOWED_TYPES.has(contentType)) { //!issue:2\n      return res.status(415).json({ error: \"unsupported type\" });\n    }\n    const filename = String(req.query.filename ?? \"avatar\");\n    const dir = path.join(UPLOAD_ROOT, req.user!.id);\n    await fs.mkdir(dir, { recursive: true });\n    await fs.writeFile(path.join(dir, filename), req.body); //!issue:1\n    await users.setAvatarUrl(req.user!.id, `/uploads/${req.user!.id}/${filename}`); //!issue:4\n    res.status(204).end();\n  },\n);",
+        "go": "// Served as static files at /uploads by the same web server as the app.\nconst uploadRoot = \"./public/uploads\" //!issue:4\n\nvar allowedTypes = map[string]bool{\"image/png\": true, \"image/jpeg\": true, \"image/gif\": true, \"image/svg+xml\": true}\n\nfunc (h *Handler) PutAvatar(w http.ResponseWriter, r *http.Request) {\n\tuser := auth.UserFrom(r.Context())\n\tif !allowedTypes[r.Header.Get(\"Content-Type\")] { //!issue:2\n\t\thttp.Error(w, \"unsupported type\", http.StatusUnsupportedMediaType)\n\t\treturn\n\t}\n\tdata, err := io.ReadAll(r.Body) //!issue:3\n\tif err != nil {\n\t\thttp.Error(w, \"read failed\", http.StatusBadRequest)\n\t\treturn\n\t}\n\tname := r.URL.Query().Get(\"filename\")\n\tdir := filepath.Join(uploadRoot, user.ID)\n\tif err := os.MkdirAll(dir, 0o755); err != nil {\n\t\thttp.Error(w, \"internal error\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tif err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil { //!issue:1\n\t\thttp.Error(w, \"internal error\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\th.users.SetAvatarURL(r.Context(), user.ID, \"/uploads/\"+user.ID+\"/\"+name) //!issue:4\n\tw.WriteHeader(http.StatusNoContent)\n}",
+        "rust": "// Served as static files at /uploads by the same web server as the app.\nconst UPLOAD_ROOT: &str = \"./public/uploads\"; //!issue:4\nconst ALLOWED_TYPES: &[&str] = &[\"image/png\", \"image/jpeg\", \"image/gif\", \"image/svg+xml\"];\n\npub fn routes() -> Router<AppState> {\n    Router::new()\n        .route(\"/api/users/me/avatar\", put(put_avatar))\n        .layer(DefaultBodyLimit::disable()) //!issue:3\n}\n\nasync fn put_avatar(\n    State(app): State<AppState>,\n    user: AuthUser,\n    Query(q): Query<AvatarQuery>,\n    headers: HeaderMap,\n    body: Bytes, //!issue:3\n) -> Result<StatusCode, ApiError> {\n    let content_type = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(\"\");\n    if !ALLOWED_TYPES.contains(&content_type) { //!issue:2\n        return Err(ApiError::UnsupportedMediaType);\n    }\n    let dir = Path::new(UPLOAD_ROOT).join(user.id.to_string());\n    tokio::fs::create_dir_all(&dir).await?;\n    tokio::fs::write(dir.join(&q.filename), &body).await?; //!issue:1\n    let url = format!(\"/uploads/{}/{}\", user.id, q.filename); //!issue:4\n    app.users.set_avatar_url(user.id, &url).await?;\n    Ok(StatusCode::NO_CONTENT)\n}",
+        "csharp": "public static class AvatarEndpoints\n{\n    // Served as static files at /uploads by the same web server as the app.\n    private const string UploadRoot = \"wwwroot/uploads\"; //!issue:4\n    private static readonly HashSet<string> AllowedTypes = [\"image/png\", \"image/jpeg\", \"image/gif\", \"image/svg+xml\"];\n\n    public static void Map(WebApplication app) =>\n        app.MapPut(\"/api/users/me/avatar\", PutAvatar)\n           .RequireAuthorization()\n           .WithMetadata(new RequestSizeLimitAttribute(2L * 1024 * 1024 * 1024)); //!issue:3\n\n    private static async Task<IResult> PutAvatar(HttpRequest request, ClaimsPrincipal user, string filename, IUserStore users)\n    {\n        if (!AllowedTypes.Contains(request.ContentType ?? \"\")) //!issue:2\n            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);\n        var userId = user.GetUserId();\n        var dir = Path.Combine(UploadRoot, userId);\n        Directory.CreateDirectory(dir);\n        using var buffer = new MemoryStream(); //!issue:3\n        await request.Body.CopyToAsync(buffer);\n        await File.WriteAllBytesAsync(Path.Combine(dir, filename), buffer.ToArray()); //!issue:1\n        await users.SetAvatarUrlAsync(userId, $\"/uploads/{userId}/{filename}\"); //!issue:4\n        return Results.NoContent();\n    }\n}",
+        "java": "@RestController\npublic class AvatarController {\n    // Served as static files at /uploads by the same web server as the app.\n    private static final Path UPLOAD_ROOT = Path.of(\"/srv/app/public/uploads\"); //!issue:4\n    private static final Set<String> ALLOWED_TYPES = Set.of(\"image/png\", \"image/jpeg\", \"image/gif\", \"image/svg+xml\");\n    private final UserService users;\n\n    public AvatarController(UserService users) { this.users = users; }\n\n    @PutMapping(\"/api/users/me/avatar\")\n    public ResponseEntity<Void> putAvatar(@RequestParam String filename,\n                                          @RequestHeader(\"Content-Type\") String contentType,\n                                          @RequestBody byte[] body, //!issue:3\n                                          @AuthenticationPrincipal AppUser user) throws IOException {\n        if (!ALLOWED_TYPES.contains(contentType)) { //!issue:2\n            return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).build();\n        }\n        Path dir = UPLOAD_ROOT.resolve(user.getId());\n        Files.createDirectories(dir);\n        Files.write(dir.resolve(filename), body); //!issue:1\n        users.setAvatarUrl(user.getId(), \"/uploads/\" + user.getId() + \"/\" + filename); //!issue:4\n        return ResponseEntity.noContent().build();\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The client-supplied filename is joined into the filesystem path, so `../../` sequences (or an absolute path) write anywhere the process can, including over code or config",
+          "fix": "Never use client names on disk. Generate the stored name (a UUID plus an extension derived from the detected type), and if you must keep the original name, store it as metadata only."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "The type check trusts the client's Content-Type header; the bytes are never inspected, so an HTML or script file passes as image/png",
+          "fix": "Detect the type from magic bytes, decode and re-encode the image (which also strips metadata and polyglot payloads), and drop SVG from the allowlist unless it is sanitized."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "The entire body is buffered in memory with a 2 GB or unlimited cap, so a handful of concurrent uploads exhausts memory",
+          "fix": "Set a small limit appropriate for avatars (for example 5 MB) at the proxy and the framework, and stream to storage rather than buffering."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "Uploads are served from the app's own origin under the user-chosen name and extension, so an uploaded `.html` or `.svg` file runs script as `app.acme.com` (stored XSS with the user's session)",
+          "fix": "Store in object storage and serve from a separate cookieless domain (for example `acme-usercontent.com`) with a fixed Content-Type, `X-Content-Type-Options: nosniff`, and `Content-Disposition: attachment` for anything that is not a re-encoded image."
+        }
+      ],
+      "explanation": "The issues chain: the attacker picks the filename (`x.html`), lies in the Content-Type header (`image/png`), and the static server then serves the file by its extension as `text/html` on the app's origin, where it can read CSRF tokens and call APIs as any user who opens the avatar URL. SVG is on the allowlist and is itself an active document format, so even an honest-looking upload can carry script. Path traversal is the most severe on its own because it can overwrite application files or config and lead to code execution. The memory issue is easy to dismiss as performance, but buffering unbounded bodies is a cheap denial of service. A strong reviewer proposes the standard shape: size limits at the edge, server-generated names, content sniffing plus re-encoding, object storage, and a separate user-content domain. Takeaway: treat every uploaded file as hostile code until you have renamed it, re-encoded it and isolated where it is served.",
+      "references": [
+        "OWASP File Upload Cheat Sheet"
+      ],
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-pkce-custom-scheme-01",
+      "domain": "security",
+      "concepts": [
+        "oauth-oidc"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Mobile login code intercepted by a look-alike app",
+      "prompt": "Your mobile app uses the OAuth authorization code flow with a custom-scheme redirect (`acme://callback`). It is a public client with no client secret. A review shows a malicious app installed on the same device can register the same scheme and receive the authorization code. Which control stops that app from redeeming the code for tokens?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "PKCE: send a SHA-256 `code_challenge` on the authorize request and require the matching `code_verifier` at the token endpoint"
+        },
+        {
+          "id": "b",
+          "text": "A random `state` value generated per login and checked when the redirect comes back to the app"
+        },
+        {
+          "id": "c",
+          "text": "A client secret compiled into the app and required on every call to the token endpoint"
+        },
+        {
+          "id": "d",
+          "text": "Request the `openid` scope and validate that the ID token's `nonce` matches the login attempt"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Only the app that started the flow knows the verifier, so a stolen code is useless.",
+        "b": "State protects the legitimate app against CSRF on the callback; it does not stop an attacker who holds the code from redeeming it.",
+        "c": "Anything shipped in a binary can be extracted, which is why native apps are public clients.",
+        "d": "The nonce binds an ID token to the client's session; the attacker redeems the code itself and simply ignores it."
+      },
+      "explanation": "PKCE (RFC 7636) binds the authorization code to a secret the legitimate app generates per login. The authorize request carries only the hash (`code_challenge`, method S256), and the token endpoint demands the original `code_verifier`. A malicious app that intercepts the code never saw the verifier, so the token exchange fails. `state` and `nonce` are both worth having but defend different things: login CSRF and ID token replay. Shipping a secret in the app is security theater. OAuth 2.1 makes PKCE mandatory for all clients using the code flow, including confidential ones, and claimed HTTPS redirects (universal or app links) are a good additional layer for native apps. Takeaway: for public clients, PKCE is what makes an intercepted authorization code worthless.",
+      "references": [
+        "RFC 7636: Proof Key for Code Exchange",
+        "RFC 8252: OAuth 2.0 for Native Apps"
+      ],
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-implicit-flow-spa-01",
+      "domain": "security",
+      "concepts": [
+        "oauth-oidc"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "SPA team asks to keep the implicit flow",
+      "prompt": "A team building a browser-only SPA wants to keep the OAuth implicit grant \"because there is no backend to hold a client secret.\" OAuth 2.1 drops the implicit grant. What is the main reason, and what should the team use instead?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "The access token is returned in the redirect URL, exposed to history, extensions and token injection, with no way to bind it to the client; use authorization code with PKCE"
+        },
+        {
+          "id": "b",
+          "text": "Implicit cannot issue refresh tokens, so users must log in again every hour; keep implicit but renew tokens silently in a hidden iframe"
+        },
+        {
+          "id": "c",
+          "text": "Implicit requires the client secret to be sent from the browser, where it is extractable; use the resource owner password grant instead"
+        },
+        {
+          "id": "d",
+          "text": "Implicit tokens cannot be JWTs, so APIs cannot validate them locally; use the client credentials grant from the SPA instead"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The token travels through the front channel in the URL, and code plus PKCE keeps it in a back-channel response the client requested.",
+        "b": "A real limitation, but silent iframe renewal depends on third-party cookies, which browsers now block, and it does not fix the token-in-URL exposure.",
+        "c": "Implicit never used a secret, and the password grant is also removed in OAuth 2.1.",
+        "d": "Token format is unrelated to the grant, and client credentials in a browser would hand the secret to every visitor."
+      },
+      "explanation": "In the implicit grant the authorization server puts the access token in the redirect URL fragment. That exposes it to browser history, any script or extension on the page, and token injection attacks where an attacker swaps in a token issued to a different client, and the client has no way to prove it was the one that requested it. The authorization code flow with PKCE works fine without a client secret: the SPA exchanges the code over a direct `fetch` to the token endpoint, and the verifier proves it started the flow. For high-value apps, a backend-for-frontend that keeps tokens server-side and gives the browser only an HttpOnly session cookie is stronger still. Takeaway: 'no backend' was the reason for implicit in 2012; PKCE removed that reason, so new SPAs should use code plus PKCE or a BFF.",
+      "references": [
+        "RFC 9700: Best Current Practice for OAuth 2.0 Security"
+      ],
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-token-audience-01",
+      "domain": "security",
+      "concepts": [
+        "oauth-oidc",
+        "authn-authz"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "A notes app token creates a payout",
+      "prompt": "All internal APIs trust the same IdP. The payments API validates the JWT signature against the IdP's JWKS, checks `iss` and `exp`, then looks up whether the user has the `payouts` permission in its own database. A pentester used an access token that was issued to the notes web app to create a payout. What is the most important missing check?",
+      "context": "```\nPOST /v1/payouts 201 sub=user_8812 client_id=notes-web aud=https://notes-api scope=\"notes:read notes:write\"\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Require `aud` to include the payments API's identifier, so tokens minted for other resource servers are rejected"
+        },
+        {
+          "id": "b",
+          "text": "Require the `nonce` claim to match the value sent on the original authorization request"
+        },
+        {
+          "id": "c",
+          "text": "Require `azp` to equal `sub`, so only tokens the user obtained directly are accepted"
+        },
+        {
+          "id": "d",
+          "text": "Introspect every token at the IdP rather than validating it locally, so revoked tokens fail"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Audience restriction is what makes a token valid for one API and not another.",
+        "b": "Nonce is checked by the client on ID tokens; resource servers do not have the original value.",
+        "c": "azp names the client the token was issued to, not a user, so this comparison is meaningless.",
+        "d": "The token is genuinely active, so introspection returns active=true; this is a scoping problem, not a revocation one."
+      },
+      "explanation": "A signature and issuer check proves the IdP issued the token, not that it was issued for you. Without an audience check, every API sharing the IdP accepts every token, so the weakest client (here a notes app, perhaps with an XSS bug) becomes a key to the most sensitive API. The payments API should require `aud` to contain its own identifier and should also require a scope like `payments:write`, rather than relying only on the user's permissions, because scopes express what the user delegated to this particular client. Audience-restricted tokens also limit the damage when a resource server is compromised, since tokens it receives cannot be replayed elsewhere. Takeaway: every resource server must check that a token was minted for it, not just that it is genuine.",
+      "references": [
+        "RFC 9068: JWT Profile for OAuth 2.0 Access Tokens, section 4",
+        "RFC 8707: Resource Indicators for OAuth 2.0"
+      ],
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "sec-samesite-lax-gap-01",
+      "domain": "security",
+      "concepts": [
+        "xss-csrf",
+        "session-management"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "What SameSite=Lax still leaves exposed",
+      "prompt": "The session cookie is `Set-Cookie: sid=…; Secure; HttpOnly; SameSite=Lax`. There are no CSRF tokens; the team says SameSite makes them unnecessary. In current browsers, which endpoint can a malicious page on an unrelated site still exploit with the victim's session?",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        {
+          "id": "a",
+          "text": "`GET /account/email/confirm-change?to=attacker@evil.example`, which applies the change as soon as it is loaded"
+        },
+        {
+          "id": "b",
+          "text": "`POST /account/password` sent by an auto-submitting form on the attacker's page"
+        },
+        {
+          "id": "c",
+          "text": "`DELETE /api/projects/42` sent with `fetch(url, { method: \"DELETE\", credentials: \"include\" })`"
+        },
+        {
+          "id": "d",
+          "text": "`PUT /api/profile` with a JSON body sent by `XMLHttpRequest` with `withCredentials = true`"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Lax still sends the cookie on top-level GET navigations, so a link, redirect or window.open triggers the state change.",
+        "b": "Lax withholds the cookie on cross-site POST requests (explicit Lax has no two-minute exception; that applies only to the default).",
+        "c": "Cross-site subresource requests do not carry Lax cookies, and DELETE also requires a CORS preflight.",
+        "d": "Same reason: not a top-level navigation, and a JSON content type triggers a preflight the server should refuse."
+      },
+      "explanation": "SameSite=Lax blocks cookies on cross-site subresource requests and unsafe-method navigations, but deliberately allows them on top-level navigations with safe methods so that following a link into the app keeps you logged in. Any GET with side effects is therefore still forgeable with a plain link or redirect. The deeper lesson is that SameSite is about sites, not origins: a page on any subdomain of your registrable domain (user-content, a marketing CMS, a forgotten staging host) counts as same-site and gets the cookie on every request. That is why SameSite is defense in depth alongside safe-method discipline and either CSRF tokens or Origin and Fetch Metadata (`Sec-Fetch-Site`) checks on state-changing requests. Takeaway: SameSite=Lax removes most CSRF, but only if GET never changes state and you trust every subdomain.",
+      "references": [
+        "OWASP Cross-Site Request Forgery Prevention Cheat Sheet"
+      ],
+      "tags": [
+        "gotcha",
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-csp-strict-nonce-01",
+      "domain": "security",
+      "concepts": [
+        "xss-csrf"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "A CSP that did not stop a reflected XSS",
+      "prompt": "A pentest found reflected XSS in search. Both `?q=<img src=x onerror=alert(document.domain)>` and `?q=<script>alert(1)</script>` execute. Besides fixing the output encoding bug, which CSP change would have blocked both payloads while keeping the app's legitimate inline scripts working?",
+      "context": "```\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; object-src 'none'\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Drop `'unsafe-inline'`, add a fresh random nonce to every legitimate `<script>` tag per response, and use `script-src 'nonce-…' 'strict-dynamic'; base-uri 'none'`"
+        },
+        {
+          "id": "b",
+          "text": "Keep the current policy but add a `report-to` endpoint so injection attempts are reported and each one can be fixed as it appears"
+        },
+        {
+          "id": "c",
+          "text": "Replace `https://cdn.jsdelivr.net` with `'self'` so that only scripts served from your own origin can load on the page"
+        },
+        {
+          "id": "d",
+          "text": "Add `X-XSS-Protection: 1; mode=block` and keep the policy as it is so that the existing inline scripts keep working"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Injected markup cannot guess the per-response nonce, and inline event handlers are blocked entirely.",
+        "b": "Reporting tells you about attacks; it does not block them while `'unsafe-inline'` remains.",
+        "c": "The CDN allowlist is a genuine weakness (it hosts arbitrary packages), but both payloads are inline and still run.",
+        "d": "Browsers have removed the XSS auditor, so the header does nothing today."
+      },
+      "explanation": "`'unsafe-inline'` permits any inline script and event handler, which is exactly what reflected XSS injects, so this policy provides almost no XSS protection. A strict CSP uses a per-response nonce: the server templating adds `nonce=\"…\"` to its own script tags, injected tags lack it, and inline `onerror` handlers are not allowed at all. `'strict-dynamic'` lets trusted scripts load their dependencies without a host allowlist, which also removes the CDN bypass, and `base-uri 'none'` stops `<base>` injection from redirecting relative script URLs. Rolling it out usually means moving inline event handlers into script files and starting in report-only mode, which is where option b's reporting is genuinely useful. Takeaway: CSP is a mitigation layer behind correct output encoding, and it only mitigates XSS when it is nonce- or hash-based without `'unsafe-inline'`.",
+      "references": [
+        "W3C Content Security Policy Level 3",
+        "Weichselbaum et al., CSP Is Dead, Long Live CSP! (ACM CCS 2016)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-envelope-kek-rotation-01",
+      "domain": "security",
+      "concepts": [
+        "encryption",
+        "secrets-management"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Rotating the KMS key over 40 TB of objects",
+      "prompt": "Your document store uses envelope encryption: each of 900M objects (40 TB) is encrypted with its own AES-256-GCM data key (DEK), and that DEK is stored next to the object, wrapped by a key in your cloud KMS (the KEK). Compliance requires yearly KEK rotation. What does rotating the KEK actually require?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Only the small wrapped DEKs are affected: KMS keeps old key versions for unwrapping, and you re-wrap DEKs under the new version if old material must be retired"
+        },
+        {
+          "id": "b",
+          "text": "Decrypting and re-encrypting all 900M objects with fresh DEKs, because each DEK was derived from the KEK and changes along with it"
+        },
+        {
+          "id": "c",
+          "text": "Nothing at all, because AES-256-GCM keys never need rotation and the yearly requirement is a checkbox with no security value"
+        },
+        {
+          "id": "d",
+          "text": "Re-encrypting every object with a new DEK, but lazily on next read so that the 40 TB of work is spread out over the year"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "This is the point of envelope encryption: rotating the KEK touches kilobytes per object, not the data.",
+        "b": "DEKs are random keys, not derived from the KEK; only their wrapping depends on it.",
+        "c": "Rotation limits exposure if key material leaks and is often a contractual requirement; dismissing it is wrong.",
+        "d": "Re-encrypting the data is only needed if a DEK itself is compromised, and lazy re-encryption leaves cold objects untouched."
+      },
+      "explanation": "Envelope encryption separates a random per-object data key from the key that protects it. Rotating the KEK in a managed KMS creates a new key version: new wraps use it, and old wrapped DEKs still unwrap with the retained old version, so nothing about the 40 TB changes. If policy says old KEK material must be destroyed, you re-wrap each DEK (unwrap with old, wrap with new), which is 900M small KMS operations, usually done in batches with a data-key cache, not a re-encryption of the objects. Re-encrypting payloads is the response to a compromised DEK, not routine rotation. The design also gives you crypto-shredding: destroy the wrapped DEKs or the KEK and the ciphertext becomes unreadable everywhere, including backups. Takeaway: envelope encryption makes key rotation cheap because only keys are re-encrypted, never the data.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sec-dependency-confusion-01",
+      "domain": "security",
+      "concepts": [
+        "supply-chain"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Internal package resolved from the public registry",
+      "prompt": "Your internal package `acme-billing-utils@2.4.0` lives in a private npm registry. A CI job on a new runner image installed `acme-billing-utils@99.0.1` from the public registry instead, where a stranger had published it with a postinstall script. Which change most directly closes this class of attack?",
+      "context": "```\nnpm http fetch GET 200 https://registry.npmjs.org/acme-billing-utils 312ms\n> acme-billing-utils@99.0.1 postinstall\n> node setup.js\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        {
+          "id": "a",
+          "text": "Move internal packages under an org scope you own (`@acme/…`) and map that scope to the private registry in a committed `.npmrc`"
+        },
+        {
+          "id": "b",
+          "text": "Run `npm audit` in every CI job and fail the build whenever a high or critical severity advisory is reported"
+        },
+        {
+          "id": "c",
+          "text": "Pin the dependency to the exact version `2.4.0` in `package.json` so that 99.0.1 can never be selected"
+        },
+        {
+          "id": "d",
+          "text": "Route every install through one caching proxy registry so that all package downloads are logged centrally"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "A scope you own cannot be published by anyone else publicly, and the scope mapping means the name never resolves there.",
+        "b": "Audit only knows about reported advisories; a fresh malicious package has none.",
+        "c": "The attacker can publish 2.4.0 publicly too, and an unscoped name still resolves against whichever registry the runner uses.",
+        "d": "Logging records the attack; a proxy that merges public and private names can even cause it."
+      },
+      "explanation": "Dependency confusion works because an unscoped name is resolved against whatever registry the client is configured to use, and a runner with a default `.npmrc` uses the public one. Owning a scope on the public registry and mapping `@acme:registry=` in a committed `.npmrc` makes the private source authoritative for every internal name and prevents anyone else from claiming them. Two companion controls make it robust: a committed lockfile installed with `npm ci`, which pins the resolved URL and integrity hash, and disabling install scripts in CI where possible. For package managers without scopes, the equivalent is registering placeholder names publicly or configuring the proxy so internal names never fall through to upstream. Takeaway: make the source of each package name unambiguous in committed config, rather than trusting each machine's registry settings.",
+      "references": [
+        "Alex Birsan, Dependency Confusion: How I Hacked Into Apple, Microsoft and Dozens of Other Companies (2021)"
+      ],
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-actions-pin-sha-01",
+      "domain": "security",
+      "concepts": [
+        "supply-chain"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Pinning a third-party GitHub Action",
+      "prompt": "Your release workflow uses a popular third-party action and has an npm publish token in its secrets. Which way of referencing the action protects you if the maintainer's account is compromised and the attacker repoints the repository's tags to a malicious commit?",
+      "language": null,
+      "estSeconds": 50,
+      "options": [
+        {
+          "id": "a",
+          "text": "`uses: some-org/changed-files@<full 40-character commit SHA>` with a `# v45.0.1` comment"
+        },
+        {
+          "id": "b",
+          "text": "`uses: some-org/changed-files@v45.0.1`, an exact release tag rather than a major tag"
+        },
+        {
+          "id": "c",
+          "text": "`uses: some-org/changed-files@main`, so that maintainer security fixes arrive at once"
+        },
+        {
+          "id": "d",
+          "text": "`uses: some-org/changed-files@v45` with Dependabot opening PRs for each new release"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "A full commit SHA is immutable; tags and branches are not.",
+        "b": "Exact-looking tags are still mutable refs and can be force-pushed to any commit.",
+        "c": "A branch is the most mutable ref of all.",
+        "d": "Dependabot helps you review updates, but the tag itself can still be moved under you between PRs."
+      },
+      "explanation": "Git tags and branches are pointers the repository owner (or an attacker with their credentials) can move. In March 2025 the widely used `tj-actions/changed-files` action was compromised and many of its version tags were repointed to a commit that dumped runner secrets into build logs; workflows pinned to a full commit SHA were unaffected. Pin to the full SHA (short SHAs can collide), keep a version comment for humans, and let Dependabot or Renovate propose SHA bumps. Note the limits: a pinned action that itself pulls an unpinned container image or other actions by tag is still exposed, and least-privilege `permissions:` on `GITHUB_TOKEN` limits what any compromised step can do. Takeaway: in CI, only content-addressed references are actually pinned.",
+      "references": [
+        "GitHub Docs: Security hardening for GitHub Actions, using third-party actions"
+      ],
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-session-fixation-01",
+      "domain": "security",
+      "concepts": [
+        "session-management"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Session ID that survives login",
+      "prompt": "A pentest report: an attacker who controls a sibling subdomain can plant a session cookie in the victim's browser before login. After the victim logs in, the attacker's copy of that same cookie is now authenticated. Which fix addresses this directly?",
+      "language": null,
+      "estSeconds": 50,
+      "options": [
+        {
+          "id": "a",
+          "text": "Issue a brand-new session ID at login and on any privilege change, invalidating the old one"
+        },
+        {
+          "id": "b",
+          "text": "Set the `HttpOnly` flag on the session cookie so page scripts can never read it"
+        },
+        {
+          "id": "c",
+          "text": "Shorten the idle timeout to 15 minutes so that planted sessions expire sooner"
+        },
+        {
+          "id": "d",
+          "text": "Encrypt the session ID with AES before storing it in the cookie value"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The attacker knows the pre-login ID; rotating it at authentication makes that knowledge worthless.",
+        "b": "HttpOnly prevents reading the cookie, but the attacker already knows the value because they set it.",
+        "c": "The victim logs in within the window, and the attacker uses the session immediately.",
+        "d": "The attacker replays the encrypted value as-is; encryption does not change which session it names."
+      },
+      "explanation": "Session fixation works when the server keeps the same identifier across the transition from anonymous to authenticated. Regenerating the session ID at login (and at privilege changes like step-up MFA or role switches) breaks the attack. The planting vector is also worth closing: a `__Host-` cookie prefix requires `Secure`, `Path=/` and no `Domain` attribute, so sibling subdomains cannot set or overwrite it. Takeaway: any change in privilege should mint a new session identifier.",
+      "references": [
+        "OWASP Session Management Cheat Sheet"
+      ],
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "sec-oidc-trust-wildcard-01",
+      "domain": "security",
+      "concepts": [
+        "least-privilege",
+        "supply-chain"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "A deploy role any repository can assume",
+      "prompt": "This is the trust policy condition on the `prod-deployer` IAM role, which GitHub Actions assumes through OIDC. The role can update production ECS services and read production secrets. What is the most accurate description of the exposure?",
+      "context": "```json\n\"Condition\": {\n  \"StringEquals\": { \"token.actions.githubusercontent.com:aud\": \"sts.amazonaws.com\" },\n  \"StringLike\":   { \"token.actions.githubusercontent.com:sub\": \"repo:acme/*\" }\n}\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Any workflow, on any branch of any repository in the `acme` org, can assume the prod role; pin `sub` to the deploy repo and a protected environment"
+        },
+        {
+          "id": "b",
+          "text": "It is safe as written, because OIDC tokens are short-lived, signed by GitHub, and can only be requested from GitHub-hosted runners"
+        },
+        {
+          "id": "c",
+          "text": "The `aud` value is wrong and should be the repository URL, otherwise OIDC tokens issued to other clouds can be replayed here"
+        },
+        {
+          "id": "d",
+          "text": "The exposure is limited to pull requests from forks, which is fully fixed by disabling workflows on fork pull requests"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The wildcard trusts every repository and ref in the org, including a throwaway repo any employee can create.",
+        "b": "Self-hosted runners can request tokens too, and short-lived does not help if the wrong workflow is trusted.",
+        "c": "`sts.amazonaws.com` is the correct audience for AWS's official credentials action.",
+        "d": "Fork PRs do not get OIDC tokens by default; the real exposure is every internal repo and branch."
+      },
+      "explanation": "OIDC federation removes long-lived cloud keys, which is a big improvement, but the trust policy becomes the security boundary. `repo:acme/*` means any repository in the organization, on any branch or event that is allowed `id-token: write`, can become `prod-deployer`. An employee (or an attacker with one compromised developer token) can create a new repo with a three-line workflow and deploy to production. Pin the subject exactly with `StringEquals`, for example `repo:acme/deploy:environment:production`, and protect that environment with required reviewers and branch restrictions so only reviewed code on `main` can reach the role. Separate roles per environment, with least-privilege permissions, limit the blast radius further. Takeaway: with workload federation, the trust policy's subject match is your access control, so it must be as narrow as a single repo and environment.",
+      "references": [
+        "GitHub Docs: Configuring OpenID Connect in Amazon Web Services"
+      ],
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "sec-xss-sinks-react-01",
+      "domain": "security",
+      "concepts": [
+        "xss-csrf"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Which of these React renders are XSS sinks",
+      "prompt": "A React 18 app renders user-controlled values in the following ways. Which are exploitable XSS sinks as written? (Select all that apply.)",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "`<div dangerouslySetInnerHTML={{ __html: marked(comment.body) }} />` with no HTML sanitizer applied"
+        },
+        {
+          "id": "b",
+          "text": "`<a href={profile.website}>Website</a>` where `website` is any string the user saved in their profile"
+        },
+        {
+          "id": "c",
+          "text": "`<p>{comment.body}</p>` where `comment.body` may contain `<script>` tags and HTML entities"
+        },
+        {
+          "id": "d",
+          "text": "Server-rendered `<script>window.__STATE__ = ${JSON.stringify(state)}</script>` where state includes display names"
+        },
+        {
+          "id": "e",
+          "text": "`<img alt={user.displayName} src={avatarUrl} />` where `avatarUrl` is validated to start with `https://`"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Markdown renderers pass raw HTML through by default; the output needs a sanitizer such as DOMPurify.",
+        "b": "A `javascript:` URL executes on click; React 18 only logs a warning. Allowlist http and https schemes.",
+        "c": "Text children are escaped by React, so this renders the markup as text.",
+        "d": "JSON.stringify does not escape `<`, so a name containing `</script><script>…` breaks out of the script block.",
+        "e": "Attribute values are escaped, and an https image URL cannot run script."
+      },
+      "explanation": "Frameworks like React make the default path safe by escaping text and attribute values, so XSS concentrates in the escape hatches: raw HTML injection (`dangerouslySetInnerHTML`, `innerHTML`, `v-html`), URL-bearing attributes where the scheme decides behavior (`href`, `src` on iframes, `formaction`), and server-side templates that embed data into a script context. The script-embedding case is easy to miss because JSON looks like data; serialize with a function that escapes `<`, `>` and `&` (or put the JSON in a `type=\"application/json\"` element and parse it). Trusted Types plus a strict CSP can enforce this at the browser level. Takeaway: in a framework that escapes by default, review the escape hatches and URL schemes, not every interpolation.",
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-zero-trust-steps-01",
+      "domain": "security",
+      "concepts": [
+        "zero-trust",
+        "encryption"
+      ],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Which changes are steps toward zero trust",
+      "prompt": "Today internal admin tools are reachable by anyone on the corporate VPN, and services in the production VPC call each other over plain HTTP with no authentication. Which changes are genuine steps toward a zero-trust model? (Select all that apply.)",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Put the admin tools behind an identity-aware proxy that checks the user, MFA and device posture on every request"
+        },
+        {
+          "id": "b",
+          "text": "Give each workload a cryptographic identity on short-lived mTLS certificates and authorize calls by that identity"
+        },
+        {
+          "id": "c",
+          "text": "Move the admin tools into a separate VPC that only the VPN address range is able to route traffic to"
+        },
+        {
+          "id": "d",
+          "text": "Allowlist the office and VPN egress IP ranges on the load balancer that fronts the admin tools"
+        },
+        {
+          "id": "e",
+          "text": "Have each service authorize the calling identity on every request, including requests from inside the VPC"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "e"
+      ],
+      "optionNotes": {
+        "a": "Access is decided per request from identity and device, not from network position.",
+        "b": "Workload identity plus mTLS gives authenticated, encrypted service-to-service traffic.",
+        "c": "This is network segmentation that still grants trust based on where traffic comes from.",
+        "d": "IP allowlists equate location with trust, which is the assumption zero trust removes.",
+        "e": "Without per-request authorization, an authenticated channel still lets any compromised service call anything."
+      },
+      "explanation": "Zero trust (NIST SP 800-207, Google's BeyondCorp) means no implicit trust from network location: every request is authenticated and authorized based on the identity of the user or workload, device state and policy, and traffic is encrypted in transit. Segmentation and IP allowlists are still useful hygiene and limit lateral movement, but they keep the castle-and-moat model where being 'inside' grants access, which is why a single phished VPN credential or compromised pod reaches everything. Takeaway: zero trust moves the security decision from where a request comes from to who is making it and whether policy allows it.",
+      "references": [
+        "NIST SP 800-207: Zero Trust Architecture",
+        "Ward and Beyer, BeyondCorp: A New Approach to Enterprise Security (;login:, 2014)"
+      ],
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-secret-rotation-design-01",
+      "domain": "security",
+      "concepts": [
+        "secrets-management",
+        "least-privilege"
+      ],
+      "skill": "design",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Zero-downtime rotation for a database password",
+      "prompt": "You are designing rotation for the Postgres credential used by 60 pods of an API. Rotation must cause no errors and must not require a deploy. Which properties belong in the design? (Select all that apply.)",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Two valid credentials overlap during rotation: create the new one, move consumers over, then revoke the old one"
+        },
+        {
+          "id": "b",
+          "text": "Pods read the secret at runtime from the secrets manager or a refreshed mounted file, rather than an env var read once at boot"
+        },
+        {
+          "id": "c",
+          "text": "Prefer short-lived credentials issued per pod (dynamic database secrets or IAM database auth) so a leak expires on its own"
+        },
+        {
+          "id": "d",
+          "text": "Change the password in place, then restart all 60 pods at the same moment so that none of them keeps a stale value"
+        },
+        {
+          "id": "e",
+          "text": "Keep the current password in the Deployment manifest so that the rollout history records each rotation for audit"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "The overlap window (two users or two passwords) is what makes rotation zero-downtime.",
+        "b": "Env vars are fixed for a process's lifetime, which forces a restart or deploy per rotation.",
+        "c": "Dynamic credentials make rotation continuous and scope each credential to one workload.",
+        "d": "In-place change breaks every open pool until the restart lands, and a simultaneous restart is an outage.",
+        "e": "That stores the secret in source control and in every copy of the manifest."
+      },
+      "explanation": "Safe rotation needs a period where both old and new credentials work (alternating two database users is the common pattern), consumers that pick up the new value without a restart (runtime fetch with caching, or a CSI-mounted file the app re-reads and a reconnect on authentication failure), and revocation of the old credential only after metrics show no one uses it. Better still is not having a long-lived shared password at all: per-pod dynamic credentials with a TTL turn a leak into a short-lived problem and make audit logs attribute queries to a workload. Takeaway: design rotation as a routine, automated, overlapping handoff, because a secret you cannot rotate without an outage will not be rotated when it leaks.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-rls-pitfalls-01",
+      "domain": "security",
+      "concepts": [
+        "multi-tenancy"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 4,
+      "title": "Postgres row-level security that may not isolate anything",
+      "prompt": "A team enabled Postgres row-level security for tenant isolation. The application connects as role `app`, which also owns the tables because migrations run as `app`. Connections go through PgBouncer in transaction pooling mode, and each request starts by running `SET app.tenant_id = '<tenant uuid>'`. Which statements are true? (Select all that apply.)",
+      "context": "```sql\nALTER TABLE invoices ENABLE ROW LEVEL SECURITY;\nCREATE POLICY tenant_isolation ON invoices\n  USING (tenant_id = current_setting('app.tenant_id')::uuid);\n```",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "As configured, the policy does not restrict `app` at all, because table owners bypass RLS unless the table uses `FORCE ROW LEVEL SECURITY`"
+        },
+        {
+          "id": "b",
+          "text": "With transaction pooling, a session-level `SET` can persist on a server connection and leak into another client's transaction; use `SET LOCAL`"
+        },
+        {
+          "id": "c",
+          "text": "Because the policy has no `WITH CHECK` clause, `INSERT` and `UPDATE` statements can write rows carrying any tenant's `tenant_id`"
+        },
+        {
+          "id": "d",
+          "text": "An index on `tenant_id` is required for Postgres to enforce the policy correctly, not just to make the filtered queries faster"
+        },
+        {
+          "id": "e",
+          "text": "Superusers and roles with `BYPASSRLS` ignore policies, so the migration role and the runtime role should be separate roles"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "e"
+      ],
+      "optionNotes": {
+        "a": "Owners are exempt by default; use FORCE or, better, a runtime role that does not own the tables.",
+        "b": "Transaction pooling hands server connections to different clients between transactions; SET LOCAL or set_config(..., true) scopes the value to one transaction.",
+        "c": "For a policy that applies to all commands, Postgres uses the USING expression as the WITH CHECK expression when none is given.",
+        "d": "Indexes affect performance only; enforcement does not depend on them.",
+        "e": "The runtime role should be a non-owner without BYPASSRLS, so the policy always applies to application queries."
+      },
+      "explanation": "Row-level security is a strong second line behind application-level tenant scoping, but two configuration details often silently disable it. First, table owners (and superusers and BYPASSRLS roles) are exempt, so running the app as the migration role means the policy never applies; tests pass because the app's own WHERE clauses still filter. Second, tenant context set at session level is incompatible with transaction pooling, because the next transaction on that server connection may belong to a different tenant's request; setting it with `SET LOCAL` inside the transaction ties it to exactly one unit of work. The WITH CHECK distractor is tempting, but Postgres reuses the USING expression for writes on an ALL policy. Verify isolation with a test that connects as the real runtime role, sets tenant A, and asserts tenant B's rows are invisible. Takeaway: RLS only isolates tenants if the runtime role is subject to it and the tenant context is scoped to the transaction.",
+      "references": [
+        "PostgreSQL documentation: Row Security Policies (ddl-rowsecurity)"
+      ],
+      "tags": [
+        "gotcha",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-pii-logs-reduction-01",
+      "domain": "security",
+      "concepts": [
+        "privacy-pii",
+        "audit-logging"
+      ],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Reducing PII in logs and analytics",
+      "prompt": "A privacy review found customer emails and phone numbers in application logs and in the analytics warehouse. Which changes actually reduce PII exposure? (Select all that apply.)",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Log structured events through an allowlist of fields, so new fields are dropped unless someone marks them safe"
+        },
+        {
+          "id": "b",
+          "text": "Replace emails in analytics with a keyed HMAC whose key lives in KMS, so joins still work but values resist dictionary attacks"
+        },
+        {
+          "id": "c",
+          "text": "Replace emails with unsalted SHA-256 hashes, which makes the dataset anonymous and takes it out of GDPR scope"
+        },
+        {
+          "id": "d",
+          "text": "Shorten raw log retention and restrict who can query raw logs, with every query of that data itself recorded"
+        },
+        {
+          "id": "e",
+          "text": "Mask emails in the admin UI while leaving the raw values in the logs and warehouse tables unchanged"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Allowlists fail safe; denylists of known PII fields miss whatever is added next.",
+        "b": "Without the key, an attacker cannot hash candidate emails to match them. It is still pseudonymous personal data, but far less exposed.",
+        "c": "Emails are guessable, so unsalted hashes are reversible by hashing known addresses; regulators treat this as pseudonymous at best.",
+        "d": "Less data kept for less time, seen by fewer people, with an access trail.",
+        "e": "The UI was never the exposure; the stored copies are."
+      },
+      "explanation": "PII exposure is reduced by collecting less, keeping it shorter, restricting and recording access, and transforming it so the stored form is less useful to an attacker. Plain hashing of low-entropy identifiers is a classic mistake: the space of real email addresses or phone numbers is small enough to enumerate, so a hash is effectively a lookup key. A keyed HMAC (or tokenization through a vault) keeps the join property while making reversal depend on a key you control and can rotate. Field allowlists at the logging library are the cheapest durable control because they catch the next engineer who logs a whole request object. Takeaway: hashing is not anonymization; minimize, allowlist, key and restrict instead.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "sec-leaked-aws-key-response-01",
+      "domain": "security",
+      "concepts": [
+        "secrets-management",
+        "audit-logging"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Responding to an AWS key pushed to a public repo",
+      "prompt": "At 14:02 a developer tells you they pushed a commit containing an AWS access key to a public GitHub repo at 13:40. The key belongs to the `billing-exporter` IAM user, which can read an S3 bucket of customer invoices and send to an SQS queue. Put the response steps in the most sensible order.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        {
+          "id": "1",
+          "text": "Declare an incident, page the key's owner, and treat the key as compromised from 13:40"
+        },
+        {
+          "id": "2",
+          "text": "Deactivate the leaked key, giving the exporter a new credential (or accepting a short outage)"
+        },
+        {
+          "id": "3",
+          "text": "Pull CloudTrail and S3 data-event logs for every call made with that key ID since 13:40"
+        },
+        {
+          "id": "4",
+          "text": "Remove anything the attacker created and determine which invoices were read, for notification decisions"
+        },
+        {
+          "id": "5",
+          "text": "Scrub the key from the repo history, knowing forks and caches may already hold a copy"
+        },
+        {
+          "id": "6",
+          "text": "Hold the postmortem: enable push protection and replace long-lived user keys with short-lived role credentials"
+        }
+      ],
+      "explanation": "Public repositories are scraped for credentials continuously, often within minutes, so 22 minutes of exposure should be assumed to mean the key was used. Containment comes first: revoke the key, because nothing else stops ongoing use; minting a replacement first is fine if it takes seconds, but do not let it delay revocation. Then scope the damage from logs before cleaning up, because the logs tell you what to clean up (new IAM users or keys, instances, queue messages) and whether customer data was accessed, which drives legal notification obligations. Rewriting git history is the step people reach for first, and it protects the least: the secret is already copied, so revocation is what makes the copies worthless. Prevention closes the loop: secret scanning with push protection, and moving workloads to role-based, short-lived credentials so a leak expires on its own. Takeaway: in a credential leak, revoke first, investigate with logs second, and treat history rewriting as housekeeping.",
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "sec-stride-public-links-01",
+      "domain": "security",
+      "concepts": [
+        "threat-modeling"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "STRIDE on public share links",
+      "prompt": "Your document product is adding public share links. Run a STRIDE pass on this feature: for each category, name the most important threat for this specific feature and the mitigation you would require before launch. Then say which two you would prioritize and why.",
+      "context": "Feature spec summary:\n\n- Owner clicks Share and gets `https://app.acme.com/s/<token>`; anyone with the link can view.\n- Optional password and optional expiry date; owner can revoke at any time.\n- Viewers can download a server-rendered PDF.\n- The owner sees a view count and a list of recent viewers (IP-derived city, time).\n- Workspace admins can see all links in the workspace.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Spoofing and information disclosure: link tokens come from a CSPRNG with at least 128 bits of entropy, are not derived from document ids, and the /s/ and password endpoints are rate limited against guessing",
+          "Information disclosure: tokens leak through Referer, logs, analytics, chat unfurl bots and browser history, so it requires Referrer-Policy no-referrer, keeping tokens out of logs and analytics, and handling unfurl bots",
+          "Tampering and elevation: the token grants read-only access to exactly one document (and version), checked server-side, and revocation and expiry are enforced on every access including cached PDFs and CDN copies",
+          "Repudiation: link creation, revocation, password changes and accesses are written to an audit log visible to the owner and workspace admins",
+          "Denial of service: PDF rendering is expensive, so renders are cached per document version and rate limited per token; view counting must not become a write hot spot",
+          "Prioritizes two threats with an explicit likelihood-times-impact argument (typically token guessability or leakage, and revocation that does not actually revoke) and mentions a workspace policy to disable public links"
+        ],
+        "redFlags": [
+          "Recites STRIDE definitions without tying each to this feature",
+          "Relies on the obscurity of the URL without entropy, rate limits or expiry",
+          "Forgets cached PDFs or CDN copies that survive revocation",
+          "Treats the optional password as sufficient without attempt limiting"
+        ],
+        "exemplar": "**Spoofing:** anyone holding the URL is the viewer, so the token is the credential: 128+ bit CSPRNG token, stored hashed, never derived from the doc id; rate limit `/s/*` and password attempts per IP and per token.\n\n**Tampering:** the token must authorize only `GET` of one document; the viewer page calls APIs with a scoped capability, never the owner's session.\n\n**Repudiation:** audit log of create, revoke, password change and each access, visible to owner and admins.\n\n**Information disclosure:** links leak through Referer, analytics, logs and Slack unfurlers. Require `Referrer-Policy: no-referrer`, strip tokens from logs, and show unfurl bots a generic card. The viewer list itself is PII about viewers; keep it coarse.\n\n**DoS:** PDF renders are expensive, so cache per version and rate limit per token.\n\n**Elevation:** revocation and expiry are checked on every request, PDFs are served through short-lived signed URLs, and CDN caching is off or purged on revoke.\n\n**Priorities:** (1) leakage plus guessability, because links get pasted everywhere and one leak exposes the whole document; (2) revocation that really revokes, because that is the user's only remedy after a leak. Ship with a workspace admin setting to disable public links, since enterprise customers will ask."
+      },
+      "explanation": "Strong answers treat the link token as a bearer credential and follow it everywhere it can leak or be cached. The most common gaps in practice are tokens in Referer and logs, unfurl bots that 'view' documents, and revocation that does not reach cached renders. Takeaway: a threat model earns its keep when every STRIDE letter produces a concrete launch requirement for this feature.",
+      "references": [
+        "Adam Shostack, Threat Modeling: Designing for Security (Wiley, 2014)"
+      ],
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-gdpr-erasure-design-01",
+      "domain": "security",
+      "concepts": [
+        "privacy-pii",
+        "encryption"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Honoring erasure across backups, streams and a warehouse",
+      "prompt": "Legal says you must complete GDPR erasure requests within 30 days. Design how erasure works end to end, including the places where you cannot simply delete a row.",
+      "context": "Where customer personal data lives today:\n\n| System | Notes |\n| --- | --- |\n| Postgres | primary plus 35 days of point-in-time-recovery backups |\n| Kafka `customer-events` | 90-day retention, events contain name and email |\n| Snowflake | fed from Kafka; raw tables plus about 40 derived models |\n| Elasticsearch | customer search index |\n| S3 nightly exports | sent to a marketing partner |\n| Datadog logs | 15-day retention; some logs include emails |",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Builds a data inventory keyed by subject id and a deletion orchestrator with one idempotent deleter per system, tracking each request to completion with evidence and an SLA alarm before day 30",
+          "Handles backups honestly: immutable backups are not edited; data in them is put beyond use and ages out, and any restore replays the deletion ledger before the database is used again (or per-subject crypto-shredding is used)",
+          "Handles Kafka: stops putting raw PII in events (reference ids, or fields encrypted with a per-subject key that is destroyed on erasure), or uses compacted topics with tombstones, rather than rewriting topics",
+          "Deletes in Snowflake raw and derived tables, accounting for Time Travel and Fail-safe retention, and in Elasticsearch, and propagates the request to the marketing partner as a processor under contract with confirmation",
+          "Reduces the problem at the source: stops logging emails so 15-day log retention covers the rest, and keeps the deletion ledger minimal (subject id or keyed hash, dates, systems), not the personal data itself"
+        ],
+        "redFlags": [
+          "Deletes from Postgres only and declares the request complete",
+          "Restores a backup without re-applying deletions, resurrecting erased users",
+          "Claims hashing the email counts as erasure",
+          "Keeps the full erasure request, including the personal data, forever as proof"
+        ],
+        "exemplar": "I would treat erasure as a workflow, not a query. An **erasure service** receives the request, records a minimal ledger entry (subject id, received-at, due-at), and fans out to one idempotent **deleter per system**, each reporting done with a count. A dashboard alarms at day 20 for anything incomplete.\n\n- **Postgres:** delete or anonymize rows in one transaction; foreign keys decide which.\n- **Backups:** we do not edit 35-day PITR backups. They are access-controlled and expire, and the restore runbook replays the ledger so restored data never returns to service. Legal signs off on this.\n- **Kafka:** change producers to emit customer ids rather than name and email. For history, encrypt PII fields with a **per-subject key** in a key table, and erasure destroys the key (crypto-shredding), so the 90 days of events become unreadable without rewriting the topic.\n- **Snowflake:** delete from raw tables, rebuild or delete downstream models by subject id, and document Time Travel and Fail-safe windows.\n- **Elasticsearch:** delete by id.\n- **Partner exports:** send an erasure request through the processor API and record confirmation; future exports exclude the subject.\n- **Logs:** stop logging emails; 15-day retention then covers it.\n\nThe key table must have shorter backup retention than the data it protects, or crypto-shredding does not work."
+      },
+      "explanation": "This tests whether you understand that personal data spreads into systems that cannot do row deletes: backups, append-only logs, warehouses with time travel, and third parties. The staff-level moves are making deletion a tracked workflow, using crypto-shredding or reference ids where data is immutable, making restores replay deletions, and shrinking the problem by not copying PII into events and logs. Takeaway: you can only erase what you can find, so erasure design starts with a data map and with keeping PII out of immutable pipelines.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-admin-audit-log-01",
+      "domain": "security",
+      "concepts": [
+        "audit-logging",
+        "multi-tenancy"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Customer-facing audit log for admin actions",
+      "prompt": "Enterprise customers want an audit log of administrative actions in your SaaS (role changes, SSO configuration edits, API key creation, data exports, and impersonation by your support staff) that they can stream into their SIEM. Design it: what you record, how you guarantee it is complete and trustworthy, where it lives, and how customers consume it.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Defines an event schema with actor (and the real human behind impersonation or a service account), action, target, tenant, server timestamp, source IP and user agent, request id, outcome including denied attempts, and before and after values for configuration, with no secrets",
+          "Writes events at the authorization decision point in the same transaction as the change (or through a transactional outbox) so a state change cannot happen without its record, rather than scraping application logs",
+          "Makes the store append-only and tamper-evident: writers cannot update or delete, storage is WORM (for example S3 Object Lock) or hash-chained, it is separate from the main database, and access by your own staff is itself audited",
+          "Isolates audit data per tenant and gives customers export through a paginated API plus streaming (webhook, S3 or SIEM connector) with stable event ids for de-duplication and at-least-once delivery",
+          "Treats support impersonation and break-glass access as first-class events visible to the customer, and sets retention by plan with alerts on high-risk actions"
+        ],
+        "redFlags": [
+          "Builds the audit log by grepping or forwarding application debug logs",
+          "Stores audit rows in a table the application or its admins can update or delete",
+          "Logs full request bodies, including tokens or passwords",
+          "Hides support staff impersonation from the customer's audit log"
+        ],
+        "exemplar": "**Schema:** `event_id`, `tenant_id`, `occurred_at` (server clock), `actor` {type: user|service|support, id, impersonated_by}, `action` (`role.assigned`, `sso.config.updated`, `export.started`), `target` {type, id}, `outcome` (success|denied|error), `ip`, `user_agent`, `request_id`, and a redacted before/after diff for config. Never secrets.\n\n**Completeness:** the authorization layer emits the event, and writes go into an outbox table in the same transaction as the change. A relay ships outbox rows to the audit pipeline, so no committed change lacks an event. Denied attempts are emitted too, since they are often the interesting ones.\n\n**Integrity:** the audit store is separate from the product database: an append-only stream into S3 with Object Lock in compliance mode, plus per-tenant hash chaining so gaps or edits are detectable. Only the pipeline's role can write; nobody can delete before retention ends, and our own engineers' reads are audited.\n\n**Consumption:** a per-tenant query API with cursor pagination and filters, plus streaming to customer S3, webhooks or SIEM connectors, at-least-once with `event_id` for de-duplication.\n\n**Support access:** impersonation requires a ticket reference, is time-boxed, and appears in the customer's log as `actor.type=support`. That transparency is a sales feature."
+      },
+      "explanation": "An audit log is only valuable if it is complete, cannot be quietly edited, and is attributable to a real person. That means emitting events from the authorization path transactionally, storing them append-only outside the product database, and showing customers even your own staff's access. Takeaway: design audit logging as a product with integrity guarantees, not as a log level.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-slsa-quarter-plan-01",
+      "domain": "security",
+      "concepts": [
+        "supply-chain",
+        "least-privilege"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "The CTO wants SLSA Level 3 this quarter",
+      "prompt": "After a peer company's CI breach, your CTO forwards a link to SLSA and asks you, as the staff engineer for the platform, to \"get us to SLSA Level 3 this quarter.\" What is your plan, and how do you frame it back to the CTO?",
+      "context": "- 140 repositories on GitHub Actions; self-hosted runners are shared across all repos and persist between jobs.\n- Container images and npm packages publish to an internal registry.\n- Production deploys run `kubectl apply` from CI with a long-lived kubeconfig secret.\n- Third-party actions are referenced by tag.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Reframes the goal around concrete threats along source, build, package and deploy, and starts from an inventory ranking which pipelines produce artifacts that reach production, instead of treating all 140 repos equally",
+          "Identifies that Build Level 3 requires hardened, isolated builds (no influence between runs, signing material inaccessible to user-defined build steps), so shared persistent self-hosted runners are the main gap and ephemeral, per-trust-level runners are the fix",
+          "Generates signed provenance for images and packages (for example GitHub artifact attestations or the SLSA generator with Sigstore) and, crucially, verifies it at deploy or admission time, starting in audit mode then enforcing",
+          "Ships quick wins in parallel: pin third-party actions by SHA, minimal GITHUB_TOKEN permissions, OIDC to replace the long-lived kubeconfig, protected release environments, lockfiles and scoped internal packages",
+          "Gives the CTO an honest, measurable plan: Level 3 for the top tier of production pipelines this quarter with metrics (percent of prod images with verified provenance, percent of runners ephemeral), and the rest on a roadmap"
+        ],
+        "redFlags": [
+          "Treats SLSA as a badge to claim rather than threats to remove",
+          "Generates provenance but never verifies it anywhere",
+          "Commits to all 140 repos at Level 3 in one quarter",
+          "Ignores the shared persistent runners and long-lived deploy credential"
+        ],
+        "exemplar": "I would thank the CTO and reframe: SLSA is a vocabulary for build integrity, and the useful question is which attacks we can stop this quarter.\n\n**Week 1 to 2:** inventory the pipelines that produce production artifacts (I expect about 20 of the 140) and rank them by blast radius.\n\n**Biggest gap:** our self-hosted runners are shared and persistent, so one compromised repo's job can tamper with another's build. Level 3 requires isolation, so the tier-1 pipelines move to ephemeral runners (one VM or pod per job, separated by trust level).\n\n**Provenance:** generate signed attestations for tier-1 images and packages with GitHub artifact attestations, then add an admission policy in the cluster that verifies them, in audit mode for two weeks and then enforcing. Provenance nobody checks is theater.\n\n**Quick wins, org-wide:** SHA-pin third-party actions with Renovate, default `permissions: read`, replace the kubeconfig secret with OIDC and a deploy role scoped to one environment, and add protected environments with required reviewers.\n\n**To the CTO:** 'By quarter end, tier-1 production artifacts are built on isolated runners with verified provenance, and every repo has the quick wins. Here is the dashboard. The long tail follows next quarter.'"
+      },
+      "explanation": "The leadership test is turning a framework name into a threat-driven, staged plan with honest scope, while catching the specific weaknesses in this setup: shared persistent runners, mutable action tags and a long-lived deploy credential. Takeaway: supply-chain security is measured by what you verify at deploy time, not by attestations you generate.",
+      "references": [
+        "SLSA specification v1.0, Build track levels (slsa.dev)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-jwt-revocation-60s-01",
+      "domain": "security",
+      "concepts": [
+        "session-management"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Log out everywhere within 60 seconds",
+      "prompt": "Web and mobile clients get 24-hour JWT access tokens, validated locally by about 30 services, and 90-day refresh tokens. After an account-takeover incident, security requires that when a user clicks \"log out of all devices\" or an admin disables an account, no API accepts that user's requests after 60 seconds. Design the change and state its costs.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Moves durable session state to refresh tokens stored server-side, rotated on every use with reuse detection, and revoked on logout-all or disable, and shortens access tokens to minutes, while noting that shorter TTLs alone do not meet 60 seconds",
+          "Adds a revocation signal checked on every request: a per-user 'tokens issued before T are invalid' timestamp (or per-session ids) published through pub/sub to an in-memory cache in each service, with propagation under 60 seconds and memory bounded by the access token lifetime",
+          "Implements the check once in the shared auth library or gateway rather than in 30 services, and decides fail-open versus fail-closed explicitly when the revocation feed is stale",
+          "Covers long-lived connections (WebSockets, streaming, gRPC streams) that authenticate only at connect, by closing them on revocation events",
+          "States costs: IdP and token endpoint load from refresh traffic, cache infrastructure and its failure modes, and the alternative of introspection or phantom tokens at the gateway with its latency, and proposes a test that measures time to revocation"
+        ],
+        "redFlags": [
+          "Just sets access tokens to one minute without addressing refresh load or offline mobile clients",
+          "Calls the IdP to introspect on every request to every service with no cost analysis",
+          "A denylist of token ids that grows forever",
+          "Forgets already-open WebSocket or streaming connections"
+        ],
+        "exemplar": "Self-contained 24-hour JWTs cannot be revoked, so I would add a revocation signal and shrink the window it has to cover.\n\n1. **Refresh tokens become the session.** Store them server-side, rotate on each use, revoke the family if an old one is reused. Logout-all and account disable delete the family.\n2. **Access tokens drop to 10 minutes.** That bounds the revocation cache, but 10 minutes is not 60 seconds.\n3. **Revocation epoch.** On logout-all or disable, write `revoked_before[user] = now` and publish it. Each service's auth middleware (one shared library) holds the map in memory, fed by pub/sub with a periodic full sync, and rejects tokens whose `iat` is earlier. Entries expire after the access token TTL, so the map stays small. Target propagation is about 5 seconds, alarmed at 30.\n4. **Failure mode:** if the feed is stale for more than 60 seconds, payments and admin APIs fail closed and read-mostly APIs fail open with an alert. That is a product decision I would get explicitly.\n5. **Connections:** WebSocket gateways subscribe to the same feed and close affected sockets.\n\n**Costs:** about six times more refresh traffic, a pub/sub dependency on the auth path, and library rollout to 30 services. A synthetic test logs out a canary user and measures time until the first 401."
+      },
+      "explanation": "The core insight is that stateless tokens trade revocability for scalability, so meeting a revocation SLA means reintroducing a small, bounded amount of shared state and checking it everywhere through one library. Strong answers quantify the window, bound the cache by the token TTL, and choose failure behavior deliberately. Takeaway: you cannot revoke a self-contained token, only shorten its life and add a revocation check whose cost you make explicit.",
+      "references": [
+        "RFC 9700: Best Current Practice for OAuth 2.0 Security (refresh token rotation)"
+      ],
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sec-gateway-validation-only-01",
+      "domain": "security",
+      "concepts": [
+        "input-validation",
+        "injection",
+        "zero-trust"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 2,
+      "title": "\"The gateway validates, so services can trust input\"",
+      "prompt": "In an RFC review, a team proposes deleting request validation from their services because \"the API gateway validates every request against the OpenAPI schema, so services can trust their input.\" How do you respond in the review?",
+      "language": null,
+      "estSeconds": 360,
+      "rubric": {
+        "keyPoints": [
+          "Explains that gateway schema validation checks shape (types, lengths, formats, enums) but cannot enforce semantic or authorization rules such as whether this user may reference this id or whether a state transition is allowed",
+          "Points out that services receive input from other paths: queues, internal service calls, batch jobs, admin tools, and misrouted or direct traffic, so trusting the network position contradicts zero trust",
+          "Separates validation from injection defense: parameterized queries and context-aware output encoding at the sink are required regardless of what was validated upstream",
+          "Recommends keeping the gateway as a coarse filter (and DoS protection) while each service parses input into typed domain objects at its own boundary, generated from the same schema so the duplication cost is small",
+          "Frames the response constructively, agreeing on what each layer owns instead of issuing a blanket rejection"
+        ],
+        "redFlags": [
+          "Says 'validate everywhere' without explaining what each layer does",
+          "Relies on sanitizing or blocklisting characters to prevent injection",
+          "Treats the internal network as trusted"
+        ],
+        "exemplar": "I would agree the gateway check is valuable, and then separate three things the RFC merges.\n\n**Shape vs meaning.** The OpenAPI check tells you `invoiceId` is a UUID and `amount` is a positive integer. It cannot tell you the invoice belongs to the caller's tenant or that a refund cannot exceed the charge. Those rules live in the service, so the service must still decide what input it accepts.\n\n**Other entrances.** This service also consumes the `billing-events` queue and is called by two internal services that do not go through the gateway. A bug or a compromised neighbor sends whatever it likes, and zero trust means not relying on which network path a request took.\n\n**Validation is not injection defense.** Even perfectly valid strings must reach SQL as bind parameters and HTML through encoding. That never moves to the gateway.\n\n**Proposal:** keep the gateway check as the cheap outer filter, and have the service parse requests and messages into typed domain objects at its boundary, generated from the same schema so there is no hand-written duplication. Business invariants live in the domain layer. That gets the team most of the simplification they want without a single point of failure."
+      },
+      "explanation": "The trap is treating validation as one thing done once. Strong answers distinguish syntactic validation, semantic and authorization checks, and sink-specific injection defenses, and note that services have more entrances than the gateway. Takeaway: validate shape at the edge, enforce meaning at the service boundary, and defend each sink where it is used.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-tenant-isolation-byok-01",
+      "domain": "security",
+      "concepts": [
+        "multi-tenancy",
+        "encryption",
+        "threat-modeling"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 5,
+      "title": "Tenant isolation and BYOK for a bank prospect",
+      "prompt": "Your B2B SaaS runs every tenant on a shared Postgres cluster (pooled schema with `tenant_id`), a shared Redis cache, S3 for files, Elasticsearch for search, and SQS-backed workers. A large bank prospect requires: (1) evidence that a bug in one query cannot expose their data to other tenants, (2) their data encrypted with keys they control and can revoke (BYOK), and (3) an option to move to a dedicated deployment later without a fork of the product. Sketch the isolation architecture and the tiering model, and explain the tradeoffs.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Establishes tenant context once from the verified token at the edge, propagates it through services, queues and workers, and enforces it in the data layer (tenant-scoped repositories plus Postgres RLS with a non-owner runtime role and SET LOCAL per transaction)",
+          "Scopes every shared store by tenant: cache keys namespaced by tenant, S3 prefixes accessed with credentials restricted to the tenant prefix, per-tenant search indexes or filtered aliases, and tenant ids on every message",
+          "Implements BYOK with envelope encryption: per-tenant data keys wrapped by a key in the customer's KMS (or a dedicated key they grant access to), so revoking the key makes their data unreadable, and states the costs (KMS latency and availability dependency, DEK caching, limits on server-side search over encrypted fields)",
+          "Defines a pool, bridge and silo tiering model (shared, dedicated database, dedicated cell) served by the same code and deploy pipeline, with a control plane that routes each tenant to its cell",
+          "Provides evidence: automated cross-tenant tests with two-tenant fixtures, tenant id in logs and traces, audit logs of key use and staff access, and per-tenant noisy-neighbor limits",
+          "States what BYOK does not protect against (data in memory, a compromised application with live key access) and the operational cost of many silos (migrations, upgrades, monitoring)"
+        ],
+        "redFlags": [
+          "Relies only on developers remembering WHERE tenant_id = ? in every query",
+          "Claims BYOK protects against a compromised application server",
+          "Proposes a separate code fork for the dedicated deployment",
+          "Shares cache keys or search indexes without tenant scoping"
+        ],
+        "exemplar": "**Request path:** API gateway → auth validates the token and derives `tenant_id` (never from the request body) → services carry it in context and on every SQS message. The data layer only exposes tenant-scoped repositories, and Postgres RLS is the backstop: the runtime role does not own tables, and `SET LOCAL app.tenant_id` runs in each transaction.\n\n**Other stores:** Redis keys are `t:{tenant}:…`; S3 objects are under `tenants/{id}/`, read with session credentials scoped to that prefix; Elasticsearch uses an index per large tenant and filtered aliases for small ones.\n\n**BYOK:** each tenant has data keys wrapped by a KMS key in the bank's account, which grants our role `Decrypt` and `GenerateDataKey`. Services cache unwrapped DEKs for minutes. If the bank revokes the grant, new reads fail and cached keys age out. Cost: a dependency on their KMS availability, extra latency on cache misses, and encrypted fields that cannot be searched server-side.\n\n**Tiers:** pool (shared), bridge (dedicated database in a shared cell), silo (a dedicated cell in its own account). All run the same artifacts; a tenant directory in the control plane routes requests to a cell.\n\n**Evidence:** two-tenant integration tests on every PR, tenant id on every log line and trace, and audit logs of key use. BYOK does not protect against a compromised app that holds live keys; it protects against our storage and backups being read without the customer's consent.",
+        "requiredComponents": [
+          "api_gateway|load_balancer",
+          "auth",
+          "service",
+          "database",
+          "cache",
+          "object_storage",
+          "search_index",
+          "queue|worker"
+        ]
+      },
+      "explanation": "Strong designs layer isolation (context from the token, scoped data access, RLS, scoped storage credentials), make BYOK concrete with envelope encryption and an honest threat statement, and offer a tiering path that reuses the same code. Takeaway: tenant isolation is credible when the platform makes cross-tenant access hard to write, not just against policy.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "sec-zero-trust-migration-01",
+      "domain": "security",
+      "concepts": [
+        "zero-trust",
+        "least-privilege",
+        "secrets-management"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 5,
+      "title": "From one VPN to zero trust without stopping the business",
+      "prompt": "Today 1,200 employees reach about 80 internal tools (admin consoles, Grafana, Argo CD, and a customer-support console that shows customer PII) through a single VPN. About 200 microservices in Kubernetes talk over plaintext HTTP with no service authentication, and database credentials are static passwords shared across services. Design the target zero-trust architecture and a migration path that does not stop the business.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Puts internal tools behind an identity-aware proxy integrated with SSO and phishing-resistant MFA (WebAuthn), with device posture and per-application policy evaluated on every request, and short sessions or step-up for sensitive tools like the support console",
+          "Gives workloads cryptographic identities (SPIFFE/SPIRE or a service mesh) with short-lived mTLS certificates, encrypting all service traffic and enforcing default-deny authorization policies by service identity",
+          "Replaces shared static database passwords with short-lived per-service credentials from a secrets broker bound to workload identity, each with least-privilege grants",
+          "Centralizes policy and decision logging, with audit logs for access to sensitive tools and a break-glass path that is logged and alarmed",
+          "Sequences the migration by risk with observe-then-enforce: the PII console first, mesh in permissive mode then strict per namespace, metrics for percent of authenticated traffic, and the VPN retired last",
+          "States tradeoffs: the proxy and IdP become availability-critical, certificate and mesh operational cost, and added latency"
+        ],
+        "redFlags": [
+          "Replaces the VPN with a different network perimeter and calls it zero trust",
+          "Turns on strict mTLS cluster-wide in one step",
+          "Leaves shared static database credentials in place",
+          "No break-glass path for an IdP outage"
+        ],
+        "exemplar": "**Users to tools:** clients go through an identity-aware proxy (for example a managed access proxy or Pomerium) backed by the IdP: SSO, WebAuthn, device posture from MDM. Policies are per app: the support console requires a managed device, the support group, step-up MFA every 4 hours, and every access is logged. The VPN stays during migration and is retired last.\n\n**Service to service:** SPIRE (or the mesh's CA) issues each workload a SPIFFE id on 24-hour certificates. The mesh does mTLS everywhere, and authorization policies say `billing → ledger: POST /entries`, default deny.\n\n**Secrets:** each service authenticates to Vault with its workload identity and receives a dynamic Postgres user with a 1-hour TTL and grants only on its own schema. Static shared passwords are rotated out.\n\n**Policy and audit:** policies live in git, decisions are logged to the SIEM, and a break-glass account in a sealed process covers IdP outages.\n\n**Migration:** (1) proxy the PII console and Argo first, (2) mesh in permissive mode with dashboards showing plaintext and unauthenticated calls, (3) strict per namespace once traffic is clean, (4) dynamic credentials service by service, (5) shut the VPN when proxy coverage reaches 100%.\n\n**Tradeoffs:** the IdP and proxy become tier-0 dependencies, the mesh adds a few milliseconds and real operational load.",
+        "requiredComponents": [
+          "client",
+          "auth",
+          "api_gateway|load_balancer",
+          "service",
+          "database",
+          "observability"
+        ]
+      },
+      "explanation": "Strong answers cover all three planes (people to apps, service to service, service to data), make identity the basis of every decision, and sequence the rollout with observe-then-enforce so nothing breaks. Takeaway: zero trust is a migration program measured by the share of requests authorized on identity, not a product you install.",
+      "references": [
+        "NIST SP 800-207: Zero Trust Architecture"
+      ],
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,550 @@
+{
+  "file": "code_quality",
+  "questions": [
+    {
+      "id": "cq-review-block-vs-nit-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Which review comment deserves a hard block",
+      "prompt": "You are reviewing a PR that adds a webhook handler for subscription renewals from a payment provider. You drafted five comments. Which one should be marked as blocking (request changes) rather than left as a nit or suggestion?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        { "id": "a", "text": "The parsed payload is named `data`; `renewalEvent` would make the handler easier to read" },
+        { "id": "b", "text": "The handler returns 200 to the provider before persisting the renewal, so a crash in between silently drops it" },
+        { "id": "c", "text": "The handler is 70 lines long; consider extracting the payload mapping into a small helper function" },
+        { "id": "d", "text": "An object lookup keyed by event type would be tidier than the current switch statement" },
+        { "id": "e", "text": "Test names here start with \"should\" while the rest of the file uses \"returns ...\" style" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "A fair readability nit. Prefix it as a nit and let the author decide.",
+        "b": "Correct. Acknowledging before the write means the provider will not redeliver, so data is lost on any crash or deploy. That is a correctness defect, which is exactly what blocking is for.",
+        "c": "A reasonable suggestion, but 70 lines is not a defect and the author may have good reasons.",
+        "d": "Personal preference. Both are fine; blocking on taste trains authors to ignore your reviews.",
+        "e": "Consistency nit. Worth a light mention, or better, a lint rule."
+      },
+      "explanation": "Block on things that will hurt users or the system if merged: correctness, data loss, security, broken contracts, missing tests for risky logic. Naming, structure preferences and consistency are nits or suggestions; label them so the author knows they can merge without addressing them. Here the early acknowledgement turns any crash between ack and write into a permanently lost renewal, because the provider believes delivery succeeded.\n\n**Takeaway:** reserve blocking for harm, label everything else, and your blocks will carry weight.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cq-testing-trophy-glue-01",
+      "domain": "code_quality",
+      "concepts": ["testing-strategy"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Unit tests all green while SQL bugs reach production",
+      "prompt": "Given the service profile and bug history below, what is the best way to rebalance this team's test suite?",
+      "context": "**Service:** a CRUD-heavy internal API. Roughly 80% of the code is request handlers that validate input and call a query builder against Postgres.\n\n**Suite:** 1,400 unit tests (repository layer mocked), 12 browser end-to-end tests. Line coverage 86%.\n\n**Production bugs last quarter (9):**\n- 6 wrong SQL: missing tenant filter, wrong join type, `COALESCE` on the wrong column\n- 2 JSON serialization mismatches (dates, enum casing)\n- 1 business rule error in proration\n\nEvery one of the 9 shipped with a green unit suite.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Make integration tests that run handlers against a real containerized Postgres the bulk of new tests, keeping unit tests for the pure business rules" },
+        { "id": "b", "text": "Raise the coverage gate from 86% to 95% and assert on the exact SQL strings the mocked repository receives in each unit test" },
+        { "id": "c", "text": "Write a browser end-to-end test reproducing each of the 9 bugs, and add one for every future production incident" },
+        { "id": "d", "text": "Keep the suite as it is and add a 48-hour staging soak with synthetic traffic before every production deploy" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. The risk lives at the database and serialization boundary, so tests must exercise that boundary. Real-database integration tests are now fast enough to be the backbone for glue-heavy services.",
+        "b": "Asserting on SQL strings tests that the code is written the way it is written. It would not have caught a wrong join, and coverage was already high.",
+        "c": "End-to-end tests would catch these, but they are slow and flaky; using them as the main regression net for query logic does not scale.",
+        "d": "A soak finds load and integration issues late and slowly; a missing tenant filter can pass a soak with synthetic single-tenant data."
+      },
+      "explanation": "The pyramid's advice (mostly unit tests) assumes most of the risk is in logic you can isolate. For glue code the risk is in the integration with the database and the wire format, and mocking that layer removes exactly the part that breaks. The testing trophy shape (most tests at the integration layer, a few unit tests for genuine logic, a thin end-to-end layer) fits this service. The bug history is the evidence: 8 of 9 bugs were boundary bugs.\n\n**Takeaway:** shape the suite to where your bugs actually come from, not to a diagram.",
+      "references": ["Kent C. Dodds, \"The Testing Trophy and Testing Classifications\" (2021)"],
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "cq-mocks-vs-fakes-01",
+      "domain": "code_quality",
+      "concepts": ["test-design", "coupling-cohesion"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "A behavior-preserving refactor breaks 140 tests",
+      "prompt": "An engineer changed `InventoryService` to reserve stock with one `reserveMany` call instead of N `reserve` calls. Observable behavior is identical and all 6 integration tests pass, but 140 unit tests fail. A typical failing assertion is shown below. What is the best change to the test strategy?",
+      "context": "```ts\nawait service.placeHold(order);\nexpect(repo.reserve).toHaveBeenCalledTimes(3);\nexpect(repo.reserve).toHaveBeenNthCalledWith(1, 'sku-1', 2);\nexpect(repo.reserve).toHaveBeenNthCalledWith(2, 'sku-7', 1);\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Replace repository mocks with an in-memory fake, assert on resulting stock levels, and run one contract suite against both the fake and the real repository" },
+        { "id": "b", "text": "Update the 140 tests to expect `reserveMany` with the batched arguments, since the tests correctly flagged that the implementation changed" },
+        { "id": "c", "text": "Adopt an auto-mocking library that regenerates mock expectations from the repository interface whenever the interface changes" },
+        { "id": "d", "text": "Delete these unit tests and rely on the 6 integration tests, since the unit tests produced only false failures during this refactor" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. A fake that implements the repository contract lets tests assert on outcomes (stock reserved) instead of call sequences, and the shared contract suite keeps the fake honest against the real implementation.",
+        "b": "This repeats the problem: the tests stay coupled to the call pattern and will break again on the next internal change.",
+        "c": "Tooling changes do not fix the design flaw; the assertions are still about interactions rather than outcomes.",
+        "d": "Throws away fast feedback on real logic. The tests were badly designed, not useless in principle."
+      },
+      "explanation": "Interaction-verifying mocks couple tests to *how* the code does something, so refactors that keep behavior break them; that destroys the main value of tests during refactoring. Mocks are appropriate when the interaction itself is the behavior (an email was sent, a payment call was made exactly once). For state-holding collaborators like repositories, a fake with real semantics lets you assert on state. The risk with fakes is drift from the real thing, which a shared contract test run against both implementations removes.\n\n**Takeaway:** assert on outcomes, mock only interactions that are themselves the behavior, and verify your fakes against reality.",
+      "tags": ["classic"]
+    },
+    {
+      "id": "cq-mutation-score-gap-01",
+      "domain": "code_quality",
+      "concepts": ["test-design"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "94% line coverage, 41% mutation score",
+      "prompt": "The pricing module reports 94% line coverage and 88% branch coverage. A mutation testing run scores 41%. A sample of the report is below. What does this most likely tell you about the tests?",
+      "context": "```\nSURVIVED  discount.ts:42   `>=` -> `>`        if (qty >= tier.minQty)\nSURVIVED  discount.ts:57   `* 0.9` -> `* 1.0` price = base * 0.9\nSURVIVED  tax.ts:19        removed call       roundHalfEven(subtotal * rate)\nKILLED    tax.ts:33        `+` -> `-`         total = subtotal + tax\nSURVIVED  tax.ts:41        `&&` -> `||`       if (isExempt && hasCertificate)\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "The tests run these lines but rarely assert exact outputs, especially at boundaries, so many faults go unnoticed" },
+        { "id": "b", "text": "Most survivors are equivalent mutants that cannot change behavior, so 41% is noise and coverage is the better signal" },
+        { "id": "c", "text": "The coverage tool is miscounting lines, and the real line coverage of the pricing module is close to 41%" },
+        { "id": "d", "text": "The module has too many branches, so cyclomatic complexity must be reduced before tests can kill these mutants" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. Every survivor changes a price: an off-by-one on the tier boundary, no discount at all, unrounded tax, exemption without a certificate. The lines execute (hence coverage) but no test checks the resulting value precisely.",
+        "b": "Equivalent mutants exist, but `* 0.9` to `* 1.0` removes the discount entirely; it cannot be equivalent unless the line is dead.",
+        "c": "Coverage and mutation score measure different things. Mutants survive in covered code; uncovered code produces a different status (no coverage).",
+        "d": "Complexity may be worth reducing, but a 10% price change or missed rounding is killable today with a precise assertion."
+      },
+      "explanation": "Coverage measures what the tests execute; mutation testing measures what they would *notice*. A big gap means tests exercise code without checking it: assertions like `expect(result).toBeDefined()`, coarse snapshots, or tests that never hit the exact boundary (`qty == minQty`). The fix is boundary-value cases and exact expected values, then rerun the mutation tool on the module to confirm survivors die.\n\n**Takeaway:** coverage tells you what ran; mutation score tells you whether anyone was watching.",
+      "tags": ["gotcha"]
+    },
+    {
+      "id": "cq-wrong-abstraction-01",
+      "domain": "code_quality",
+      "concepts": ["abstraction", "maintainability"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "The notification helper with eleven flags",
+      "prompt": "Two years ago email and SMS shared about 80% of their sending logic, so it was extracted into `sendNotification`. It is now 600 lines with 11 option flags, nine callers, and every change needs a check of all nine. A new team needs in-app notifications. What should you do?",
+      "context": "```ts\nawait sendNotification(user, tpl, {\n  channel: 'push',\n  skipQuietHours: true,\n  legacyTemplate: false,\n  bypassPreferences: isSecurityAlert,\n  retry: channel !== 'sms',\n  includeUnsubscribe: false,\n  locale: user.locale ?? 'en',\n});\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Inline it back into each channel's path, accept the duplication, then re-extract only what is truly shared once its shape is visible" },
+        { "id": "b", "text": "Add a twelfth option, `channel: 'in_app'`, with its own branches, since following the existing pattern minimizes risk" },
+        { "id": "c", "text": "Wrap the options object in a fluent builder so each caller configures its flags in a more readable, discoverable way" },
+        { "id": "d", "text": "Rebuild it as a plugin framework with a channel registry and lifecycle hooks so future channels need no core edits" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. The flags show the callers have diverged; the shared function now encodes their differences rather than their commonality. Inlining exposes what is really shared (preference lookup, template rendering) so a smaller, honest abstraction can emerge.",
+        "b": "This is how the abstraction got here. Each flag looked cheap; together they make every change a nine-caller impact analysis.",
+        "c": "A builder improves call-site readability but keeps every branch and flag interaction inside the function.",
+        "d": "A speculative framework replaces one wrong abstraction with a bigger one, designed before the real variation is understood."
+      },
+      "explanation": "Boolean flags that select behavior are the signature of the wrong abstraction: callers that were once alike have drifted apart, and the shared code accumulates conditionals to serve them all. The sunk-cost instinct is to keep extending it. The cheaper path is to reintroduce duplication by inlining into each caller, delete the branches each caller does not use, and then extract only what is still common. Duplication is far cheaper to fix later than an abstraction everyone depends on.\n\n**Takeaway:** when an abstraction needs flags to tell its callers apart, take it apart before you extend it.",
+      "references": ["Sandi Metz, \"The Wrong Abstraction\" (2016)"],
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "cq-connascence-algorithm-01",
+      "domain": "code_quality",
+      "concepts": ["coupling-cohesion"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Duplicate charges from two copies of a key function",
+      "prompt": "Read the incident summary below. Which diagnosis and remedy most weakens the coupling that caused it?",
+      "context": "**Incident:** 312 customers double-charged.\n\nThe checkout API and the payment retry worker live in different repos and deploy independently. Both build the provider idempotency key themselves:\n\n```ts\nconst key = sha256(`${orderId}:${amountCents}:${currency}`);\n```\n\nA checkout PR normalized `currency` to lowercase. The retry worker still sends uppercase, so its retries no longer matched the original charge and the provider treated them as new payments.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Connascence of algorithm across services; checkout computes the key once, stores it with the order, and the worker sends it as an opaque value" },
+        { "id": "b", "text": "Connascence of algorithm; extract the key function into a shared library and require both services to pin the same version" },
+        { "id": "c", "text": "Connascence of meaning; replace the currency string with an enum shared by both services so the casing can never vary" },
+        { "id": "d", "text": "Connascence of timing; make the retry worker wait until the checkout write commits before it computes and sends the key" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. Two independently deployed components had to agree on the same algorithm. Computing the key in one place and passing it as data reduces the coupling to connascence of name (a stored field), which is far weaker and does not break on internal changes.",
+        "b": "Better locality, same strength: two deploys must still run the same algorithm, so version skew during a rollout recreates the incident.",
+        "c": "Fixes this one input, but any other change to the formula (field order, separator, amount units) breaks it again.",
+        "d": "Timing was not the failure; the two sides produced different keys regardless of order."
+      },
+      "explanation": "Connascence of algorithm means two components must implement the same computation identically. It is one of the stronger static forms, and it is worst across a deployment boundary, where you cannot change both sides atomically. The standard move is to convert strong connascence into weaker forms: compute once, transmit the result, and have the other side treat it as an opaque identifier. Sharing a library improves locality but keeps the strength, which is why version skew still bites.\n\n**Takeaway:** across a deploy boundary, pass results instead of sharing algorithms.",
+      "references": ["Meilir Page-Jones, What Every Programmer Should Know About Object-Oriented Design (1995)"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cq-characterization-tests-01",
+      "domain": "code_quality",
+      "concepts": ["refactoring", "test-design"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "First step before changing an untested commission engine",
+      "prompt": "`calculateCommission()` is 1,800 lines, 11 years old, and has no tests. Sales ops wants one rule changed for renewals. You suspect some current outputs are quirky but that finance's reports depend on them. What should you do first?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        { "id": "a", "text": "Write characterization tests that pin current outputs for a broad sample of real past deals, including odd-looking outputs, then change the rule" },
+        { "id": "b", "text": "Write tests from the documented commission policy so that the change also brings the old code back in line with the specification" },
+        { "id": "c", "text": "Rewrite the function cleanly in a new module behind a feature flag, since code this tangled cannot be tested safely in place" },
+        { "id": "d", "text": "Make the smallest possible edit for renewals and rely on finance's monthly reconciliation to catch any regressions afterwards" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. Characterization tests record what the code does today, not what it should do, so any unintended change shows up immediately. Real historical deals give broad, realistic coverage cheaply.",
+        "b": "Tests from the spec will fail on the quirks finance relies on, and you cannot tell intended fixes from regressions.",
+        "c": "A rewrite without a behavioral baseline has nothing to be compared against and is far more work than the request.",
+        "d": "Reconciliation finds errors after commissions are paid, which is the most expensive time to find them."
+      },
+      "explanation": "In legacy code the existing behavior is the specification that matters, because people and downstream systems depend on it, bugs included. Characterization (golden master) tests capture that behavior so you can change one rule and see exactly which outputs moved. Quirks you find become explicit questions for finance rather than silent changes.\n\n**Takeaway:** in legacy code, pin down what it does before you change what it should do.",
+      "references": ["Michael Feathers, Working Effectively with Legacy Code (2004)"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "cq-error-taxonomy-client-01",
+      "domain": "code_quality",
+      "concepts": ["error-handling", "api-ergonomics"],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "One exception type for every payment failure",
+      "prompt": "An internal payments client used by 14 services throws a single `PaymentError(message)` for every failure. Two incidents followed (below). Which redesign of the client's error model fits best?",
+      "context": "1. Checkout retries on any `PaymentError`. Card declines were retried 5 times each, and the card issuer flagged several merchants for suspicious retry patterns.\n2. A rotated API key was deployed incorrectly. The resulting auth failure surfaced as a generic `PaymentError`, was retried with backoff for 40 minutes, and paged nobody.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        { "id": "a", "text": "Return expected outcomes like declines as values, raise typed transient errors marked retryable, and fail fast with an alert on config or programmer faults" },
+        { "id": "b", "text": "Keep the single `PaymentError` but add the provider's HTTP `statusCode` to it so that each calling service can decide which failures to retry" },
+        { "id": "c", "text": "Have the client retry every failure internally with exponential backoff and jitter so that callers never need to classify payment errors themselves" },
+        { "id": "d", "text": "Convert every failure into a `Result<T, string>` value so nothing is thrown and each calling service must explicitly handle all of the error cases" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct. The taxonomy follows what the caller can do: a decline is a normal business outcome to show the customer, a timeout or 503 is worth retrying, and a bad key is a fault no retry will fix and someone must be told about.",
+        "b": "Leaks transport details into 14 callers, each of which will re-derive retry policy slightly differently. A decline and a bad request can share a status code.",
+        "c": "Retrying declines and auth failures internally makes both incidents worse and hides them from callers.",
+        "d": "Values with stringly-typed errors force handling but give callers nothing to branch on, so they will still parse messages or retry everything."
+      },
+      "explanation": "Good error design classifies failures by the action they call for, and puts that classification in the type, not the message. Expected domain outcomes (declined, insufficient funds) belong in the return type because every caller must handle them. Transient infrastructure failures should be typed and flagged retryable so retry policy lives in one place. Configuration and programmer faults should fail fast and loudly, since retrying only delays detection.\n\n**Takeaway:** an error model should tell the caller what to do next, not just what went wrong.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "cq-flaky-test-policy-01",
+      "domain": "code_quality",
+      "concepts": ["testing-strategy"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Main is red one run in six",
+      "prompt": "Main branch CI fails about 1 in 6 runs. Engineers rerun until green, and 23 distinct tests failed then passed on rerun in the last 30 days. Which actions belong in a sound plan to fix this? Select all that apply.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Quarantine known flaky tests out of the merge-blocking path, each with a named owner and fix-by date, while they keep running and reporting" },
+        { "id": "b", "text": "Rerun each suspect many times alone and again in its normal suite order, to measure flake rate and separate order dependence from internal nondeterminism" },
+        { "id": "c", "text": "Fix by root-cause class: wait on observable conditions instead of sleeps, inject clocks and random seeds, and isolate shared state per test" },
+        { "id": "d", "text": "Turn on automatic retries of up to three attempts for every test and count a pass on any attempt as green, without recording which tests retried" },
+        { "id": "e", "text": "Delete any test that flakes more than twice a month, since an untrustworthy test does more harm to the team than having no test at all" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Correct. Quarantine restores trust in main without losing the signal, and an owner plus a deadline stops quarantine becoming a graveyard.",
+        "b": "Correct. A test that only fails after another test points to leaked shared state; one that fails alone points to timing or randomness inside it. Measurement tells you which.",
+        "c": "Correct. Most flakes come from a few causes (fixed sleeps, real time, unseeded randomness, shared databases or files), so fixing by class prevents the next batch.",
+        "d": "Silent retries hide the flakes and the occasional real race condition in product code. Retries with tracking can be a stopgap; untracked retries are not.",
+        "e": "Deleting loses coverage of whatever the test protects, and some flakes are real concurrency bugs in the product."
+      },
+      "explanation": "A flaky suite trains engineers to ignore red builds, which is the real cost. The fix has three parts: remove flakes from the blocking path without losing them (quarantine with ownership), diagnose them with evidence (repeated runs alone and in order), and fix the root-cause classes. Treat each flake as a possible product bug until shown otherwise; races in tests are sometimes races in code.\n\n**Takeaway:** quarantine for trust, measure for diagnosis, and fix by cause, never by hiding.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cq-property-based-split-01",
+      "domain": "code_quality",
+      "concepts": ["test-design"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Properties for splitting a bill in cents",
+      "prompt": "You are adding property-based tests for `splitCents(total, n)`, which splits a bill of `total` cents (an integer, `total >= 0`) among `n` people (`n >= 1`). The spec says shares are as even as possible: any remainder is spread one cent at a time, and the order of shares is unspecified. Which of these are correct properties that must hold for every valid input? Select all that apply.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "The result always contains exactly `n` shares" },
+        { "id": "b", "text": "The shares always add up to exactly `total` cents" },
+        { "id": "c", "text": "The largest share minus the smallest share is at most 1" },
+        { "id": "d", "text": "Every share equals `Math.round(total / n)` exactly" },
+        { "id": "e", "text": "Each share of `splitCents(total * 2, n)` is double a share of `splitCents(total, n)`" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Correct. Length is a basic structural invariant.",
+        "b": "Correct. Conservation is the property that catches the classic rounding bug where a cent disappears or appears.",
+        "c": "Correct. This is what \"as even as possible\" means, stated without re-implementing the algorithm.",
+        "d": "Fails for `total = 10, n = 3`: the shares are 3, 3, 4 but `round(10/3)` is 3. It is also an oracle that copies a naive implementation.",
+        "e": "Tempting metamorphic property, but false: `splitCents(1, 2)` is [1, 0], doubled [2, 0], while `splitCents(2, 2)` is [1, 1]."
+      },
+      "explanation": "Good properties describe what must be true of the output without restating how it is computed: structure (length), conservation (sum), and the spec's fairness bound (max minus min at most 1). Together those three fully pin down the multiset of shares. Weak properties either re-implement the code (and inherit its bugs) or sound plausible but are false, which a property-based tool will reveal immediately with a shrunk counterexample like `(1, 2)`. That is a feature: a failing property teaches you something about the spec.\n\n**Takeaway:** write properties as invariants of the spec, not as a second copy of the implementation.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "cq-illegal-states-payment-01",
+      "domain": "code_quality",
+      "concepts": ["type-design"],
+      "skill": "design",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Payment type that allows impossible records",
+      "prompt": "Production has refunded payments with no `capturedAt`, a job that passed an order id where a payment id was expected, and a dollars-versus-cents bug. Which changes move these invariants from convention into the type system? Select all that apply.",
+      "context": "```ts\ntype Payment = {\n  id: string;\n  orderId: string;\n  status: 'pending' | 'captured' | 'refunded' | 'failed';\n  amount: number; // cents in most places, dollars in reports\n  currency: string;\n  capturedAt?: Date;\n  refundedAt?: Date;\n  failureReason?: string;\n};\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "A union discriminated on `status` where each variant has exactly its required fields, so a refunded payment must have `capturedAt` and `refundedAt`" },
+        { "id": "b", "text": "A `Money` type holding integer minor units together with the currency, created only through a constructor that rejects non-integer amounts" },
+        { "id": "c", "text": "Branded id types such as `PaymentId` and `OrderId`, so the compiler rejects an order id where a payment id is expected" },
+        { "id": "d", "text": "An `assertValidPayment(p)` helper called at the top of every service method that reads a `Payment`, throwing on bad records" },
+        { "id": "e", "text": "Changing the optional fields to explicit `Date | null` and `string | null` so that every missing value is visible at the call site" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Correct. The compiler now refuses to build a refunded payment without a capture time, and code that switches on `status` gets the right fields in each branch.",
+        "b": "Correct. Fixes primitive obsession: amount and currency travel together, units are explicit, and invalid values cannot be constructed.",
+        "c": "Correct. Two `string`s that mean different things become types the compiler can tell apart at zero runtime cost.",
+        "d": "A runtime check helps detect bad data but does not change what the type permits; every new method must remember to call it.",
+        "e": "Makes absence explicit but still allows every combination, including refunded with a null `capturedAt`."
+      },
+      "explanation": "Making illegal states unrepresentable means shaping types so invalid combinations cannot be built, rather than checking for them everywhere. Discriminated unions tie fields to states, value types like `Money` replace bare primitives that hide units and pairing rules, and branded identifiers stop mix-ups between strings with different meanings. Runtime validation still belongs at the system's edges, where untyped data enters, but it is not a substitute for types that carry the invariant inward.\n\n**Takeaway:** parse once at the boundary into types that cannot be wrong, instead of validating the same thing in every function.",
+      "references": ["Scott Wlaschin, Domain Modeling Made Functional (2018)"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "cq-giant-pr-review-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice"],
+      "skill": "lead",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "A 3,100-line PR that is all connected",
+      "prompt": "A teammate opens a 3,100-line PR titled \"Migrate order pipeline to v2 event schema\". It contains a mechanical rename across 140 files, regenerated client code, a new database migration, and changes to the consumer's retry and dead-letter logic. It is planned to ship this sprint, and the author says \"it's all connected, splitting it would take days.\" Which responses are sound? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        { "id": "a", "text": "Ask for a stack: rename and generated code first (quick to check, even by script), then the migration, then retry logic, each deployable on its own where possible" },
+        { "id": "b", "text": "Before any line comments, get a short walkthrough of the approach and agree on the design, since design objections are cheapest before detailed review" },
+        { "id": "c", "text": "Concentrate deep review on the highest-risk parts, the migration and retry semantics, and say explicitly in the review what you did and did not examine" },
+        { "id": "d", "text": "Approve with \"LGTM, too big to review line by line, trusting your testing\" so that the review does not block the sprint commitment" },
+        { "id": "e", "text": "Begin with line-level naming and style comments across all files so the author has plenty to address while you think about the design" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Correct. Mechanical changes and risky behavior changes need different kinds of review; separating them makes both reviewable and makes rollback granular. Splitting by `git` history is usually hours, not days.",
+        "b": "Correct. If the approach is wrong, line comments are wasted work for both of you.",
+        "c": "Correct. If the PR cannot be split, a risk-weighted review with a stated scope is honest and lets others cover the rest.",
+        "d": "A rubber stamp on a migration plus retry changes is how data-loss incidents ship. Review defects found in production cost far more than a sprint slip.",
+        "e": "Style comments on 140 files bury the important feedback and signal that the review is about polish."
+      },
+      "explanation": "Review quality drops sharply with PR size, so a 3,000-line PR mostly gets skimmed. The reviewer's job is to restore reviewability: separate mechanical from behavioral change, settle the design before the details, and spend attention where the risk is. Being explicit about what you reviewed turns an implicit rubber stamp into a known, shared risk decision.\n\n**Takeaway:** a huge PR is a process problem, so fix the shape of the change before reviewing its lines.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cq-senior-peer-feedback-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Pushing back on a principal engineer's approved PR",
+      "prompt": "Read the situation below. How do you handle this review? Be specific about what you say, where you say it, and what would make you approve.",
+      "context": "Dana is a principal engineer who built the original order platform and is widely respected. Her PR adds a homegrown `ResilientClient` wrapper (about 1,200 lines: retries, a circuit breaker, and a response cache) and migrates three services onto it.\n\nYour concerns:\n- All three services already sit behind the org's service mesh, which retries failed calls up to 3 times. `ResilientClient` also retries 3 times, so one failing call can become 9 attempts against a struggling dependency (more with nested hops).\n- The cache has a 10-minute TTL on account lookups, and nothing tells callers a response may be stale. One of the services uses those lookups for permission checks.\n\nTwo other reviewers have already approved with comments like \"Dana knows this system better than anyone.\" Merge is planned for tomorrow.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Frames the objection as concrete, checkable risk: retry amplification (3 app retries times 3 mesh retries is up to 9 attempts per call, compounding across hops) and stale permission data from a 10-minute cache, not taste or \"not invented here\"",
+          "Starts by seeking Dana's context (what problem prompted this, whether mesh retry budgets were considered or insufficient), allowing that she may know something the reviewer does not",
+          "Takes the design disagreement to a direct conversation (call or DM) before or alongside a public block, and keeps the PR comments factual and concise",
+          "Requests changes despite seniority and existing approvals because the permission-check staleness and retry amplification are correctness and reliability risks, and states the specific bar for approving",
+          "Proposes concrete alternatives: disable or budget app-level retries where the mesh retries, scope the cache away from authorization lookups or make staleness explicit, and treat a new org-wide client primitive as a design review or ADR rather than a PR",
+          "Names a respectful escalation path if they still disagree (the owning architecture group or a design review), not a complaint to managers"
+        ],
+        "redFlags": [
+          "Approves or stays silent because of Dana's seniority or the other approvals",
+          "Leaves dozens of public line comments or a sarcastic block without talking to her",
+          "Argues style or preference instead of quantified risk",
+          "Escalates to Dana's manager before talking to Dana",
+          "Blocks with no stated path to approval"
+        ],
+        "exemplar": "I would message Dana first: \"Before I review further, can we talk for 15 minutes about ResilientClient? I have two concerns and I may be missing context.\" On the call I ask what drove it. Maybe mesh retries were not enough for some failure mode, and that would change my view.\n\nThen I make the risks concrete. The mesh already retries 3 times, so app retries on top mean up to 9 attempts per failing call, more across hops, which is a retry storm against a dependency that is already struggling. The 10-minute cache feeds a permission check, so a revoked user keeps access for up to 10 minutes, and callers cannot tell the data is stale.\n\nOn the PR I request changes with a short, factual comment and the bar for approval: no app-level retries where the mesh retries (or a shared retry budget), and no caching of authorization lookups. Then I suggest that a client every team may adopt deserves a short design review or ADR. Seniority and two approvals do not change the risk. If we still disagree after that, we take it to the architecture review together, and I commit to a fast turnaround so tomorrow's date is not hostage to me."
+      },
+      "explanation": "Strong answers separate the person from the risk. They give a respected author the courtesy of a private conversation and the chance to supply missing context, then hold the line on quantified correctness issues regardless of seniority or prior approvals. Retry amplification and stale authorization data are not matters of taste. They are the kind of defect that review exists to stop, and an unblocking bar turns a block into a path forward.\n\n**Takeaway:** be generous with the person and firm on the evidence, and always say what would make you approve.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "cq-strangler-fig-invoicing-01",
+      "domain": "code_quality",
+      "concepts": ["refactoring", "maintainability"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Strangling a monolith's invoicing module",
+      "prompt": "Describe how you would move invoicing out of the monolith described below into a new service over two to three quarters, without a big-bang cutover. Cover how traffic and data move, how you prove correctness, how you roll back, and how you know you are done.",
+      "context": "- Invoicing is about 40k lines inside a 9-year-old monolith.\n- It reads and writes tables that 6 other modules also query directly (`invoices`, `line_items`, `customer_billing`).\n- A nightly batch job generates about 2M invoices a month; ad hoc invoices are created through 14 internal call sites.\n- Finance reconciles invoice totals monthly and will not accept unexplained differences.\n- A previous rewrite attempt was abandoned after 8 months with nothing in production.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Creates a seam first: routes the 14 call sites and the batch job through one invoicing interface or facade inside the monolith that can delegate to legacy or new code",
+          "Establishes a behavioral baseline (characterization or golden-master outputs from real production invoices) and runs the new service in shadow or parallel, diffing totals and line items against legacy before it serves any traffic",
+          "Migrates incrementally by slice (invoice type, customer cohort or region) with flag-controlled routing and a tested, fast rollback to the legacy path",
+          "Addresses data ownership explicitly: the new service owns its data, legacy readers are served through replication (CDC or outbox) or an API until they are moved, and there is never a second unreconciled writer to the same tables",
+          "Defines done as deleting the legacy code path and tables after a period at 100% with no diffs, and tracks strangling progress so the old module actually dies",
+          "Ships value early (the first slice in production within weeks) in response to the abandoned rewrite, with reconciliation reports finance can sign off on"
+        ],
+        "redFlags": [
+          "Big-bang rewrite with a cutover weekend",
+          "The new service reading and writing the monolith's tables directly with no end state",
+          "No output comparison against legacy before switching traffic",
+          "No rollback path",
+          "Both systems kept running indefinitely"
+        ],
+        "exemplar": "Step one is a seam. I put an `InvoicingPort` interface inside the monolith and route all 14 call sites and the nightly job through it, with the legacy code as its only implementation. That is a pure refactor, shippable in weeks.\n\nNext I capture a baseline: a month of real invoice inputs and outputs as golden-master data. The new service starts in shadow mode. The port calls legacy, then calls the new service asynchronously and diffs totals and line items, with diffs reported daily. Every diff is either a new-service bug or a legacy quirk that finance explicitly signs off on.\n\nI cut over by slice, starting with the simplest invoice type or a small customer cohort, behind a flag in the port. Rollback is flipping the flag, which works because legacy keeps running for unmigrated slices.\n\nData: the new service owns new tables. The 6 modules that read `invoices` directly get an outbox or CDC feed back into legacy-shaped read tables until each is moved to the service's API. There is only ever one writer of truth per slice.\n\nDone means 100% of traffic on the new service for a full month-end close with zero unexplained diffs, then deleting the legacy code and tables. I track lines and call sites removed as the progress metric."
+      },
+      "explanation": "The strangler fig pattern succeeds where rewrites fail because value ships continuously and every step is reversible. The hard parts are rarely the code: they are the seam (one place to switch traffic), proof of equivalence (shadow runs with diffs against real outputs), and shared data, where two unreconciled writers is the classic failure. Many strangler migrations also stall at 90%, so an explicit deletion milestone matters as much as the first slice.\n\n**Takeaway:** build the seam, prove equivalence in shadow, move one slice at a time, and finish by deleting the old code.",
+      "references": ["Martin Fowler, \"StranglerFigApplication\" (bliki, 2004)"],
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "cq-tech-debt-triage-01",
+      "domain": "code_quality",
+      "concepts": ["technical-debt"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Spending 20% capacity on a 63-ticket debt backlog",
+      "prompt": "You have just become tech lead of this team. You have roughly 20% of next quarter's capacity for technical debt. How do you classify and prioritize the items below, what do you do with the rest of the backlog, and how do you make the case to your product partner?",
+      "context": "The backlog has 63 tickets labeled `tech-debt`, most vague (\"clean up utils\", \"refactor auth\"). Five representative items:\n\n1. ORM library major version reaches end of life in 5 months; security patches stop then.\n2. `OrderService.ts` is 4,000 lines and touched by 70% of last quarter's PRs; median PR cycle time for changes there is 3.1 days against a team median of 1.2.\n3. The legacy admin reporting module is poorly written; it has been changed twice in two years.\n4. The integration suite takes 38 minutes, and engineers batch changes to avoid waiting.\n5. `customer` and `account` are used interchangeably across the codebase.",
+      "language": null,
+      "estSeconds": 540,
+      "rubric": {
+        "keyPoints": [
+          "Prioritizes by interest paid (ongoing cost times frequency of contact) rather than ugliness: item 3 is low priority despite bad code because it is rarely touched",
+          "Treats item 1 as a dated risk with a hard deadline that must be scheduled before end of life, separate from discretionary debt",
+          "Uses the given metrics for items 2 and 4 (3.1 versus 1.2 day cycle time, 38-minute CI, batching) as the case for paydown, and pays down item 2 incrementally alongside feature work in that file",
+          "Prunes the 63-ticket backlog: closes or merges vague tickets and requires each kept item to state its cost, so the label stops being a junk drawer",
+          "Puts item 5 in an appropriate place: a glossary decision plus opportunistic renames as code is touched, not a dedicated project",
+          "Frames the case to product in delivery terms (faster cycle time, risk avoided) and sets measurable targets, such as CI under 15 minutes or cycle time in `OrderService` near team median, to verify the paydown worked"
+        ],
+        "redFlags": [
+          "Proposes a rewrite or trying to fix all 63 items",
+          "Prioritizes by what engineers find most annoying or by code ugliness",
+          "Spends the quarter on naming consistency",
+          "Treats debt work as separate from the roadmap with no metrics",
+          "Ignores the end-of-life deadline"
+        ],
+        "exemplar": "I classify by the cost each item actually imposes, not how bad the code looks.\n\nItem 1 is not discretionary: it is a dated security risk. It goes on the roadmap now, sized and scheduled to finish well before end of life, and I would argue for it even outside the 20%.\n\nItems 2 and 4 are high-interest debt, because they tax almost every change. The CI suite comes first because it affects everyone. I would profile it, parallelize, and split slow tests, with a target under 15 minutes. `OrderService` gets incremental extraction of the most-changed seams whenever a feature touches it, measured by cycle time on that file moving toward the 1.2-day team median.\n\nItem 3 is ugly but nearly free: two changes in two years. I leave it alone and accept the cost if it ever needs work. Item 5 gets a one-page glossary decision and renames as code is touched, not a project.\n\nFor the other 58, I triage in an hour with the team: close the vague ones and require any kept ticket to state what it costs us.\n\nTo product I say: this 20% buys back roughly two days per `OrderService` change and a faster CI loop, and removes a security deadline. Here is how we will measure it."
+      },
+      "explanation": "Technical debt is worth paying down in proportion to the interest it charges: how often you touch it times how much it slows or endangers each touch. Ugly code that nobody changes charges almost nothing. Time-boxed risks like end-of-life dependencies are a different category and need a date, not a debate. Strong leads also clean the backlog itself and give product a delivery-metric reason, with a measurement, for each investment.\n\n**Takeaway:** prioritize debt by the interest it charges, schedule cliffs by their dates, and measure whether paydown worked.",
+      "references": ["Martin Fowler, \"TechnicalDebtQuadrant\" (bliki, 2009)"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cq-adr-result-type-01",
+      "domain": "code_quality",
+      "concepts": ["documentation", "error-handling"],
+      "skill": "apply",
+      "type": "free_text",
+      "difficulty": 2,
+      "title": "The ADR nobody wrote for Result types in billing",
+      "prompt": "Six months ago the team decided, after weeks of Slack debate, that the billing service would return `Result<T, E>` for domain errors instead of throwing. Other TypeScript services still throw. A new hire now asks why billing is different, and nobody remembers which alternatives were considered. Outline the Architecture Decision Record you would have written, and say where it should live and how it should be maintained.",
+      "language": null,
+      "estSeconds": 420,
+      "rubric": {
+        "keyPoints": [
+          "Context section states the forces behind the decision (for example untyped exceptions in TypeScript, incidents from swallowed or unhandled billing errors, the need for callers to handle declines explicitly)",
+          "Decision is stated precisely with its scope: billing service only, domain errors only, unexpected faults still throw",
+          "Lists the alternatives considered and why each was rejected (status quo exceptions, typed error classes, a library versus a homegrown Result, org-wide adoption)",
+          "Consequences cover both benefits and costs (verbosity, conversion at boundaries with throwing code, onboarding) and a trigger for revisiting the decision",
+          "Lives in the repository (for example `docs/adr/0007-result-types-in-billing.md`), is reviewed by pull request, and is immutable once accepted: later changes add a new ADR that supersedes it rather than editing history"
+        ],
+        "redFlags": [
+          "Puts the decision in a wiki page or Slack pin with no link from the code",
+          "Edits the old ADR when the decision changes instead of superseding it",
+          "Writes a long design document instead of a one-page record",
+          "Omits the rejected alternatives"
+        ],
+        "exemplar": "**ADR 0007: Use Result types for domain errors in billing**\n\n**Status:** Accepted, 2026-05-12.\n\n**Context:** TypeScript cannot express what a function throws. Two incidents came from billing callers not handling `CardDeclined`, and the code gives reviewers no way to see unhandled outcomes.\n\n**Decision:** Billing's public functions return `Result<T, BillingError>` for expected domain outcomes (declined, insufficient funds, invalid coupon). Unexpected faults (bugs, infrastructure) still throw and are handled at the request boundary. Scope is the billing service only.\n\n**Alternatives:** Keep exceptions but add typed error classes (rejected: still invisible in signatures). Adopt across all services (rejected: high churn, unproven here first). Use a library rather than our own type (chosen, `neverthrow`, to avoid maintaining one).\n\n**Consequences:** Callers must handle errors explicitly, and reviewers can see it. The costs are more verbose code and conversion at boundaries with throwing code. Revisit if a second service wants it, or after two quarters.\n\nIt lives in `docs/adr/` in the billing repo, goes through a PR like code, and is linked from the service README. When the decision changes we add ADR 00xx that supersedes it and mark 0007 as superseded, so the history stays readable."
+      },
+      "explanation": "An ADR is a short, immutable record of one decision: its context, the decision and its scope, the alternatives considered, and the consequences. Keeping it next to the code and changing it through pull requests (docs as code) means it is found, reviewed and versioned like everything else. Superseding instead of editing preserves the reasoning trail, which is the reason to have the record at all.\n\n**Takeaway:** record why you decided, what you rejected, and where it applies, in the repo, before the Slack thread scrolls away.",
+      "references": ["Michael Nygard, \"Documenting Architecture Decisions\" (2011)"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cq-contract-tests-accounts-01",
+      "domain": "code_quality",
+      "concepts": ["testing-strategy"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Replacing a shared e2e gate with contract tests",
+      "prompt": "Propose a testing approach that lets the Accounts team and its consumers deploy independently without relying on the shared end-to-end suite to catch compatibility breaks. Explain what it catches, what it does not, and how deploys are gated.",
+      "context": "- The Accounts API is consumed by six clients: web, iOS, Android, and three backend services.\n- Compatibility is checked today by a shared staging end-to-end suite: 2 hours per run, about 30% of runs fail for reasons unrelated to the change, and it blocks every team's deploy.\n- Last month the Accounts team removed what they believed was an unused field, `legacy_plan_code`. Android app versions 5.2 to 5.4 still read it and crashed on launch for 4% of users. Those versions are still in use.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Uses consumer-driven contract tests: each consumer records the requests it makes and the response fields it actually reads, and the provider verifies every consumer's contracts in its own CI",
+          "Publishes contracts with versions to a broker, and gates each deploy on compatibility with the versions currently deployed or released, in the style of a can-i-deploy check",
+          "Handles mobile's long tail: contracts from released app versions (5.2 to 5.4) stay in verification until their usage falls below an agreed threshold, so removing `legacy_plan_code` fails provider CI",
+          "Uses provider states (fixtures) to set up data per interaction, and keeps contracts to the shape and meaning at the boundary rather than re-testing business logic",
+          "States the limits: contracts miss multi-step behavior, performance and environment config, so a small set of smoke end-to-end tests stays for critical journeys, off the per-team blocking path",
+          "Pairs this with a deprecation process for field removal (usage telemetry, a sunset period) rather than relying on tests alone"
+        ],
+        "redFlags": [
+          "Adds more end-to-end tests or more staging environments as the main fix",
+          "Has the provider write the consumers' contracts",
+          "Relies on hand-written consumer stubs that are never verified against the provider",
+          "Treats an OpenAPI diff as sufficient, which says what changed but not which consumers depend on it",
+          "Forgets that old mobile versions cannot be upgraded on demand"
+        ],
+        "exemplar": "I would move compatibility checking to consumer-driven contracts (for example Pact) and demote the shared end-to-end suite to a handful of smoke tests that do not block every deploy.\n\nEach consumer's test suite runs against a mock provider generated from its contract: the requests it sends and the fields it reads. Contracts are published to a broker tagged with the consumer version and environment. Accounts' CI fetches every contract for the versions deployed or released and verifies them against the real provider, using provider states to set up data such as \"user with a legacy plan\".\n\nDeploys are gated by a can-i-deploy check: Accounts can ship only if it satisfies every consumer version in production, and a consumer can ship only if its contract is verified by the deployed provider. For mobile, released versions stay in the matrix until usage drops below, say, 0.5%. Removing `legacy_plan_code` would have failed Accounts' CI against the Android 5.2 contract before merge.\n\nContracts check the boundary, not business workflows, performance or config, so I keep five smoke journeys post-deploy. Field removals also go through deprecation with usage telemetry."
+      },
+      "explanation": "Shared end-to-end suites couple every team's deploy to every other team's flakiness and still miss what they do not exercise. Consumer-driven contracts make each consumer's real dependencies explicit and verifiable in the provider's own pipeline, and a broker with a deploy gate turns compatibility into a fast, per-change check. The mobile wrinkle matters: old client versions live for months, so their contracts must stay in force.\n\n**Takeaway:** test compatibility at the boundary against the versions actually running, and keep end-to-end tests few and non-blocking.",
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "cq-error-strategy-org-01",
+      "domain": "code_quality",
+      "concepts": ["error-handling", "api-ergonomics"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "An error-handling strategy for forty services",
+      "prompt": "You have been asked to define an error-handling strategy across about 40 services written in TypeScript, Go and Java. Using the symptoms below, describe the error taxonomy, how errors are represented inside services and on the wire, how they cross service boundaries, and how logging and alerting change. Include how you would roll it out.",
+      "context": "- Users see \"Something went wrong\" for simple validation failures, such as an invalid postcode.\n- About 1.2M ERROR-level log lines per day; sampling shows 92% are expected outcomes such as 404 lookups and declined cards, logged with stack traces. On-call has stopped reading error alerts.\n- Several services retry on HTTP 400 and 409 responses.\n- Each service invents its own error codes; the web client has a 300-line switch statement to map them to messages.\n- One Go service passes downstream error messages straight through to its own API responses.",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Defines a small taxonomy by what the caller can do: invalid input (caller fault, do not retry), expected domain outcomes (not found, conflict, declined), transient or unavailable (retry with backoff, honoring Retry-After), and internal faults (bugs, alert), each with a consistent HTTP or gRPC status mapping",
+          "Represents expected outcomes as values in each language (Result or union types in TypeScript, returned errors with sentinel or typed errors in Go, sealed result types in Java) while unexpected faults propagate as exceptions or panics to one boundary handler",
+          "Standardizes a wire format (for example RFC 9457 problem details or `google.rpc.Status`) with a stable machine-readable code, a retryable signal, a correlation id and a safe user-facing message, and never leaks stack traces or downstream messages",
+          "Requires translation at every service boundary: map downstream errors into your own taxonomy and wrap with context (Go `%w`, Java causes) rather than passing them through",
+          "Changes logging and alerting: expected outcomes become INFO or metrics, ERROR is reserved for faults, and alerts fire on fault rate or SLO burn, which removes most of the 92% noise",
+          "Rolls out through a shared library per language, lint rules and API review, starting at the edges (gateway and web client) and adopting service by service, without one global error enum that every team must edit"
+        ],
+        "redFlags": [
+          "Use exceptions everywhere with a global catch that returns 500",
+          "One central enum of every error code in the company that all 40 services must edit",
+          "Passing downstream errors through unchanged",
+          "Keeping expected outcomes at ERROR level",
+          "A big-bang rewrite of all services"
+        ],
+        "exemplar": "I would classify errors by what the caller should do. **Invalid** means the caller is at fault: 400, never retry. **Outcome** covers expected business results such as not found, conflict or declined: 404, 409, 422, never retry. **Transient** means try again later: 503 or 429 with Retry-After, retry with backoff and jitter. **Fault** means a bug or broken config: 500, alert.\n\nInside services, invalid input and outcomes are values: Result types in TypeScript, typed or sentinel errors in Go, sealed result types in Java. Faults throw or panic up to one boundary handler per service. On the wire everyone uses RFC 9457 problem details with a stable `code` (namespaced per service, for example `billing.card_declined`), a `retryable` flag, a correlation id and a user-safe message. Every service translates downstream errors into its own taxonomy and wraps the cause for logs, so internal messages never leak out.\n\nLogging follows the taxonomy: outcomes and invalid input become INFO plus metrics, and ERROR means fault. Alerts fire on fault rate and SLO burn, so most of today's 1.2M daily ERROR lines disappear. The web client maps a few dozen codes instead of 300 cases.\n\nRollout: a small library per language, a lint rule against logging outcomes at ERROR, the gateway and web client first, then the noisiest services first."
+      },
+      "explanation": "The symptoms share one root cause: nobody defined what kinds of failure exist or what each one asks the caller to do. A taxonomy built around caller actions fixes retries (only transient errors retry), user experience (invalid input carries a safe message), and alert noise (only faults are errors) at the same time. The representation follows: expected outcomes as values close to the code, faults as exceptions to a boundary, and a standard wire format with stable codes. Boundary translation keeps services decoupled from their dependencies' internals.\n\n**Takeaway:** define errors by what the caller should do next, and let types, wire format, retries and alerts all follow from that one taxonomy.",
+      "references": ["RFC 9457, Problem Details for HTTP APIs"],
+      "tags": ["interview"]
+    }
+  ]
+}

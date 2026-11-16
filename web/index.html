@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#092742" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Staff Sharp</title>
+    <script>
+      // Paint the saved theme before the app loads (the API copy is authoritative; this is a mirror).
+      (function () {
+        var p = { theme: 'dark', codeTheme: 'staff' };
+        try { Object.assign(p, JSON.parse(localStorage.getItem('staff-sharp.preferences') || '{}')); } catch (e) {}
+        var light = p.theme === 'light' || (p.theme === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+        document.documentElement.dataset.theme = light ? 'light' : 'dark';
+        document.documentElement.dataset.codeTheme = p.codeTheme;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

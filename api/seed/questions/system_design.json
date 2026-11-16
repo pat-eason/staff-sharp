@@ -1,0 +1,1393 @@
+{
+  "file": "system_design",
+  "questions": [
+    {
+      "id": "sd-pagination-keyset-01",
+      "domain": "system_design",
+      "concepts": [
+        "api-design"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Deep OFFSET pagination times out and skips rows",
+      "prompt": "Partners sync orders through `GET /v1/orders?page=N&limit=50`, sorted newest first, over a 400M-row Postgres table. Two complaints arrive the same week: partner crawls time out past page ~20,000, and partners report occasional duplicate and missing orders while paging during busy hours. Which change fixes both problems?",
+      "context": "```\nSELECT * FROM orders WHERE tenant_id = $1\nORDER BY created_at DESC, id DESC\nLIMIT 50 OFFSET 999950;\n\nLimit (actual time=8412.3..8412.9 rows=50)\n  -> Index Scan using orders_tenant_created_id_idx (rows=1000000)\n```\nAn index on `(tenant_id, created_at DESC, id DESC)` already exists.",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Return an opaque cursor encoding the last row's `(created_at, id)` and query `WHERE (created_at, id) < ($cursor) ORDER BY created_at DESC, id DESC LIMIT 50`"
+        },
+        {
+          "id": "b",
+          "text": "Make the index covering (`INCLUDE` every selected column) so the OFFSET scan becomes index-only and skips the heap lookups"
+        },
+        {
+          "id": "c",
+          "text": "Cache each `(tenant, page)` response in Redis for five minutes so repeated crawls of the same page are served without a query"
+        },
+        {
+          "id": "d",
+          "text": "Run each crawl inside one `REPEATABLE READ` snapshot so every page sees the same rows and inserts cannot shift page boundaries"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Keyset pagination seeks straight to the position in the index (constant cost per page) and anchors on a row, not a count, so concurrent inserts cannot shift pages.",
+        "b": "Cheaper per row, but OFFSET still walks and discards a million index entries, and inserts still shift every later page.",
+        "c": "Stale pages make the duplicate and skip problem worse and do nothing for the first, uncached crawl.",
+        "d": "A database snapshot cannot span thousands of independent HTTP requests, and holding one for hours bloats the table."
+      },
+      "explanation": "OFFSET pagination costs O(offset) because the database must produce and throw away every skipped row, and it defines a page by position, so a new order at the head pushes one row from page N onto page N+1 (a duplicate) or a delete pulls one back (a skip). Keyset (seek) pagination uses the existing composite index to jump to `(created_at, id) < cursor`, so page 20,000 costs the same as page 1, and the tiebreaker `id` makes the ordering total. The tempting covering-index fix only shaves the constant factor. Takeaway: for any feed or sync API that can grow, ship opaque cursors on day one; you cannot take OFFSET away from integrators later without a breaking change.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-api-enum-versioning-01",
+      "domain": "system_design",
+      "concepts": [
+        "api-design"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Is a new enum value really additive?",
+      "prompt": "You are reviewing a PR on a public payments API with about 3,000 third-party integrators. What is the right review response?",
+      "context": "> **PR #4812: Add `partially_refunded` to `Payment.status`**\n> Non-breaking, additive change. Updates the OpenAPI spec and regenerates the SDKs. Ships to `/v1` on merge.\n\nFacts you know:\n- The API guide promises that v1 responses change only additively.\n- The official Java and Go SDKs generate strict enums from the spec; older SDK versions throw on unknown values.\n- Support has seen several integrators with `switch (status) { ... default: throw }` in their reconciliation jobs.\n- Accounts are already pinned to a dated API version when they first call the API.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Approve: adding an enum value is an additive change, which the v1 compatibility promise already allows"
+        },
+        {
+          "id": "b",
+          "text": "Request changes: a new enum value breaks exhaustive clients, so release it in a new dated version and map it to `refunded` for accounts pinned earlier"
+        },
+        {
+          "id": "c",
+          "text": "Approve, as long as the regenerated SDKs are published the same day and the changelog calls out the new status prominently"
+        },
+        {
+          "id": "d",
+          "text": "Request changes: expose `partially_refunded` only in webhook payloads so integrators polling the REST endpoint are unaffected"
+        }
+      ],
+      "answer": [
+        "b"
+      ],
+      "optionNotes": {
+        "a": "Adding a field is additive; widening the set of values a client must handle is not, because clients validate and switch on the documented set.",
+        "b": "The account already pins a version, so the cheapest safe path is a version-change transform: new accounts see the new value, older pins see the closest legacy value.",
+        "c": "Integrators do not upgrade SDKs on your schedule, and the old SDKs throw on the unknown value the moment it ships.",
+        "d": "Webhook consumers deserialize the same enum with the same SDKs, so this moves the breakage rather than removing it."
+      },
+      "explanation": "Output enums are part of the contract in a way that is easy to miss: a client written against the documented set of values is correct until you add one, and then its `default: throw` path fires in production. Because this API already pins accounts to dated versions, the change can ship as a version transform: the response for older versions maps `partially_refunded` back to `refunded` (or `succeeded` with a refunded amount), and new or upgraded accounts get the richer status. Same-day SDK releases do not help clients that never upgrade. Takeaway: treat new values in response enums as breaking unless your contract explicitly told clients to tolerate unknown values from the start.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "sd-idempotency-key-race-01",
+      "domain": "system_design",
+      "concepts": [
+        "idempotency",
+        "api-design"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Idempotency keys that still double-charge",
+      "prompt": "`POST /payments` accepts an `Idempotency-Key` header. Finance found 214 duplicate charges last month, every one from a mobile client retry. Which change fixes the root cause?",
+      "context": "Current handler:\n```\nif cached := redis.GET(\"idem:\" + key); cached != nil { return cached }\nresp := processor.Charge(req)          // p50 1.2s, p99 34s\nredis.SET(\"idem:\" + key, resp, EX=86400)\nreturn resp\n```\nGateway timeout is 30 s. Duplicate pairs always share a key and arrive 30 to 31 s apart.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Atomically claim the key before charging (unique insert with status `in_progress` and a request hash); a concurrent retry gets 409, a finished one gets the stored response"
+        },
+        {
+          "id": "b",
+          "text": "Raise the gateway timeout to 60 s so it sits above the processor's p99 and the client never sees a timeout while the charge is in flight"
+        },
+        {
+          "id": "c",
+          "text": "Move the `SET` above the processor call so the key exists in Redis before the slow charge starts, and overwrite it with the real response afterwards"
+        },
+        {
+          "id": "d",
+          "text": "Have the client generate a fresh idempotency key on each retry so the server can tell attempts apart and log which attempt actually succeeded"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The bug is check-then-act: two requests both miss the GET. An atomic claim makes the second request observe the first, and the request hash catches a reused key with a different body (return 422).",
+        "b": "Narrows the window but any charge slower than the new timeout, or any client-side timeout, still double-charges.",
+        "c": "GET then SET is still two steps, so two requests can both miss; and if the charge then fails, the placeholder blocks legitimate retries.",
+        "d": "That defeats the mechanism entirely: every retry becomes a new payment."
+      },
+      "explanation": "An idempotency key only works if the first request's claim is visible to the second request before the second one does work. Here the key is written after the slow charge, so a retry that arrives while the first charge is still in flight sees nothing and charges again. The fix is an atomic claim (a unique-constraint insert, ideally in the same database transaction scope as the payment record) with three states: in progress (reply 409 or retry later), completed (replay the stored response), and failed in a retryable way (release the claim). Store a hash of the request body so a reused key with different parameters is rejected. Passing the same key to the processor, if it supports one, protects the downstream hop too. Takeaway: idempotency is a concurrency problem, not a caching problem.",
+      "references": [
+        "IETF draft-ietf-httpapi-idempotency-key-header (The Idempotency-Key HTTP Header Field)"
+      ],
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-hot-partition-tenant-01",
+      "domain": "system_design",
+      "concepts": [
+        "sharding-partitioning"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "One tenant throttles while the table sits at 35%",
+      "prompt": "An `events` table in a managed key-value store uses partition key `tenant_id` and sort key `ts`. Each partition key is limited to about 1,000 writes/s. The largest tenant now writes 6,000 events/s and gets throttled, while the table as a whole uses 35% of its provisioned capacity. The main read is \"events for a tenant in the last 24 hours, newest first\". What do you change?",
+      "context": "```\nWARN write throttled table=events pk=tenant#t_8812 reason=PartitionThroughputExceeded\nconsumed_wcu table=34.8% hottest_partition=100%\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        {
+          "id": "a",
+          "text": "Write-shard hot tenants: key `tenant_id#b` with `b = hash(event_id) % N`, N sized to the tenant's rate; reads query the N keys in parallel and merge by `ts`"
+        },
+        {
+          "id": "b",
+          "text": "Triple the table's provisioned write capacity so the hottest partition has enough headroom to absorb the tenant's peak write rate"
+        },
+        {
+          "id": "c",
+          "text": "Change the partition key to `ts` truncated to the minute so writes spread across time instead of piling onto one tenant's key"
+        },
+        {
+          "id": "d",
+          "text": "Put a write-through cache in front of the table so the hot tenant's writes are absorbed in memory before they reach the store"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Suffix sharding spreads one logical key across N physical keys; the read pays an N-way fan-out, which is cheap for a bounded time-range query.",
+        "b": "The limit is per partition key, so table-level capacity is not the constraint; you pay three times as much and still throttle.",
+        "c": "Every writer in the system now hits the same current-minute key: you have turned one hot partition into a hot partition for everyone.",
+        "d": "A write-through cache still writes every event to the store; caches absorb reads, not writes."
+      },
+      "explanation": "Table-wide utilization at 35% with one partition at 100% is the signature of a hot key, and no amount of table-level capacity fixes a per-key limit. Write sharding (a computed suffix) splits the tenant's key into N keys, each under the per-key limit (N = 8 gives headroom for 6,000/s), and the 24-hour read becomes N parallel range queries merged by timestamp. Apply it only to tenants above a threshold, or use a fixed N for all tenants if the read fan-out is acceptable. Time-bucketed keys are the classic wrong turn because they create a moving hotspot. Takeaway: choose partition keys from the access pattern and the skew of your largest customer, not your average one.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-cache-invalidation-race-01",
+      "domain": "system_design",
+      "concepts": [
+        "caching",
+        "replication"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Prices stay stale for an hour after updates",
+      "prompt": "A product service uses cache-aside. About 1 in 300 price updates leaves the old price cached for the full one-hour TTL. Which change closes the race instead of only narrowing it?",
+      "context": "Write path: `UPDATE products ... ` on the primary, then `DEL product:{id}`.\nRead path on miss: `SELECT` from a read replica (replication lag p50 40 ms, p99 900 ms), then `SET product:{id} value EX 3600`.\n\nTrace for one stale key:\n```\n10:02:11.004 writer  UPDATE products id=771 price=19.99 (primary)\n10:02:11.009 writer  DEL product:771\n10:02:11.031 reader  MISS product:771 -> SELECT replica -> price=24.99\n10:02:11.033 reader  SET product:771 price=24.99 EX 3600\n```",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Fill misses from the primary instead of the replica so the reader can never load a row older than the most recent committed write"
+        },
+        {
+          "id": "b",
+          "text": "Delete the key a second time one second after the write, so any stale value set during the replication-lag window gets removed again"
+        },
+        {
+          "id": "c",
+          "text": "Have the writer set the new value tagged with the row version instead of deleting, and make fills a compare-and-set that only lands with a newer version"
+        },
+        {
+          "id": "d",
+          "text": "Cut the TTL from an hour to 30 seconds so that any stale value written during the lag window ages out of the cache quickly"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Removes the replica-lag case, but the classic race remains: a reader loads the old row, the writer updates and deletes, then the reader's late SET lands. It also moves all miss traffic onto the primary.",
+        "b": "Delayed double delete only works when lag is shorter than the delay; at p99 900 ms and tail lag in seconds, it narrows the window, it does not close it.",
+        "c": "Once the cache holds the newest version, any fill carrying an older version is rejected (a small Lua script or CAS), regardless of how stale the replica is.",
+        "d": "Bounds how long the bug lasts and multiplies miss traffic by 120, but the stale write still happens."
+      },
+      "explanation": "The trace shows the reader missing after the delete and refilling from a replica that has not yet applied the update. Any scheme that relies on timing (a second delete, a shorter TTL, a faster replica) narrows the window. Versioning closes it: the writer puts the new value with its row version (or a tombstone carrying that version), and fills only succeed when their version is newer than what is cached, so an old read can never overwrite newer state. The remaining failure mode is a lost cache write from the writer, which degrades to normal TTL staleness and should be alerted on. Takeaway: when a cache is fed by two writers with different freshness, make the ordering explicit with versions instead of hoping the timing works out.",
+      "references": [
+        "Nishtala et al., Scaling Memcache at Facebook (NSDI 2013)"
+      ],
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "sd-audit-datastore-01",
+      "domain": "system_design",
+      "concepts": [
+        "storage-choice"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Where to keep seven years of audit events",
+      "prompt": "Compliance needs every audit event kept for seven years and protected from modification. Volume is 20,000 events/s (about 400 bytes each), append-only. Queries are rare: a few per week, always filtered by tenant and time range, and minutes of latency is fine. A teammate proposes a new table in the main Postgres cluster. What do you recommend?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Stream events into object storage as compressed columnar files partitioned by tenant and day, with write-once retention locks, and query them with a serverless SQL engine"
+        },
+        {
+          "id": "b",
+          "text": "A new Postgres table partitioned by month on the primary cluster, with old partitions detached to cheaper tablespaces after a year"
+        },
+        {
+          "id": "c",
+          "text": "A dedicated Elasticsearch cluster with index lifecycle management rolling indices to warm and cold tiers over seven years"
+        },
+        {
+          "id": "d",
+          "text": "Redis Streams with AOF persistence and one stream per tenant, trimmed to keep exactly seven years of entries per tenant"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "About 250 TB/year raw shrinks several-fold as columnar files, costs cents per GB-month, supports immutability controls, and partition pruning makes tenant and time-range scans fast enough.",
+        "b": "Roughly 690 GB/day of append traffic competes with OLTP writes, bloats backups and replicas, and Postgres offers no write-once guarantee.",
+        "c": "Works technically, but you pay for a search cluster sized for petabytes to answer a handful of queries a week.",
+        "d": "Memory-first storage for multi-petabyte archival data is the most expensive option on the list by orders of magnitude."
+      },
+      "explanation": "Work the numbers first: 20,000 events/s × 400 bytes ≈ 8 MB/s ≈ 690 GB/day ≈ 250 TB/year before compression, so seven years is well over a petabyte raw. The access pattern (append-only, rare scans filtered by tenant and time) is exactly what partitioned columnar files on object storage are built for, and object-lock style retention satisfies the immutability requirement. Putting it in the OLTP primary couples an archival workload to your most critical database. Takeaway: pick the store from write volume, read pattern, and retention, and let the rare query be slow when the requirements allow it.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-modulo-hashing-remap-01",
+      "domain": "system_design",
+      "concepts": [
+        "load-balancing",
+        "sharding-partitioning"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Adding one cache node melted the database",
+      "prompt": "A cache tier of 10 memcached nodes routes each key with `hash(key) % N`. During a traffic peak someone added an 11th node, the cache hit ratio fell from 97% to about 10%, and the database fell over. What happened, and what prevents it next time?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "Changing N from 10 to 11 remaps roughly 90% of keys to a different node; consistent hashing with virtual nodes would move only about 1/11 of them"
+        },
+        {
+          "id": "b",
+          "text": "The new node started with a cold cache and took a share of traffic immediately; pre-warming it from a snapshot before adding it would prevent this"
+        },
+        {
+          "id": "c",
+          "text": "Memcached rebalanced its slab allocator across the cluster when the node joined, evicting hot keys; pin slab classes before scaling"
+        },
+        {
+          "id": "d",
+          "text": "Modulo routing moves only 1/11 of keys, but clients disagreed about N during the rollout; a config push with a version check prevents it"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "A key stays put only when `h % 10 == h % 11`, which is true for about 1 in 11 keys, so almost the whole cache effectively goes cold at once.",
+        "b": "A cold node alone costs about 1/11 of hits, not a drop from 97% to 10%.",
+        "c": "Memcached nodes do not coordinate or rebalance with each other; each node is independent.",
+        "d": "Client disagreement makes it worse, but the remap fraction under modulo hashing is about 10/11, not 1/11."
+      },
+      "explanation": "With modulo placement, changing the node count reassigns almost every key, so the hit ratio collapses and every miss lands on the database. Consistent hashing places nodes and keys on a ring, so adding one node only takes over the keys between it and its neighbour, about 1/(N+1) of the keyspace, and virtual nodes keep the load even. Even with consistent hashing, add capacity off-peak and watch the miss rate. Takeaway: any placement function a cluster uses should move the minimum number of keys when membership changes.",
+      "references": [
+        "Karger et al., Consistent Hashing and Random Trees (STOC 1997)"
+      ],
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "sd-read-your-writes-01",
+      "domain": "system_design",
+      "concepts": [
+        "replication",
+        "consistency-tradeoffs"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "User saves their bio and sees the old one",
+      "prompt": "Profile reads go to asynchronous Postgres replicas (lag p99 800 ms). After saving, users are redirected to their profile and about 2% of them see the old bio, then file bugs. Product does not want to send all reads to the primary. What is the best fix?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Record the write's commit position (LSN or timestamp) in the user's session and serve that user's reads from the primary, or a replica caught up to it, until replicas pass it"
+        },
+        {
+          "id": "b",
+          "text": "Switch the replicas to synchronous replication so that every committed write is visible on every replica before the save returns"
+        },
+        {
+          "id": "c",
+          "text": "Delay the redirect after saving by one second, which is longer than the p99 replication lag, so the replica has caught up"
+        },
+        {
+          "id": "d",
+          "text": "Add more read replicas so each one carries less read load and therefore applies the primary's changes faster"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Read-your-writes only needs to hold for the user who wrote; tracking their position keeps the rest of the read traffic on replicas.",
+        "b": "Makes every write wait on the slowest replica and couples primary availability to replica health, to fix a problem one user at a time has.",
+        "c": "Slows every save, and the tail lag beyond p99 still shows the bug, just more rarely.",
+        "d": "Replica lag is mostly about replay and network, not read load; more replicas do not meaningfully shorten it."
+      },
+      "explanation": "The guarantee users expect here is read-your-writes (session consistency), not global strong consistency. The standard implementation pins the writer: store the commit LSN or a timestamp in the session, and route that user's reads to the primary, or to any replica whose replay position is past it, for a short window. Everyone else keeps reading from replicas. Synchronous replication solves a narrow problem with a global cost. Takeaway: name the specific consistency guarantee the user needs and pay for it only where it is needed.",
+      "references": [
+        "Kleppmann, Designing Data-Intensive Applications, Chapter 5 (Replication)"
+      ],
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "sd-consumer-lag-backpressure-01",
+      "domain": "system_design",
+      "concepts": [
+        "backpressure",
+        "rate-limiting"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Consumer lag grows and someone wants 48 pods",
+      "prompt": "An enrichment consumer reads a 12-partition Kafka topic with 12 pods and geocodes each address through a vendor API capped at 500 requests/s per account. During the evening peak, lag grows by about 2,000 messages/s and someone opens a PR to scale the deployment to 48 pods. What should you do instead?",
+      "context": "```\nconsumer_cpu_avg            14%\ngeocoder_requests_total     ~520/s\ngeocoder_429_ratio          18% and rising\nretry_policy                immediate, 5 attempts\ndistinct_addresses_per_hour ~31% of messages\npeak_inflow                 ~2,400 msgs/s for ~2h\n```",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Merge the PR: 48 pods quadruple throughput, and the vendor's 429s will settle once the backlog is drained and the traffic peak passes"
+        },
+        {
+          "id": "b",
+          "text": "Repartition the topic to 48 partitions first so that all 48 pods actually get assigned work, then scale the deployment"
+        },
+        {
+          "id": "c",
+          "text": "Treat 500/s as the real capacity: cache geocodes (most addresses repeat), add a shared rate limiter with backoff, and let lag absorb the peak, alerting on time-to-drain"
+        },
+        {
+          "id": "d",
+          "text": "Raise `max.poll.records` and consumer concurrency per pod so each pod keeps more requests in flight to the vendor at once"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "With 12 partitions, 36 of the new pods sit idle, and any extra concurrency only adds 429s and retry traffic against a fixed vendor cap.",
+        "b": "Now all 48 pods run, and all of them hit the same 500/s ceiling harder; throughput does not move.",
+        "c": "Only ~31% of messages need a vendor call once results are cached (~750/s at peak), the limiter stops retry amplification, and a 2-hour backlog that drains overnight is acceptable if you alert on drain time.",
+        "d": "More in-flight requests against a hard rate limit just converts into more 429s and immediate retries."
+      },
+      "explanation": "Low CPU and rising 429s say the bottleneck is the vendor quota, not consumer capacity, so every option that adds parallelism makes things worse: immediate retries multiply the load on the one constrained resource. The fix treats the quota as a capacity limit. Cache results because addresses repeat (about 31% are new, so peak vendor demand drops to roughly 750/s), put a shared token bucket in front of the vendor so all pods respect 500/s together, back off on 429 instead of retrying immediately, and let the log buffer the remaining peak, with an alert on estimated time to drain rather than raw lag. If 750/s is still over quota, the conversation is about buying more quota or deferring non-critical enrichment. Takeaway: before scaling consumers, find the actual constraint; a queue is a buffer, and lag is fine as long as it drains within your SLO.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-rate-limit-boundary-01",
+      "domain": "system_design",
+      "concepts": [
+        "rate-limiting"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Fixed window lets 200 requests through in two seconds",
+      "prompt": "Your API limits each key to 100 requests per minute using a fixed window counter reset at the top of each minute. A scraper sends 100 requests at 12:00:59 and 100 more at 12:01:00, and the backend sees a 200-request spike in two seconds. Which change prevents this while still allowing small, legitimate bursts?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "A token bucket per key with capacity 20 that refills at 100 tokens per minute"
+        },
+        {
+          "id": "b",
+          "text": "Fixed windows of 10 seconds with a limit of 17 requests in each window"
+        },
+        {
+          "id": "c",
+          "text": "Keep the one-minute fixed window but start each key's window at a random offset"
+        },
+        {
+          "id": "d",
+          "text": "A leaky bucket that queues every excess request without bound and drains 100 per minute"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Caps any burst at 20 and the sustained rate at 100/min, with no window boundary to exploit.",
+        "b": "Shrinks the problem, but the boundary trick still doubles the burst (34 in two seconds).",
+        "c": "Each key still has a boundary; the scraper only has to find its own.",
+        "d": "Nothing is rejected, the queue grows without limit, and latency for that key grows with it."
+      },
+      "explanation": "Fixed windows allow up to twice the limit across a boundary because the counter forgets everything at the reset. A token bucket (or a sliding-window counter) has no boundary: tokens refill continuously, the capacity sets the largest allowed burst, and the refill rate sets the sustained rate. Smaller fixed windows and random offsets only move or shrink the edge. Takeaway: pick a limiter by the burst behaviour you want to allow, and state the burst size explicitly.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-search-index-sync-01",
+      "domain": "system_design",
+      "concepts": [
+        "search"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Keeping the search index converged with Postgres",
+      "prompt": "The catalog service writes a product to Postgres and then calls Elasticsearch in the same request handler. After each incident about 0.3% of products are wrong in search (missing, or showing old prices) until someone runs a manual reindex. Which approaches make the index reliably converge to Postgres? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Capture changes from the Postgres WAL (CDC) into a log; an indexer upserts by primary key, using the row version as the Elasticsearch external version"
+        },
+        {
+          "id": "b",
+          "text": "Write an outbox row in the same transaction as the product change; a relay publishes it and an indexer applies it, ignoring older versions"
+        },
+        {
+          "id": "c",
+          "text": "Wrap the two calls in one try/catch and roll back the Postgres transaction whenever the Elasticsearch call throws an error"
+        },
+        {
+          "id": "d",
+          "text": "Run a periodic reconciliation job that compares `(id, version)` pairs between Postgres and the index and reindexes every mismatch"
+        },
+        {
+          "id": "e",
+          "text": "Index in Elasticsearch first and write Postgres second, so the search index can never fall behind the database"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "The WAL is the source of truth for committed changes, so nothing is lost on a crash, and external versioning makes out-of-order or duplicate deliveries harmless.",
+        "b": "The outbox commits atomically with the data, so the event exists exactly when the change does; the relay gives at-least-once delivery.",
+        "c": "A timeout is ambiguous (Elasticsearch may have applied the write), and the commit can still fail after Elasticsearch succeeded. It also makes search availability a hard dependency of writes.",
+        "d": "A backstop that converges by itself given enough time, and it also catches bugs in the primary sync path; most mature systems run one alongside CDC or an outbox.",
+        "e": "Now the index can show products that the database never committed, which is a different flavour of the same dual-write problem."
+      },
+      "explanation": "The root cause is a dual write: two systems updated from application code with no shared transaction, so any crash or timeout between them leaves them disagreeing. The fixes either derive the index from one durable record of change (CDC from the WAL, or a transactional outbox) or periodically repair it (reconciliation). Versioned upserts make delivery order irrelevant, which matters because both CDC and outbox relays deliver at least once. Try/catch rollback and reordering the writes just move the inconsistency. Takeaway: a derived store should be fed from a log of committed changes, with a reconciliation job as the safety net.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-cloud-cost-levers-01",
+      "domain": "system_design",
+      "concepts": [
+        "cost-modeling",
+        "multi-region"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Cutting a cloud bill without losing availability",
+      "prompt": "Finance flags the AWS bill below. Which changes reduce cost without reducing durability or availability? Select all that apply.",
+      "context": "| Line item | Monthly | Notes |\n| --- | --- | --- |\n| Inter-AZ data transfer | $84k | 3-AZ Kubernetes; services call each other via cluster IPs; Kafka RF=3 across AZs, consumers fetch from leaders in any AZ |\n| NAT gateway processing | $31k | Pods reach S3 and pull container images through NAT gateways |\n| Compute | $120k | Average CPU utilization 38% |",
+      "language": null,
+      "estSeconds": 140,
+      "options": [
+        {
+          "id": "a",
+          "text": "Enable rack-aware follower fetching so Kafka consumers read from the replica in their own AZ instead of the partition leader"
+        },
+        {
+          "id": "b",
+          "text": "Add an S3 gateway VPC endpoint so S3 traffic stops flowing through the NAT gateways"
+        },
+        {
+          "id": "c",
+          "text": "Lower Kafka's replication factor from 3 to 1 to eliminate cross-AZ replication traffic entirely"
+        },
+        {
+          "id": "d",
+          "text": "Turn on topology-aware routing so service calls prefer endpoints in the caller's AZ and fall back across AZs"
+        },
+        {
+          "id": "e",
+          "text": "Consolidate every workload into a single AZ so no traffic ever crosses an AZ boundary"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Follower fetching (KIP-392) keeps consumer reads in-AZ; replication still spans three AZs, so durability is unchanged.",
+        "b": "S3 gateway endpoints have no hourly or per-GB charge, and S3 traffic is usually most of the NAT bill.",
+        "c": "One copy means a single broker loss loses data; that trades durability for money.",
+        "d": "Keeps most calls in-zone while still failing over across zones when local endpoints are unhealthy.",
+        "e": "Removes the transfer bill and the ability to survive an AZ outage along with it."
+      },
+      "explanation": "Inter-AZ transfer is charged per GB in each direction, so chatty services spread across three zones and consumers reading from remote leaders quietly add up. Zone-aware routing and Kafka follower fetching keep the default path inside a zone without removing the cross-zone replicas that give you availability and durability. The NAT line is usually S3 and image pulls; a gateway endpoint (and a pull-through registry cache) removes the processing charge. Cutting replicas or collapsing into one AZ saves money by deleting the resilience you are paying for. Takeaway: model cost per byte path, and make locality the default while keeping redundancy as the fallback.",
+      "references": [
+        "Apache Kafka KIP-392: Allow consumers to fetch from closest replica"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-websocket-reconnect-storm-01",
+      "domain": "system_design",
+      "concepts": [
+        "real-time",
+        "load-balancing"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 4,
+      "title": "Every deploy triggers a WebSocket reconnect storm",
+      "prompt": "A WebSocket gateway fleet of 40 nodes holds about 2M concurrent connections. During each rolling deploy, auth and the subscription service spike to 20× normal load, and afterwards the newest nodes carry far fewer connections than the old ones for hours. Which changes address the storm or its after-effects? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Balance new connections by current connection count rather than round robin, since connections last hours and restarted nodes start empty"
+        },
+        {
+          "id": "b",
+          "text": "Drain each node gradually: stop accepting, then ask slices of its clients to reconnect after a jittered delay instead of closing all at once"
+        },
+        {
+          "id": "c",
+          "text": "Make clients reconnect with exponential backoff and full jitter, and resume with a short-lived session token instead of a full re-auth"
+        },
+        {
+          "id": "d",
+          "text": "Require sticky sessions by client IP so a reconnecting client always returns to the gateway node it was connected to before"
+        },
+        {
+          "id": "e",
+          "text": "Replace WebSockets with HTTP/1.1 keep-alive connections tuned to stay open longer at the load balancer"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Round robin balances new connections, not existing ones; with long-lived connections the fleet stays skewed until something rebalances it.",
+        "b": "Spreading disconnects over minutes turns a 50k-client thundering herd into a steady trickle.",
+        "c": "Jitter de-synchronizes clients, and resumption tokens avoid hammering auth and re-subscribing from scratch.",
+        "d": "The old node is the one being replaced, mobile IPs change, and carrier NAT concentrates thousands of users behind one IP.",
+        "e": "Keep-alive does not give server push, and it does not change the reconnect behaviour that causes the storm."
+      },
+      "explanation": "Long-lived connections turn every deploy into a synchronized mass reconnect, and each reconnect is expensive (TLS, auth, subscription rebuild). Spread it out on the server (gradual, jittered drain), de-synchronize clients (backoff with jitter), and make reconnection cheap (resume tokens, subscription state kept outside the node). Afterwards, connection-count-aware balancing (or periodic gentle rebalancing) stops restarted nodes from staying idle while old nodes stay hot. IP stickiness pins clients to exactly the node you are trying to remove. Takeaway: for stateful connections, design the reconnect path as a first-class workload with its own capacity budget.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-at-least-once-consumer-01",
+      "domain": "system_design",
+      "concepts": [
+        "idempotency",
+        "async-queues"
+      ],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Duplicate 'order shipped' side effects from a queue",
+      "prompt": "A consumer reads `OrderShipped` messages from an SQS standard queue (at-least-once, no ordering guarantee). For each message it increments `orders.shipped_count` for the merchant and marks the order shipped. Some merchants' counts are now higher than their actual shipped orders. Which changes make the consumer correct? Select all that apply.",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        {
+          "id": "a",
+          "text": "Insert the business key (`order_id`, `event_type`) into a processed-events table with a unique constraint, in the same transaction as the update"
+        },
+        {
+          "id": "b",
+          "text": "Make the update conditional on state, for example `UPDATE ... SET status = 'shipped' WHERE id = $1 AND status = 'packed'`, and count only when a row changed"
+        },
+        {
+          "id": "c",
+          "text": "Raise the visibility timeout to 12 hours so that a message which has already been received is never delivered a second time"
+        },
+        {
+          "id": "d",
+          "text": "Delete the message from the queue as soon as it is received, before doing any processing, so it cannot be redelivered"
+        },
+        {
+          "id": "e",
+          "text": "Move to an SQS FIFO queue, which deduplicates messages and so makes processing exactly-once without any consumer changes"
+        }
+      ],
+      "answer": [
+        "a",
+        "b"
+      ],
+      "optionNotes": {
+        "a": "A dedup record committed atomically with the effect makes a redelivery a no-op.",
+        "b": "A guarded state transition is naturally idempotent: the second delivery finds the order already shipped and changes nothing.",
+        "c": "Redelivery still happens when a consumer crashes after the update but before the delete, and failed messages now wait 12 hours to retry.",
+        "d": "Converts at-least-once into at-most-once: a crash mid-processing loses the message.",
+        "e": "FIFO deduplication covers duplicate sends within a 5-minute window, not a consumer that processes a message and crashes before deleting it."
+      },
+      "explanation": "At-least-once delivery means the consumer, not the queue, owns correctness. The two standard tools are a dedup record keyed by a business identifier and committed in the same transaction as the effect, and expressing the effect as a guarded state transition instead of a blind increment. Visibility timeouts and FIFO queues reduce how often duplicates arrive, but cannot remove the crash-between-effect-and-ack window. Takeaway: assume every message arrives twice and make the effect idempotent at the point where it is applied.",
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-shortener-storage-estimate-01",
+      "domain": "system_design",
+      "concepts": [
+        "cost-modeling"
+      ],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 1,
+      "title": "Five years of short links on disk",
+      "prompt": "A URL shortener creates 100M new links per month. Each stored link averages 500 bytes including index overhead. Links never expire, and the datastore keeps 3 replicas. How much total storage, in terabytes, do you need after 5 years? (Use 1 TB = 10^12 bytes.)",
+      "language": null,
+      "estSeconds": 90,
+      "numeric": {
+        "answer": 9,
+        "unit": "TB",
+        "fullCreditRatio": 1.3,
+        "zeroCreditRatio": 3
+      },
+      "explanation": "100M links/month × 12 × 5 = 6B links. 6 × 10^9 × 500 B = 3 × 10^12 B = 3 TB per copy, × 3 replicas = 9 TB. The takeaway is that the link table itself is small enough for a modest cluster; at this scale the real design pressure is the redirect read rate and click analytics, not storage.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "sd-fanout-write-rate-01",
+      "domain": "system_design",
+      "concepts": [
+        "cost-modeling"
+      ],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Peak timeline inserts with fan-out on write",
+      "prompt": "A social app has 200M daily active users who post 0.5 times per day on average. Posts are fanned out on write into every follower's timeline cache. Accounts with more than 100k followers use fan-out on read instead; they make 1% of posts, so ignore their writes. Non-celebrity posts reach 300 followers on average. Peak traffic is 3× the daily average. Roughly how many timeline-cache inserts per second happen at peak?",
+      "language": null,
+      "estSeconds": 150,
+      "numeric": {
+        "answer": 1031250,
+        "unit": "inserts/second",
+        "fullCreditRatio": 1.5,
+        "zeroCreditRatio": 4
+      },
+      "explanation": "Posts per day: 200M × 0.5 = 100M. Excluding celebrity posts: 99M. Inserts per day: 99M × 300 ≈ 29.7B. Average rate: 29.7B / 86,400 ≈ 344k inserts/s. Peak: × 3 ≈ 1.03M inserts/s. The takeaway: fan-out on write multiplies the write rate by follower count, so even with celebrities carved out you need a horizontally scaled timeline store and asynchronous fan-out workers; this number is why skipping inactive followers is worth real engineering effort."
+    },
+    {
+      "id": "sd-cache-miss-rate-01",
+      "domain": "system_design",
+      "concepts": [
+        "caching",
+        "cost-modeling"
+      ],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "What a four-point hit-ratio gain does to the database",
+      "prompt": "A read path serves 120k requests/s. Today the cache hit ratio is 95%, and every miss costs one database query. A proposal doubles the cache size, which raises the hit ratio to 99%. By what factor does database read load drop? (Answer as a multiplier, for example 2 for \"half the load\".)",
+      "language": null,
+      "estSeconds": 75,
+      "numeric": {
+        "answer": 5,
+        "unit": "x reduction",
+        "fullCreditRatio": 1.15,
+        "zeroCreditRatio": 2
+      },
+      "explanation": "Database load follows the miss ratio, not the hit ratio. At 95% hits, misses are 5% × 120k = 6,000 queries/s. At 99% hits, misses are 1% × 120k = 1,200 queries/s. 6,000 / 1,200 = 5× less database load, from what sounds like a four-point improvement. The takeaway: always reason about caches in miss rate; moving from 99% to 99.9% is another 10×."
+    },
+    {
+      "id": "sd-datastore-migration-order-01",
+      "domain": "system_design",
+      "concepts": [
+        "storage-choice",
+        "sharding-partitioning"
+      ],
+      "skill": "lead",
+      "type": "ordering",
+      "difficulty": 4,
+      "title": "Move a hot table to a new datastore with zero downtime",
+      "prompt": "You are leading the move of the `sessions` table (2B rows, 30k writes/s) from a single Postgres cluster to a sharded key-value store, with no downtime and a rollback path at every step. Put the steps in order.",
+      "language": null,
+      "estSeconds": 150,
+      "items": [
+        {
+          "id": "1",
+          "text": "Design the new key scheme from the real access patterns and load-test the new store with production-shaped traffic"
+        },
+        {
+          "id": "2",
+          "text": "Deploy dual writes behind a flag: Postgres stays the source of truth, the new store is written best-effort and failures are logged"
+        },
+        {
+          "id": "3",
+          "text": "Backfill historical rows into the new store with idempotent, version-guarded upserts"
+        },
+        {
+          "id": "4",
+          "text": "Shadow-read from both stores, serve from Postgres, and compare results until the mismatch rate is effectively zero"
+        },
+        {
+          "id": "5",
+          "text": "Ramp reads to the new store gradually (by percentage or tenant) while Postgres still receives every write"
+        },
+        {
+          "id": "6",
+          "text": "Make the new store the source of truth, stop writing Postgres after the rollback window, then decommission it"
+        }
+      ],
+      "explanation": "Dual writes must start before the backfill, otherwise rows changed during the backfill are missed; version-guarded upserts let the backfill and live writes race safely. Shadow reads prove correctness on real traffic before any user depends on the new store, and ramping reads while the old store still gets every write keeps rollback a flag flip. Only after reads are fully on the new store and stable do you flip the source of truth and stop the old writes. Takeaway: every phase of a live migration should be reversible by configuration, and you should have evidence (diff rates) before each irreversible step.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-url-shortener-scale-01",
+      "domain": "system_design",
+      "concepts": [
+        "api-design",
+        "caching"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 2,
+      "title": "URL shortener: code generation and the redirect path",
+      "prompt": "Design the core of a URL shortener with these requirements: 100M new links per month, 20B redirects per month, p99 redirect latency under 20 ms for users worldwide, optional custom aliases, and links that never expire. Marketing wants click counts per link. Cover: the rough load numbers, how you generate short codes, the redirect read path, the datastore, and whether redirects return 301 or 302.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Estimates load: about 40 creates/s and about 7,700 redirects/s on average (20B / 2.6M s), with a peak multiplier, so the system is read-heavy by roughly 200:1",
+          "Generates codes from a unique ID source without coordination per request (pre-allocated ID ranges per server or a Snowflake-style ID, base62-encoded; 7 characters gives about 3.5 trillion codes), or random codes with a unique-constraint insert and retry",
+          "Handles custom aliases in the same namespace with a conditional insert (unique constraint), not check-then-insert",
+          "Serves redirects from caches close to users (CDN or edge, then a regional cache) in front of a key-value lookup by code, so the datastore sees only misses",
+          "Chooses 302 (or 307) with explicit cache headers to keep analytics and the ability to change or disable a link, and explains that 301 is cached by browsers indefinitely",
+          "Records clicks asynchronously (log or stream to an aggregator), never as a synchronous counter update on the redirect path"
+        ],
+        "redFlags": [
+          "Truncated MD5 or SHA of the long URL with no collision handling",
+          "A single auto-increment database sequence called on every create as the only ID source, with no ranges",
+          "Incrementing a click counter row on every redirect",
+          "Choosing 301 without noticing it breaks click analytics"
+        ],
+        "exemplar": "**Numbers.** 100M/month is about 40 creates/s; 20B/month is about 7,700 redirects/s average, maybe 40k/s at peak. Storage is small (about 3 TB per copy over five years). This is a read-path problem.\n\n**Codes.** Each app server leases a block of 1M IDs from a small coordinator (a row in Postgres updated with a compare-and-set), and base62-encodes them: 7 characters covers 3.5T IDs. Sequential codes are guessable, so I would permute the ID with a keyed bijection if enumeration matters. Custom aliases go into the same table through `INSERT ... ON CONFLICT DO NOTHING`; a conflict returns 409.\n\n**Store.** A key-value table `code -> long_url, owner, created_at, disabled`, in DynamoDB or Cassandra, replicated to each serving region.\n\n**Redirect path.** Edge/CDN caches the redirect response for popular codes; misses go to a regional service with an in-memory LRU plus Redis, then the KV store. Unknown codes are cached negatively for a short time.\n\n**301 vs 302.** 302 with `Cache-Control: max-age=300`: browsers do not cache a 302 forever, so we keep click counts and can disable abusive links. 301 only if the client says egress cost beats analytics.\n\n**Clicks.** The redirect service emits a click event to Kafka; a stream job aggregates counts per link per minute into an analytics store."
+      },
+      "explanation": "Strong answers start from the numbers and notice that writes are trivial and reads dominate, which drives everything else: edge caching, a key-value lookup, and analytics kept off the hot path. Code generation should avoid both per-request coordination and hash collisions. The 301 versus 302 choice is a product decision disguised as a protocol detail. Takeaway: let the read/write ratio and the latency target pick the architecture, and keep side effects like analytics asynchronous.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-payments-ledger-01",
+      "domain": "system_design",
+      "concepts": [
+        "data-modeling",
+        "idempotency"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "A wallet ledger that finance can reconcile to the cent",
+      "prompt": "Design the ledger for a marketplace wallet. Buyers top up from cards, pay sellers from their balance, the platform takes a fee on each payment, refunds happen, and sellers withdraw to bank accounts through a payout provider that settles asynchronously (1 to 3 days, and sometimes payouts fail after being accepted). Finance requires every balance to reconcile to the cent and every change to be auditable. Describe the data model, how one payment is recorded, how you stop a buyer spending the same balance twice, and how you reconcile with the provider.",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Uses double-entry bookkeeping: each business event is an immutable journal entry with two or more postings whose amounts sum to zero per currency, across accounts such as buyer wallet, seller wallet, platform fees and provider clearing",
+          "Keeps entries append-only: corrections and refunds are new reversing entries, nothing is updated or deleted, and balances are derived from postings (a cached balance, if any, is updated in the same transaction)",
+          "Stores money as integer minor units with an explicit currency, never floating point",
+          "Prevents double spend by serializing changes per account (row lock or optimistic version on the account) and checking available balance in the same transaction that writes the postings, with an idempotency key per business event",
+          "Models external money movement as pending states through a clearing account (pending, then settled or failed, with a reversing entry on failure) and reconciles daily against provider settlement reports, sending mismatches to an exception queue for humans",
+          "Recognizes hot accounts such as the platform fee account and handles contention (sub-accounts or batched postings)"
+        ],
+        "redFlags": [
+          "Floating-point amounts",
+          "A mutable `balance` column as the only record of money",
+          "Editing or deleting ledger rows to fix mistakes",
+          "Treating a 200 from the payout provider as money having left"
+        ],
+        "exemplar": "**Model.** `accounts(id, owner, type, currency, version)`, `entries(id, event_type, idempotency_key UNIQUE, created_at)`, `postings(entry_id, account_id, amount_minor BIGINT, currency)`. Invariant: postings in an entry sum to zero per currency. Nothing is updated or deleted; a refund or correction is a new entry that reverses the original.\n\n**One payment of $100 with a $5 fee:** buyer_wallet −10000, seller_wallet +9500, platform_fees +500, all in one transaction.\n\n**Double spend.** In that transaction I lock the buyer account row (`SELECT ... FOR UPDATE`), compute available balance (cached balance column updated in the same transaction, verified nightly against the sum of postings), reject if insufficient, then insert the entry. The idempotency key is derived from the payment request, so a retry hits the unique constraint and returns the original result.\n\n**Payouts.** Withdrawal: seller_wallet −X, payouts_in_flight +X. When the provider's settlement file confirms: payouts_in_flight −X, bank_clearing +X. If it fails after acceptance: reverse back to the seller and notify them. A daily job matches every in-flight payout to the provider report; anything unmatched after the SLA goes to an exception queue owned by finance ops.\n\n**Hot accounts.** The fee account is touched by every payment, so I split it into 16 sub-accounts picked by hash and sum them for reporting."
+      },
+      "explanation": "Ledgers are where data modeling and correctness meet. Double-entry with immutable postings gives you an audit trail and an invariant you can check mechanically; per-account serialization plus idempotency keys stop double spends and duplicate retries; and treating external rails as pending until settlement, with daily reconciliation, keeps the books true when providers fail late. Takeaway: in money systems, never store a number you cannot rebuild from immutable history.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-webhook-delivery-01",
+      "domain": "system_design",
+      "concepts": [
+        "webhooks",
+        "backpressure"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Outbound webhooks where one bad endpoint hurts no one",
+      "prompt": "Design outbound webhook delivery for a SaaS platform: 30k events/s at peak, 200k customer endpoints, and some endpoints are slow (10 s responses) or down for days. Customers need at-least-once delivery, a way to verify that requests came from you, automatic retries, and a way to replay missed events. One customer's broken endpoint must not delay anyone else's deliveries.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Records the event durably first (transactional outbox or an event log) and creates delivery tasks asynchronously, never delivering inside the originating API request",
+          "Retries with exponential backoff and jitter over a bounded period (for example about three days), then dead-letters with a replay API or UI; every delivery carries a stable event ID so receivers can deduplicate",
+          "Isolates endpoints: per-endpoint queues or fair scheduling, per-endpoint concurrency limits and short timeouts, and a circuit breaker that pauses a failing endpoint and eventually disables it with a notification",
+          "Signs each request with an HMAC over the timestamp and body, rejects stale timestamps to stop replays, and supports secret rotation with two valid secrets",
+          "Protects against SSRF: resolves and validates the destination, blocks private and metadata IP ranges, and sends through a dedicated egress proxy",
+          "States that ordering is not guaranteed and gives receivers a way to cope (per-resource version or sequence number, or fetch current state)"
+        ],
+        "redFlags": [
+          "One shared FIFO queue where a slow endpoint blocks everything behind it",
+          "Retrying immediately in a tight loop",
+          "Promising exactly-once delivery",
+          "Letting customers register internal or metadata IP addresses"
+        ],
+        "exemplar": "Events land in an append-only log as part of the producing transaction (outbox relay to Kafka). A dispatcher turns each event into delivery tasks, one per subscribed endpoint, and puts them into per-endpoint lanes: a scheduler pulls from endpoints round-robin so a backed-up endpoint only grows its own lane.\n\nWorkers POST with a 5 s connect and 10 s total timeout and at most N concurrent requests per endpoint (default 10). Non-2xx or timeout schedules a retry at exponential backoff with full jitter, capped at about 3 days and 15 attempts, then the task goes to a dead-letter store visible in the dashboard with a replay button and API.\n\nIf an endpoint fails continuously for 30 minutes the breaker opens and we probe it every few minutes; after 3 days of failure we disable it and email the owner. Other customers never notice.\n\nEach request has `Webhook-Id` (stable across retries, for receiver dedup), `Webhook-Timestamp`, and an HMAC-SHA256 signature over `id.timestamp.body`. Receivers reject timestamps older than 5 minutes. Rotation keeps two secrets valid for a week.\n\nDeliveries egress through a proxy that resolves DNS once, blocks RFC 1918, link-local and metadata ranges, and pins the resolved IP. Ordering is best-effort; payloads carry the resource version so receivers can drop stale updates."
+      },
+      "explanation": "Webhook delivery is a multi-tenant queueing problem first: the design has to stop one bad receiver from consuming shared capacity, which is why per-endpoint lanes, concurrency caps and breakers matter more than raw throughput. At-least-once with stable IDs, signed requests, SSRF protection and a replay path are what customers actually rely on. Takeaway: in any fan-out to endpoints you do not control, isolation per destination is the core requirement, not an optimization.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-leaderboard-01",
+      "domain": "system_design",
+      "concepts": [
+        "data-modeling",
+        "real-time"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 2,
+      "title": "Global and weekly leaderboards for 50M players",
+      "prompt": "A mobile game has 50M ranked players. After each match (about 20k score updates/s at peak) the game shows the global top 100, the player's own exact rank, and the 5 players above and below them. There are also weekly leaderboards that reset every Monday. Design the storage and the read and write paths.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Uses a sorted-set structure (for example Redis ZADD, ZREVRANK, ZREVRANGE) giving O(log N) updates, rank lookups and range reads",
+          "Estimates memory for 50M members (roughly 5 to 10 GB) and notes that it fits one node, with replicas for reads and 20k writes/s well within one primary's capacity",
+          "Keeps the durable source of truth for scores in a database and can rebuild the sorted set from it after a failure",
+          "Implements weekly boards as separate keys per week (for example `lb:2026-W47`) with a TTL instead of a reset job",
+          "Breaks ties deterministically by encoding a tiebreaker such as time achieved into the sort score",
+          "Explains what to do beyond one node: avoid sharding by player ID (rank needs global order); shard by score range or report approximate rank (percentile buckets) for players outside the top tiers"
+        ],
+        "redFlags": [
+          "Running `ORDER BY score` plus `COUNT(*) WHERE score > x` in SQL on every request",
+          "Sharding the sorted set by player ID and then trying to compute a global rank",
+          "A cron job that deletes and rebuilds the weekly board"
+        ],
+        "exemplar": "Scores are written to a `player_scores` table (the source of truth) and, in the same handler, to a Redis sorted set with `ZADD lb:global GT score player_id`. To break ties by who got there first I pack the score and an inverted achievement time into one sort value, for example `score * 2^21 + (2^21 - minutes_since_season_start)`.\n\nReads: top 100 is `ZREVRANGE lb:global 0 99` served from a replica and cached for a second or two; my rank is `ZREVRANK`, and neighbours are `ZREVRANGE rank-5 rank+5`. All O(log N).\n\nSizing: a sorted-set member with a short ID costs on the order of 100 bytes, so 50M members is about 5 to 10 GB, which fits one primary; 20k writes/s is far below what one Redis primary handles. Two replicas serve reads; if the primary dies we promote a replica and backfill recent writes from the table.\n\nWeekly boards are just another key, `lb:2026-W47`, written alongside the global one with a TTL of five weeks, so a new week starts empty without any reset job.\n\nIf we outgrow one node, I would not shard by player ID. I would keep exact ranks for the top 1M in one set and show everyone else a percentile from a score histogram, which players cannot tell apart from exact at that depth."
+      },
+      "explanation": "The leaderboard is a classic because the right data structure makes it almost trivial, and the interesting part is knowing its limits: memory size, the single-node write ceiling, ties, and why naive sharding breaks global rank. Keeping the sorted set derivable from a durable table turns a cache failure into a rebuild rather than data loss. Takeaway: pick the data structure that matches the query, size it, and know exactly what you would change at 10× scale.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-active-active-regions-01",
+      "domain": "system_design",
+      "concepts": [
+        "multi-region",
+        "consistency-tradeoffs",
+        "replication"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "The exec wants active-active with zero data loss",
+      "prompt": "The CTO asks you to make the e-commerce platform active-active across us-east and eu-west \"so either region can fail with no downtime and no lost orders\". Services: catalog, cart, inventory, orders, payments. Today everything runs in us-east on Postgres with async replication to a warm standby in eu-west. How do you approach this? Say which data can accept writes in both regions and which cannot, what \"no lost orders\" really costs, and what you recommend to the CTO.",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Classifies data by conflict behaviour: catalog is single-writer and replicated for reads everywhere; carts can be multi-writer with a merge rule (CRDT or per-line last-writer-wins); inventory decrements conflict and need ownership, reservations or per-region quotas; orders and payments need a single writer per key",
+          "States that RPO 0 for orders requires synchronous replication or a consensus store before acknowledging, which adds at least one cross-Atlantic round trip (about 70 to 90 ms) per write, and that a quorum needs a third region or witness, since two-region asynchronous replication cannot give RPO 0",
+          "Proposes home-region ownership (route each customer or order to an owning region) with a failover that moves ownership behind fencing, so both regions cannot write the same key during a partition",
+          "Requires globally unique IDs and idempotency keys so client retries during failover do not create duplicate orders or charges",
+          "Gives the CTO the cost: roughly double infrastructure plus cross-region transfer, higher write latency, and ongoing operational complexity, and proposes a tiered target (active-active reads and carts, single-writer with fast automated failover for orders and payments) validated by regular failover drills"
+        ],
+        "redFlags": [
+          "Turning on multi-master replication with last-writer-wins for every table",
+          "Claiming zero data loss with asynchronous replication",
+          "No fencing or split-brain protection in the failover plan",
+          "A two-region quorum that cannot survive losing either region"
+        ],
+        "exemplar": "I would start by splitting \"active-active\" by data type, because the answer differs.\n\n- **Catalog**: one writer, replicated everywhere. Reads are active-active with almost no risk.\n- **Cart**: safe to write in both regions; merge per line item (a CRDT or last-writer-wins per item). Losing a cart edit is cheap.\n- **Inventory**: concurrent decrements oversell. Give each region a quota of stock for hot SKUs and rebalance asynchronously, or keep one owning region per SKU.\n- **Orders and payments**: never multi-writer. Each customer has a home region that owns their writes.\n\n\"No lost orders\" means RPO 0, which means the order is durable in a second region before we acknowledge it. That is synchronous replication or a consensus database, roughly 80 ms extra per order write, and a real quorum needs a third region or witness; two regions with async replication can lose the last seconds of orders.\n\nFailover moves home-region ownership through a fenced lease, so the old region cannot keep writing during a partition, and order and payment IDs plus idempotency keys make client retries safe.\n\nTo the CTO: full active-active everywhere roughly doubles cost and adds latency and complexity forever. I recommend active-active for browse and cart, single-writer orders with synchronous commit to a second location and automated failover in minutes, and quarterly failover drills to prove it."
+      },
+      "explanation": "Multi-region work is mostly about refusing the one-word requirement and replacing it with per-data decisions: what can merge, what must have one owner, and what each guarantee costs in latency and money. RPO 0 is physics (a synchronous cross-region round trip), and split-brain protection is what separates a failover plan from a data-corruption plan. Takeaway: translate an executive's availability goal into per-dataset RPO and RTO targets with a price tag, then let them choose.",
+      "references": [
+        "Kleppmann, Designing Data-Intensive Applications, Chapter 5 (Multi-Leader Replication)"
+      ],
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-scoping-realtime-dashboard-01",
+      "domain": "system_design",
+      "concepts": [
+        "requirements-scoping"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Scoping 'real-time analytics like Datadog' in 30 minutes",
+      "prompt": "In planning, a VP says: \"We need a real-time analytics dashboard for our customers, like Datadog but for their sales pipeline.\" You have 30 minutes with the VP and the PM before a team is committed to it. What do you ask, what assumptions do you write down, and how do you turn this into a scoped first version?",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Turns \"real-time\" into a number (a freshness target such as seconds, one minute or fifteen minutes) and explains that minute-level freshness allows micro-batch on existing infrastructure, which is far cheaper than sub-second streaming",
+          "Asks who uses it and what decision it drives, and gets the top three to five questions or charts the dashboard must answer",
+          "Asks for data volume and shape: number of tenants, events per day for the largest tenant, the sources involved, and whether the data already exists in the warehouse",
+          "Asks whether customers need fixed charts or ad hoc slicing, because that decides between pre-aggregation and an OLAP store",
+          "Covers non-functional needs: tenant isolation and permissions, exact or approximate numbers, retention, and export",
+          "Writes down explicit assumptions and non-goals, proposes a v1 with a success metric, and names the riskiest assumption to test first"
+        ],
+        "redFlags": [
+          "Drawing a Kafka and Flink architecture before any question is asked",
+          "Accepting \"real-time\" without a number",
+          "No non-goals, so the scope is \"Datadog\""
+        ],
+        "exemplar": "I would spend most of the 30 minutes on questions.\n\n1. **Who looks at it, and what do they do differently afterwards?** A sales manager checking pipeline each morning needs different freshness from a rep reacting to a hot lead.\n2. **How fresh, as a number?** If 5 minutes is fine, we can micro-batch from the warehouse we already run. Sub-second means a new streaming stack with an on-call burden.\n3. **What are the five charts?** Get them named. \"Like Datadog\" usually means \"I want to slice by anything\", and that is a different product.\n4. **How big?** Number of customers, events per day for the largest one, which sources, and is the data already in the warehouse?\n5. **Constraints:** per-customer isolation, role-based visibility, exact vs approximate numbers, retention, CSV export.\n\nThen I write it down: assumptions (5-minute freshness, 6 fixed charts, 13 months retention, largest tenant 20M events/day), non-goals (ad hoc query builder, alerting, custom metrics), and a v1 built on pre-aggregated tables refreshed every 5 minutes. Success metric: weekly active use by 30% of paying accounts within a quarter. The riskiest assumption is that customers act on minute-level data at all, so we validate that with 5 design partners before anyone builds a streaming pipeline."
+      },
+      "explanation": "The most expensive word in this request is \"real-time\", and the most dangerous phrase is \"like Datadog\". Staff engineers convert both into numbers and named use cases, write assumptions and non-goals where everyone can see them, and pick a first version that tests the riskiest assumption cheaply. Takeaway: requirements work is design work; a number for freshness and a list of non-goals can change the architecture's cost by an order of magnitude.",
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-dual-write-review-01",
+      "domain": "system_design",
+      "concepts": [
+        "async-queues",
+        "consistency-tradeoffs",
+        "idempotency"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Reviewing an 'exactly-once' order events design",
+      "prompt": "A senior engineer's design doc for the order service says: \"After committing the order to Postgres, we publish `OrderCreated` to Kafka using an idempotent, transactional producer, which gives us exactly-once delivery end to end.\" Consumers are inventory (decrements stock in its own database), email (sends a confirmation), and analytics. Write your review: what is wrong, what you would propose instead, and how you would land the feedback with the author.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Identifies the dual write: if the process crashes or Kafka is unavailable after the Postgres commit, the event is lost; publishing before the commit instead can emit an event for an order that never committed",
+          "Explains that Kafka's idempotent and transactional producer covers writes within Kafka (and read-process-write between topics), and does not span the Postgres transaction or downstream side effects",
+          "Proposes a transactional outbox (event row inserted in the same transaction, relayed by polling or CDC) or CDC on the orders table, with `order_id` as the partition key to keep per-order ordering",
+          "Requires idempotent consumers keyed by event ID (inventory dedup table in the same transaction as the decrement; email provider idempotency or a sent-log), since delivery is at least once",
+          "Names the operational costs of the outbox: relay lag monitoring, table cleanup or partitioning, and duplicate events",
+          "Lands the feedback constructively: shows a concrete failure scenario, separates blocking from non-blocking comments, acknowledges what is good, and offers to pair or review the revision"
+        ],
+        "redFlags": [
+          "Proposing XA or two-phase commit across Postgres and Kafka as the default",
+          "\"Retry the publish in-process until it succeeds\", which still loses events on a crash",
+          "Agreeing that exactly-once end to end is achievable as written",
+          "A dismissive or purely negative review"
+        ],
+        "exemplar": "**Blocking: events can be lost.** Consider the pod being killed between `COMMIT` and `producer.send()`: the order exists and nothing downstream ever hears about it, so stock is never decremented and no email is sent. Retrying in-process does not help with a crash, and swapping the order just creates events for orders that rolled back.\n\n**Blocking: the exactly-once claim.** Kafka's idempotent and transactional producer gives exactly-once for writes into Kafka and for read-process-write between topics. It cannot include our Postgres commit, the inventory database or an email. End to end we get at-least-once at best, so consumers must be idempotent.\n\n**Proposal.** Insert an `outbox` row in the same transaction as the order; a relay (Debezium on the outbox table, or a poller) publishes it keyed by `order_id` so events for one order stay ordered. Inventory records `event_id` in a processed table in the same transaction as the decrement; email uses the provider's idempotency key or a sent-log. Add alerts on relay lag and a job that trims the outbox.\n\n**Non-blocking:** the event schema and the consumer breakdown are good, and I would keep them.\n\nI would leave this as a doc comment with the kill-9 scenario, then offer a 30-minute pairing session to sketch the outbox together rather than rewriting their section for them."
+      },
+      "explanation": "This tests both the technical point and the leadership one. Technically, dual writes between a database and a broker lose or invent events, and Kafka's exactly-once semantics stop at Kafka's boundary; the robust pattern is an outbox or CDC feeding idempotent consumers. On the leadership side, a review that shows a concrete failure, separates blocking from non-blocking points, and offers help gets the design fixed without costing you the author's trust. Takeaway: replace \"exactly-once\" with \"at-least-once plus idempotent effects\" and say so plainly, with a scenario the author can reproduce.",
+      "references": [
+        "Kleppmann, Designing Data-Intensive Applications, Chapter 11 (Stream Processing)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-feed-fanout-01",
+      "domain": "system_design",
+      "concepts": [
+        "real-time",
+        "async-queues"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 3,
+      "title": "Home timeline with celebrity accounts",
+      "prompt": "Design the home timeline for a social network: 300M daily active users, an average of 200 accounts followed, and a few thousand accounts with more than 10M followers (the largest has 50M). Timeline loads must be p99 under 200 ms, and a new post should appear in most followers' timelines within about 10 seconds. Sketch the components, then explain your fan-out strategy, what you store per user, and how a timeline read works.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Chooses a hybrid: fan-out on write for ordinary accounts and fan-out on read for accounts above a follower threshold, and explains that pushing one 50M-follower post means 50M writes",
+          "Does fan-out asynchronously (post written to the post store, then an event to a queue or stream consumed by fan-out workers), so posting latency does not depend on follower count",
+          "Stores a bounded list of post IDs (for example the latest 500 to 800) per user in a timeline cache and hydrates posts and authors through batched reads from post and user caches",
+          "Builds a read path that merges the precomputed timeline with recent posts from followed celebrity accounts, ranks or sorts them, and paginates with a cursor",
+          "Skips fan-out to inactive users and rebuilds their timeline on next login, and quantifies the write amplification that this saves"
+        ],
+        "redFlags": [
+          "Pure fan-out on write, including 50M-follower accounts",
+          "Pure fan-out on read that queries 200 followees' post lists on every timeline load at this scale",
+          "Storing full post bodies in every follower's timeline",
+          "Fan-out done synchronously inside the create-post request"
+        ],
+        "exemplar": "**Write path.** Client → API gateway → post service, which writes the post to a sharded post store (keyed by post ID) and its cache, then emits `PostCreated` to Kafka. Fan-out workers read the author's follower list from the social graph service and, for authors under 1M followers, `LPUSH` + `LTRIM` the post ID into each active follower's timeline list in a Redis cluster (latest 800 IDs). Followers inactive for 30 days are skipped; their timeline is rebuilt on login.\n\n**Celebrities.** Authors over the threshold are not fanned out. Their recent posts sit in a hot per-author cache.\n\n**Read path.** Timeline service fetches the user's ID list (one Redis read), fetches recent post IDs from the handful of celebrity accounts they follow, merges by time or rank score, takes a page, and hydrates with a multi-get from the post and user caches. A cursor (last seen score and ID) drives pagination. One round of parallel cache reads keeps p99 well under 200 ms.\n\n**Numbers.** At roughly 300M × 0.5 posts/day × 200 followers, fan-out on write is around 30B timeline inserts a day (about 350k/s average, 1M/s at peak); removing celebrity fan-out removes the spikes where one post costs tens of millions of writes.",
+        "requiredComponents": [
+          "mobile_app|client",
+          "api_gateway|load_balancer",
+          "service",
+          "stream|queue",
+          "worker",
+          "cache",
+          "database"
+        ]
+      },
+      "explanation": "The feed is the canonical fan-out tradeoff: pushing work to write time makes reads cheap but multiplies writes by follower count, and that breaks down for celebrity accounts. The hybrid uses each strategy where it is cheap, stores IDs rather than content, and keeps posting latency independent of audience size by fanning out asynchronously. Takeaway: decide where to pay the cost (write or read) per class of entity, and size the decision with the actual skew of your data.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-chat-presence-01",
+      "domain": "system_design",
+      "concepts": [
+        "real-time",
+        "load-balancing"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 4,
+      "title": "Chat with presence, typing and multi-device sync",
+      "prompt": "Design a chat product with 1:1 and group conversations (groups up to 500 members), online presence and typing indicators. 50M daily active users, 10M concurrent connections at peak. Messages must be persisted, delivered in order within a conversation, and synced across each user's phone and laptop; offline users get push notifications. Sketch the components, then walk through sending a message to a group, reconnecting after being offline, and how presence works.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Uses a WebSocket gateway tier that holds connections and a connection registry (user and device to gateway node) with heartbeat-based expiry, and sizes it (for example about 100k connections per node means 100+ nodes for 10M)",
+          "Orders messages by assigning a per-conversation sequence number from a single writer (route by conversation ID), persists the message before acknowledging the sender, and stores messages partitioned by conversation and sorted by sequence",
+          "Delivers by looking up online recipients' gateways and routing through pub/sub, sends push notifications to offline devices, and makes client retries safe with a client-generated message ID",
+          "Syncs devices by having each device track the last sequence seen per conversation and fetch the gap on reconnect, rather than relying on live delivery alone",
+          "Treats presence and typing as ephemeral: heartbeats with TTL in memory, never written durably, and fanned out only to contacts currently viewing, with coalescing and throttling",
+          "Addresses group cost: a message to 500 members is one write plus up to 500 deliveries, and large groups may switch to pulling from the conversation instead of pushing per member"
+        ],
+        "redFlags": [
+          "Ordering messages by client timestamps",
+          "Acknowledging a message before it is durably stored",
+          "Writing every presence change or typing event to the primary database",
+          "Broadcasting every presence change to every contact of every user"
+        ],
+        "exemplar": "**Edge.** Clients hold a WebSocket to a gateway behind an L4 load balancer; 10M connections at about 100k per node is 100+ gateway nodes. On connect, the gateway writes `device → gateway_id` to a Redis registry with a 60 s TTL refreshed by heartbeats.\n\n**Send.** Client sends `{client_msg_id, conversation_id, body}`. The gateway forwards to the chat service instance that owns that conversation (consistent hashing on conversation ID), which assigns the next `seq`, writes to a Cassandra-style table partitioned by conversation and clustered by `seq` (deduplicating on `client_msg_id`), then acks the sender with `seq`. It looks up members' online devices in the registry and publishes to each gateway's pub/sub channel; offline members go to a push notification queue.\n\n**Reconnect.** Each device stores `last_seq` per conversation. On reconnect it sends those cursors; the sync service returns missed messages and an updated conversation list. Live delivery is an optimization; the cursor is the correctness mechanism.\n\n**Presence.** Gateways report online and offline transitions to a presence service holding state in memory with TTL. Changes go only to users who currently have that contact on screen, batched every few seconds. Typing indicators are fire-and-forget through the gateways and never stored.\n\n**Groups.** One stored message, up to 500 deliveries; for very large groups, members fetch on open instead of receiving pushes.",
+        "requiredComponents": [
+          "mobile_app|client",
+          "load_balancer",
+          "websocket_gateway",
+          "service",
+          "pubsub|stream",
+          "database",
+          "cache"
+        ]
+      },
+      "explanation": "Chat combines durable, ordered data (messages) with ephemeral, high-churn data (presence and typing), and good designs keep the two on separate paths. Ordering comes from a single sequencer per conversation, durability comes before the ack, and multi-device correctness comes from per-device cursors rather than from live push. Takeaway: decide what is durable and what is ephemeral first, because that split determines the storage, the fan-out and the failure behaviour.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-notification-system-01",
+      "domain": "system_design",
+      "concepts": [
+        "async-queues",
+        "rate-limiting"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 3,
+      "title": "Notifications where campaigns never delay the OTP",
+      "prompt": "Design a notification platform used by many product teams for push (APNs and FCM), email, SMS and in-app messages. Volume is 500M notifications per day, with marketing campaigns spiking to 20× normal. Transactional messages (password resets, one-time codes) must arrive within seconds even during a campaign. The platform enforces user preferences, quiet hours, frequency caps and deduplication. Sketch the components and explain how a request flows through them.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Accepts requests through an API with an idempotency or dedup key, validates and stores them, and enqueues work instead of sending inline",
+          "Separates priorities physically: transactional and bulk traffic use different queues and worker pools (or strict priority), so a campaign cannot starve one-time codes",
+          "Applies preferences, quiet hours and frequency caps in a policy step backed by cached user settings, and renders templates with localization",
+          "Uses per-channel workers with provider adapters, per-provider rate limits, retries with backoff, and a fallback provider for SMS or email",
+          "Expands campaign audiences in batches from a scheduler at a controlled rate rather than enqueuing 100M messages at once",
+          "Records delivery status events (sent, delivered, bounced, opened) to a stream or warehouse and prunes invalid device tokens from provider feedback; sizes load at about 6k/s average and about 115k/s during spikes"
+        ],
+        "redFlags": [
+          "One shared queue for transactional and marketing traffic",
+          "Calling the email or SMS provider synchronously in the product team's request",
+          "No deduplication, so retries produce duplicate pushes",
+          "Ignoring provider rate limits"
+        ],
+        "exemplar": "**Ingest.** Product services call `POST /notifications {user_id, template, priority, dedup_key, data}`. The API checks the dedup key in Redis (24 h), writes the request to a notifications table, and enqueues it on the `transactional` or `bulk` topic. Average load is 500M/86,400 ≈ 6k/s; campaigns reach about 115k/s, all of it on `bulk`.\n\n**Policy.** A policy worker loads cached preferences, quiet hours (in the user's time zone) and frequency caps (a counter per user per day), drops or defers messages accordingly, renders the template, and routes to per-channel queues: push, email, SMS, in-app.\n\n**Send.** Channel workers call APNs, FCM, the email provider and the SMS provider through adapters with per-provider token-bucket limits, retries with exponential backoff and jitter, and a secondary SMS and email provider on sustained errors. Transactional and bulk each have their own queue and worker pool per channel, and transactional workers are over-provisioned, so a campaign backlog never delays a password reset.\n\n**Campaigns.** A scheduler expands the audience in chunks of 10k users from the warehouse and enqueues them at a set rate, which also lets marketing pause a campaign.\n\n**Feedback.** Provider callbacks and receipts become status events on a stream feeding the warehouse; invalid tokens are removed from the device registry.",
+        "requiredComponents": [
+          "service",
+          "queue|stream",
+          "worker",
+          "external_api",
+          "database",
+          "cache",
+          "scheduler"
+        ]
+      },
+      "explanation": "A notification platform is a multi-priority queueing system in front of rate-limited third parties. The key decisions are isolating transactional from bulk traffic so latency-critical messages are never stuck behind a campaign, enforcing user policy before sending, and respecting provider limits with retries and fallbacks. Takeaway: when traffic classes have different latency needs, give them separate queues and capacity rather than hoping a shared queue drains fast enough.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-metrics-ingestion-01",
+      "domain": "system_design",
+      "concepts": [
+        "backpressure",
+        "storage-choice",
+        "sharding-partitioning"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 5,
+      "title": "Metrics ingestion at 10M points per second",
+      "prompt": "Design the metrics pipeline for internal observability. 50,000 hosts each emit 2,000 series every 10 seconds (10M datapoints/s). Keep raw 10-second data for 15 days and 5-minute rollups for 13 months. Dashboards querying the last hour must return in under a second. The pipeline must survive a 30-minute outage of the storage tier without losing data. Also: a team just shipped a metric tagged with `user_id`. Sketch the components and explain ingestion, storage and sizing, rollups, queries, and how you deal with that metric.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Puts a durable, partitioned log (for example Kafka, partitioned by series hash) between stateless ingest gateways and storage, with retention of hours so a 30-minute storage outage becomes lag rather than loss; agents batch, compress, buffer locally and back off on 429 or 503",
+          "Sizes storage: about 864B points per day and about 13T points for 15 days; with time-series compression of roughly 1.4 bytes per point that is about 18 TB before replication, so storage must be sharded by series",
+          "Uses a time-series store with an in-memory head block for recent data, compressed immutable blocks, and older blocks moved to object storage",
+          "Produces rollups (5-minute min, max, sum, count) through a stream processor or compaction jobs and serves long-range queries from rollups, not raw points",
+          "Treats cardinality as the main scaling risk: enforces per-tenant and per-metric series limits at the gateway, drops or rejects the `user_id` label, and alerts the owning team",
+          "Serves queries through a query layer that fans out to shards and merges, with caching for repeated dashboard queries"
+        ],
+        "redFlags": [
+          "Writing directly from agents into the database with no buffer",
+          "Storing each datapoint as a row in a relational table",
+          "Accepting unbounded label cardinality",
+          "Serving 13-month queries by scanning raw 10-second data"
+        ],
+        "exemplar": "**Ingest.** Agents batch 10 s of samples, compress, and POST to stateless gateways behind a load balancer, keeping a local disk buffer and backing off with jitter on 429 or 503. Gateways authenticate, enforce per-tenant rate and series limits, and write to Kafka partitioned by `hash(series_id)`, with 6 hours of retention. If storage is down for 30 minutes, consumers simply lag and catch up.\n\n**Storage.** Ingesters consume partitions and own those series: they keep an in-memory head block (2 hours), cut compressed blocks, and upload them to object storage. 10M points/s × 86,400 ≈ 864B points/day, ≈ 13T for 15 days; at about 1.4 bytes per point with delta-of-delta and XOR compression that is ~18 TB, replicated ×3, sharded across ingesters by series.\n\n**Rollups.** A compactor produces 5-minute min, max, sum and count blocks; 13-month queries read only rollups.\n\n**Query.** A query service fans out to ingesters (recent data) and the block store (older data), merges, and caches results for popular dashboards keyed by query and aligned time range.\n\n**`user_id`.** That label turns one metric into millions of series and would blow up index memory. Gateways enforce a per-metric series cap; this metric is rejected above the cap with a clear error, the owning team is paged through their channel, and we point them to logs or traces for per-user data.",
+        "requiredComponents": [
+          "load_balancer|api_gateway",
+          "service",
+          "stream",
+          "worker",
+          "database",
+          "object_storage"
+        ]
+      },
+      "explanation": "At 10M points/s the design is driven by three numbers: ingest rate, bytes per point after compression, and series cardinality. A durable log decouples ingestion from storage so outages turn into lag, compression and object storage make retention affordable, rollups keep long-range queries cheap, and cardinality limits protect the index from a single bad label. Takeaway: in telemetry systems, cardinality is the capacity you run out of first, so enforce it at the front door.",
+      "references": [
+        "Pelkonen et al., Gorilla: A Fast, Scalable, In-Memory Time Series Database (VLDB 2015)"
+      ],
+      "tags": [
+        "interview",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "sd-ticket-holds-01",
+      "domain": "system_design",
+      "concepts": [
+        "consistency-tradeoffs",
+        "data-modeling"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 3,
+      "title": "Stadium on-sale: seat holds without double-selling",
+      "prompt": "Design ticketing for stadium concerts: 60,000 assigned seats per event, and on-sale moments where 2M users arrive in the first minute. A selected seat is held for 10 minutes while the buyer checks out through an external payment processor. A seat must never be sold twice. Sketch the components and explain admission, how holds are taken and expire, and how payment confirms the sale.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Puts a virtual waiting room in front of the booking flow that admits users at a controlled rate with signed admission tokens, so 2M arrivals never hit inventory directly",
+          "Models inventory as one row per seat with status (available, held, sold), hold ID and expiry, and takes holds with an atomic conditional update (`UPDATE ... WHERE status = 'available' OR hold_expires_at < now()`), never read-then-write",
+          "Expires holds lazily in that same condition so correctness does not depend on a sweeper, with a background sweeper only to tidy up and refresh availability",
+          "Confirms the sale with a second conditional update (held to sold, matching hold ID and unexpired) and uses an idempotency key for the payment; handles payment succeeding after the hold expired (refund or a short grace period)",
+          "Serves the seat map from a cache that can be slightly stale while the conditional update stays authoritative, and partitions inventory by event (or section for very hot events)"
+        ],
+        "redFlags": [
+          "Checking availability and then updating in two separate steps without a lock or condition",
+          "Relying on a cron job alone to release expired holds",
+          "Letting all 2M users hit the inventory database at once",
+          "A distributed lock per seat held for the whole 10-minute checkout"
+        ],
+        "exemplar": "**Admission.** The event page is static on a CDN. At on-sale, users join a waiting room service that hands out queue positions and releases signed, short-lived admission tokens at, say, 2,000 users per minute, tuned to booking capacity. The booking API rejects requests without a valid token.\n\n**Inventory.** `seats(event_id, seat_id, status, hold_id, hold_expires_at, order_id)` partitioned by event. Holding a seat is one statement: `UPDATE seats SET status='held', hold_id=$h, hold_expires_at=now()+10m WHERE event_id=$e AND seat_id=$s AND (status='available' OR (status='held' AND hold_expires_at < now()))`. One row updated means you got it; zero means someone else did. Expired holds are free by definition, so a sweeper is housekeeping, not correctness.\n\n**Seat map.** Served from Redis, refreshed every second or two from the table; a seat that looks free but is taken just fails the conditional update and the UI refreshes.\n\n**Checkout.** The order service creates an order and calls the payment processor with an idempotency key equal to the order ID. On success: `UPDATE seats SET status='sold', order_id=$o WHERE hold_id=$h AND status='held' AND hold_expires_at > now() - interval '2 minutes'` (a small grace period). If that updates zero rows, the payment is refunded automatically and the user is told.",
+        "requiredComponents": [
+          "web_app|client",
+          "cdn",
+          "api_gateway|load_balancer",
+          "service",
+          "database",
+          "cache",
+          "external_api"
+        ]
+      },
+      "explanation": "Ticketing combines a thundering herd with a strict no-oversell rule. The waiting room turns the herd into a controlled rate, and atomic conditional updates on a per-seat row make holds and sales correct without long-lived locks, with expiry built into the condition so it never depends on a background job. Payment is the slow external step, so the design must handle the case where it succeeds after the hold ran out. Takeaway: put the invariant in a single atomic statement at the source of truth, and treat every other view of availability as a hint.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-file-sync-01",
+      "domain": "system_design",
+      "concepts": [
+        "storage-choice",
+        "data-modeling"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 4,
+      "title": "File sync across devices with offline edits",
+      "prompt": "Design a file sync service for 100M users. Files can be up to 50 GB. Desktop and mobile clients sync a folder across several devices, can edit offline, and can share folders with other users. Uploads should send only what changed, and small edits should reach a user's other devices within a few seconds. Sketch the components and explain how a file is uploaded, how other devices learn about the change, and what happens when two devices edit the same file offline.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Splits files into chunks of a few MB (fixed-size or content-defined), addresses each by a content hash, and uploads only chunks the server does not already have, resumably and directly to object storage (for example with pre-signed URLs)",
+          "Keeps metadata (namespaces, file tree, versions as ordered lists of chunk hashes) in a strongly consistent database sharded by namespace, with a per-namespace change journal and cursor",
+          "Commits in two phases: chunks first, then a metadata commit that the server verifies references only existing chunks, so a file version never points at missing data",
+          "Notifies devices of namespace changes over a long-lived connection (long poll or WebSocket), after which clients pull deltas from their cursor",
+          "Detects conflicting edits with optimistic concurrency (each commit names its parent version) and keeps both versions as a conflicted copy instead of silently overwriting",
+          "Garbage-collects unreferenced chunks with reference counting or mark-and-sweep after a grace period, and explains that shared folders are separate namespaces mounted into each member's tree"
+        ],
+        "redFlags": [
+          "Re-uploading the whole file on every change",
+          "Storing file contents in the metadata database",
+          "Last-writer-wins on concurrent edits with no conflict copy",
+          "Clients polling the full file tree to detect changes"
+        ],
+        "exemplar": "**Upload.** The client watches the folder, splits a changed file into ~4 MB chunks, and hashes each with SHA-256. It asks the metadata service which hashes are missing, uploads only those to object storage via pre-signed URLs (resumable, in parallel), then commits: `commit(namespace, path, parent_version, [hashes])`. The service checks that every hash exists and that `parent_version` is still current, writes the new version and appends an entry to the namespace journal in one transaction.\n\n**Metadata.** Namespaces (a user's root or a shared folder) map to shards in a strongly consistent store. Each namespace has a monotonically increasing journal ID. Shared folders are their own namespace mounted into each member's tree, so a change is written once.\n\n**Notify.** Each device keeps a long-lived connection to a notification service subscribed to its namespaces. On commit, the service pushes \"namespace X changed\"; the device calls `list_changes(cursor)` and downloads only missing chunks. That gives seconds-level propagation.\n\n**Conflicts.** If a device commits with a stale `parent_version`, the commit is rejected; the client keeps the server version and saves its own as \"file (conflicted copy from laptop).\" Nothing is silently lost.\n\n**GC.** Chunks are reference-counted from versions; versions expire under the retention policy, and chunks at zero references are deleted after a 30-day grace period.",
+        "requiredComponents": [
+          "client|mobile_app",
+          "service",
+          "object_storage",
+          "database",
+          "websocket_gateway|pubsub"
+        ]
+      },
+      "explanation": "File sync separates bulk content from metadata: content-addressed chunks in object storage give deduplication, resumable uploads and delta sync, while a small, strongly consistent metadata store with per-namespace journals gives ordering and cheap change detection. Concurrent offline edits are a product decision, and the safe default is to keep both versions. Takeaway: put large immutable bytes and small mutable metadata in different systems, and make the metadata commit the single point where a change becomes real.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    },
+    {
+      "id": "sd-typeahead-01",
+      "domain": "system_design",
+      "concepts": [
+        "search",
+        "caching"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 3,
+      "title": "Search-box autocomplete under 50 ms",
+      "prompt": "Design autocomplete for an e-commerce search box. There are 50M searches per day, and the client requests suggestions as the user types, about 8 requests per search. Suggestions are ranked by popularity, must include trending queries within an hour, must never show offensive terms, and need p99 under 50 ms. Sketch the components and explain how suggestions are built, served, and kept fresh.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Estimates load: 50M × 8 = 400M requests/day, about 4,600/s average and roughly 15k to 25k/s at peak, and reduces it with client debouncing and caching",
+          "Builds suggestions offline from query logs in the warehouse: aggregates and scores queries, precomputes the top k completions per prefix, and publishes a versioned index (trie, FST or prefix-to-top-k map)",
+          "Serves from memory on stateless, replicated nodes loaded with the latest snapshot, bounded in size (prefix length cap, top 10 per prefix), and caches short, hot prefixes at the CDN or edge",
+          "Handles trending with a streaming job over recent queries that maintains a small delta layer merged with the base results at read time",
+          "Filters offensive terms with a blocklist applied at build time and again at serve time so new entries take effect without a rebuild",
+          "Keeps personalization off the critical path: re-rank a small candidate set using recent user history, with a fallback to global results"
+        ],
+        "redFlags": [
+          "A `LIKE 'prefix%'` query against the product database on each keystroke",
+          "Rebuilding the whole index synchronously as each query comes in",
+          "No debounce, so every keystroke costs a request",
+          "Applying the blocklist only at build time"
+        ],
+        "exemplar": "**Load.** 400M requests/day is about 4,600/s average, maybe 20k/s at peak. Clients debounce by about 100 ms and cache results per prefix for the session, which cuts real traffic substantially.\n\n**Build.** An hourly job over query logs in the warehouse normalizes queries, scores them (recency-weighted count plus conversion rate), drops blocked terms, and computes the top 10 completions for every prefix up to 20 characters. It writes a versioned snapshot to object storage.\n\n**Serve.** Suggestion servers load the snapshot into an in-memory map (prefix to top 10) and swap atomically on a new version; they are stateless and replicated behind a load balancer, so lookups are a hash read and p99 is a few milliseconds. One- and two-character prefixes, the hottest, are cacheable at the CDN for a minute.\n\n**Trending.** A streaming job counts queries over a sliding hour and pushes a small delta (prefix to trending completions) to the servers every minute; the server merges delta and base by score.\n\n**Safety.** The blocklist lives in a config store and is applied again at serve time, so adding a term takes effect within a minute.\n\n**Personalization.** Optional: re-rank the top 20 candidates with the user's recent categories, with a 10 ms budget and fallback to global order.",
+        "requiredComponents": [
+          "web_app|client",
+          "cdn",
+          "service",
+          "data_warehouse",
+          "worker|scheduler",
+          "cache|search_index"
+        ]
+      },
+      "explanation": "Typeahead works because almost all of the work can be precomputed: the number of useful prefixes is bounded, so top-k per prefix fits in memory and serving becomes a lookup. Freshness comes from layering a small streaming delta over a periodic batch build, and safety needs a serve-time filter because batch builds are slow to react. Takeaway: when the read latency budget is tiny, move the computation offline and keep the serving path a memory lookup.",
+      "tags": [
+        "interview",
+        "classic"
+      ]
+    }
+  ]
+}

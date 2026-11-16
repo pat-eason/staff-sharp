@@ -1,0 +1,76 @@
+name: staff-sharp
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quiz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quiz}
+      POSTGRES_DB: quiz
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quiz -d quiz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Go API: owns all data, the question bank (seeded from api/seed on every start), selection and grading.
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://quiz:${POSTGRES_PASSWORD:-quiz}@db:5432/quiz?sslmode=disable
+      AGENT_URL: http://agent:3000
+      CLAUDE_CODE_AGENT_URL: http://claude-runner:3100
+      APP_SECRET: ${APP_SECRET:-dev-only-secret-change-me}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+      TZ: ${TZ:-UTC}
+      PORT: "8080"
+
+  # Flue agent service: grader, scenario writer and coach on an Anthropic API key.
+  agent:
+    build: ./agent
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://quiz:${POSTGRES_PASSWORD:-quiz}@db:5432/quiz?sslmode=disable
+      API_URL: http://api:8080
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      PORT: "3000"
+
+  # The same agents on a Claude Code subscription. Link the login from Settings → Model provider;
+  # it lives in the claude_home volume. Not published: only the api service talks to it.
+  claude-runner:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile.runner
+    restart: unless-stopped
+    environment:
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+    volumes:
+      - claude_home:/home/node
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # Single-user app with no login: bound to localhost on purpose.
+      - "127.0.0.1:${WEB_PORT:-8484}:80"
+
+volumes:
+  pgdata:
+  claude_home:

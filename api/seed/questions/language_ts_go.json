@@ -1,0 +1,653 @@
+{
+  "file": "language_ts_go",
+  "questions": [
+    {
+      "id": "lang-ts-event-loop-order-01",
+      "domain": "debugging",
+      "concepts": ["concurrency", "event-loop"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "nextTick, microtasks and timers in one CommonJS script",
+      "prompt": "A teammate is untangling why an audit hook scheduled with `process.nextTick` fires before a promise continuation in one service but after it in another. You ask them to run this file as `node order.cjs` on Node 22 (CommonJS, not an ES module). What does it print?\n\n```js\nconsole.log('A');\nsetTimeout(() => console.log('B'), 0);\nPromise.resolve().then(() => console.log('C'));\nqueueMicrotask(() => console.log('D'));\nprocess.nextTick(() => console.log('E'));\n(async () => {\n  console.log('F');\n  await null;\n  console.log('G');\n})();\nconsole.log('H');\n```",
+      "language": "ts",
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "A F H E C D G B" },
+        { "id": "b", "text": "A F H C D G E B" },
+        { "id": "c", "text": "A H F E C D G B" },
+        { "id": "d", "text": "A F H E C D B G" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Synchronous code first, then the nextTick queue, then the promise microtask queue in FIFO order, then the timer.",
+        "b": "This is what the same file prints as an ES module (`order.mjs`): module evaluation runs inside a promise job, so promise microtasks drain before the nextTick queue.",
+        "c": "An async function body runs synchronously up to its first `await`, so F prints before H.",
+        "d": "`await null` schedules its continuation as a microtask, which always runs before any timer callback."
+      },
+      "explanation": "In a CommonJS entry script, Node runs the whole script, then drains `process.nextTick` callbacks, then the V8 promise microtask queue (C, D and the continuation after `await null`, in the order they were queued), and only then moves to the timers phase for B. The async IIFE logs F synchronously because an async function runs until its first `await`. The trap is option b: the same code saved as `.mjs` prints `A F H C D G E B`, because ESM evaluation happens inside a promise job and the microtask queue drains before Node gets back to the nextTick queue. That is exactly the \"one service but not the other\" symptom when one service is ESM and the other CJS.\n\nTakeaway: never build correctness on the relative order of `nextTick` and promise callbacks; it depends on the module system, so make ordering explicit with `await`.",
+      "tags": ["gotcha", "interview"]
+    },
+    {
+      "id": "lang-ts-promise-all-orphans-01",
+      "domain": "debugging",
+      "concepts": ["race-conditions", "partial-failure"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Failed tenant provisioning leaves orphaned resources",
+      "prompt": "Ops reports that tenants whose provisioning failed still own an S3 bucket and a DNS record, even though `cleanup` logged `nothing to delete` for them. The schema step is the one that fails (a validation error after about 50 ms). Node 22, TypeScript 5.6. What is happening?\n\n```ts\nasync function provision(tenant: string): Promise<void> {\n  try {\n    await Promise.all([\n      createBucket(tenant),    // ~800 ms\n      createDbSchema(tenant),  // rejects after ~50 ms\n      createDnsRecord(tenant), // ~1,200 ms\n    ]);\n  } catch (err) {\n    await cleanup(tenant); // deletes the bucket, schema and DNS record if they exist\n    throw err;\n  }\n}\n```",
+      "language": "ts",
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "`Promise.all` rejects as soon as the schema call rejects; the bucket and DNS calls are not cancelled and finish after `cleanup` has already looked for them" },
+        { "id": "b", "text": "The array elements are started one at a time, so the DNS call only begins after the schema call fails and after `cleanup` runs" },
+        { "id": "c", "text": "`cleanup` is not really awaited because it runs inside a `catch` block, so the rethrow returns control before the deletes are issued" },
+        { "id": "d", "text": "`Promise.all` waits for every input to settle, but it discards fulfilled values on rejection, so `cleanup` cannot see what was created" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Fail-fast rejection plus no cancellation: the other two promises keep running and create their resources roughly 750 ms and 1,150 ms after cleanup checked.",
+        "b": "All three calls start when the array literal is evaluated; `Promise.all` only observes them.",
+        "c": "`await` inside `catch` works normally; the rethrow happens after `cleanup` settles.",
+        "d": "`Promise.allSettled` waits for everything; `Promise.all` does not."
+      },
+      "explanation": "`Promise.all` settles on the first rejection. Promises are not cancellable, so `createBucket` and `createDnsRecord` keep running and succeed after `cleanup` has already run and found nothing. Compensation logic needs to know what actually happened: use `Promise.allSettled` and compensate for each fulfilled step, and pass an `AbortSignal` into each call so in-flight work can be stopped. Ideally make creation idempotent and cleanup a retryable job keyed by tenant.\n\nTakeaway: fail-fast combinators decide when you stop waiting, not when the work stops, so compensation must wait for every branch to settle.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lang-ts-default-sort-01",
+      "domain": "debugging",
+      "concepts": ["language-semantics"],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Max latency computed with the default sort",
+      "prompt": "A health-check script reports the worst request latency from a sample. What does this log (Node 22)?\n\n```ts\nconst latenciesMs: number[] = [120, 95, 1300, 87, 410, 9];\nconst sorted = latenciesMs.sort();\nconsole.log(sorted[sorted.length - 1], latenciesMs === sorted);\n```",
+      "language": "ts",
+      "estSeconds": 45,
+      "options": [
+        { "id": "a", "text": "`95 true`" },
+        { "id": "b", "text": "`1300 true`" },
+        { "id": "c", "text": "`1300 false`" },
+        { "id": "d", "text": "`95 false`" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Default `sort()` compares string forms: `120, 1300, 410, 87, 9, 95`. It also sorts in place and returns the same array.",
+        "b": "Right about in-place, wrong about the comparator: there is no numeric default even for a `number[]`.",
+        "c": "Wrong on both counts.",
+        "d": "Right about the order, but `sort()` mutates and returns the receiver."
+      },
+      "explanation": "Without a comparator, `Array.prototype.sort` converts elements to strings and compares UTF-16 code units, so `\"95\"` sorts after `\"9\"` and `\"1300\"`. The TypeScript type `number[]` changes nothing at runtime. `sort()` also mutates the array and returns it, so `latenciesMs` is now reordered for every other reader. Use `toSorted((a, b) => a - b)` (ES2023, Node 20+) to get a numeric, non-mutating sort.\n\nTakeaway: always pass a comparator for numbers and prefer `toSorted` when the input is shared.",
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "lang-ts-json-int64-01",
+      "domain": "debugging",
+      "concepts": ["floating-point", "encoding"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Refunds 404 for transaction ids from the Java ledger",
+      "prompt": "The Java ledger returns 64-bit transaction ids as JSON numbers. The Node 22 refund service reads the id and calls back into the ledger, and some refunds fail with 404. Which change fixes it properly?\n\n```ts\nconst body = (await res.json()) as { txnId: number };\nawait fetch(`${LEDGER}/transactions/${body.txnId}/refund`, { method: 'POST' });\n```",
+      "context": "```\nledger  POST /transactions  -> {\"txnId\": 1234567890123456789}\nrefunds POST /transactions/1234567890123456800/refund -> 404\n```",
+      "language": "ts",
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "Have the ledger serialize the id as a JSON string and type it as `string` in the client end to end" },
+        { "id": "b", "text": "Wrap the parsed field with `BigInt(body.txnId)` before building the URL so the full 64 bits are kept" },
+        { "id": "c", "text": "Declare `txnId: bigint` in the response type so TypeScript keeps the value as an exact integer" },
+        { "id": "d", "text": "Re-read the value with `Number.parseInt(String(body.txnId), 10)` so it is parsed as an integer" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "The id never becomes an IEEE-754 double, so it cannot lose precision. Ids are identifiers, not quantities.",
+        "b": "Too late: `JSON.parse` already rounded it to the nearest double, and `BigInt` faithfully preserves the wrong value (`1234567890123456768`).",
+        "c": "Types are erased. The runtime value is still a rounded `number`, and the assertion hides that.",
+        "d": "`parseInt` returns a `number`, which still only has 53 bits of integer precision."
+      },
+      "explanation": "JavaScript numbers are doubles, exact only up to `Number.MAX_SAFE_INTEGER` (2^53 - 1). `JSON.parse` rounds `1234567890123456789` to `1234567890123456800` before your code ever sees it, so any fix applied after parsing (BigInt, parseInt, a type annotation) starts from the corrupted value. The robust fix is at the contract: encode 64-bit identifiers as strings (as many large public APIs do for snowflake ids). If you cannot change the producer, you need a lossless JSON parser that hands you the raw digits. Note too that `JSON.stringify` throws on a `bigint`, so BigInt does not round-trip through JSON anyway.\n\nTakeaway: identifiers wider than 53 bits must cross a JSON boundary as strings.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "lang-ts-branded-ids-01",
+      "domain": "code_quality",
+      "concepts": ["type-design"],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Swapped id arguments that the compiler happily accepts",
+      "prompt": "An incident removed the wrong users from organisations: a route handler passed its arguments in the wrong order and TypeScript 5.6 (`strict: true`) compiled it cleanly. Which change makes the compiler reject this call while keeping the ids as plain strings at runtime?\n\n```ts\ntype UserId = string;\ntype OrgId = string;\n\nexport async function removeMember(orgId: OrgId, userId: UserId) { /* ... */ }\n\n// in the route handler\nawait removeMember(req.params.userId, req.params.orgId);\n```",
+      "language": "ts",
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Brand them: `type UserId = string & { readonly __brand: 'UserId' }` (same for `OrgId`), created only by a parse function at the boundary" },
+        { "id": "b", "text": "Wrap them: `class UserId { constructor(readonly value: string) {} }` and an identically shaped `class OrgId`" },
+        { "id": "c", "text": "Move `UserId` and `OrgId` into separate modules so each alias has its own declaration identity" },
+        { "id": "d", "text": "Turn on `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` so `req.params` values are checked more strictly" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "The phantom property makes the two types structurally different and stops a bare `string` from being passed; at runtime they are still ordinary strings.",
+        "b": "Tempting, but TypeScript compares classes structurally: two classes whose only member is a public `value: string` are interchangeable. They also stop being plain strings at runtime.",
+        "c": "A type alias is just a name. Where it is declared changes nothing about compatibility.",
+        "d": "These flags tighten indexing and optional properties; both params are still `string`, which is assignable to both aliases."
+      },
+      "explanation": "TypeScript's type system is structural, so `type UserId = string` is the same type as `string` and every string is both a `UserId` and an `OrgId`. A brand (an intersection with a phantom property that never exists at runtime) gives you nominal-style typing at zero runtime cost, as long as the only way to obtain one is a validating constructor such as `parseUserId(raw): UserId` at the HTTP boundary. The class option is the classic trap: classes are nominal only when they declare `private` or `#private` members; with only public members they are compatible if their shapes match.\n\nTakeaway: for ids that must never be mixed up, encode the distinction in the type with brands and mint them in exactly one place.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "lang-ts-await-foreach-01",
+      "domain": "debugging",
+      "concepts": ["error-handling"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Batches marked settled while invoices stay pending",
+      "prompt": "This job runs from a scheduled Lambda (Node 22) and the Lambda returns as soon as `settleBatch` resolves. Finance reports batches marked `settled` while roughly 30% of their invoices are still `pending`, and the logs occasionally show an unhandled rejection from `payments.charge`. Find the bug.",
+      "language": "ts",
+      "estSeconds": 150,
+      "code": {
+        "ts": "export async function settleBatch(batchId: string): Promise<void> {\n  const invoices = await db.invoice.findMany({\n    where: { batchId, status: 'pending' },\n  });\n\n  invoices.forEach(async (invoice) => { //!issue:1\n    const charge = await payments.charge(invoice.customerId, invoice.amountCents);\n    await db.invoice.update({\n      where: { id: invoice.id },\n      data: { status: 'paid', chargeId: charge.id },\n    });\n  });\n\n  await db.batch.update({\n    where: { id: batchId },\n    data: { status: 'settled', settledAt: new Date() },\n  });\n  logger.info('batch settled', { batchId, count: invoices.length });\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`forEach` ignores the promises returned by the async callback, so the batch is marked settled before any charge finishes and charge failures become unhandled rejections",
+          "fix": "Use `for (const invoice of invoices) { await ... }`, or `Promise.allSettled` over a concurrency-limited map (for example p-limit with 10), and only mark the batch settled when every invoice succeeded; record failures per invoice."
+        }
+      ],
+      "explanation": "`Array.prototype.forEach` calls the callback and discards its return value, so each async callback's promise floats. The function moves straight on to `db.batch.update`, resolves, and the Lambda freezes or exits with charges still in flight, which is why some invoices stay pending. Any rejection from those floating promises has no handler, hence the unhandled rejection logs. A bare `Promise.all(invoices.map(...))` would fix the ordering but fire every charge at once at the payment provider; a bounded concurrency pool or a sequential loop is safer for money movement, and charges should carry an idempotency key so a retry is safe.\n\nTakeaway: an async callback passed to an API that does not await it is fire-and-forget, so treat `forEach(async ...)` as a bug on sight.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "lang-ts-timer-this-01",
+      "domain": "debugging",
+      "concepts": ["language-semantics", "heisenbugs"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Rate limiter that never refills and never throws",
+      "prompt": "Node 22, TypeScript 5.6 with `strict: true`. After each deploy the first ~100 requests succeed, then every request gets 429 until the pod restarts. No exceptions or warnings are logged, and the unit tests (which call `refill()` directly) pass. Find the bug.",
+      "language": "ts",
+      "estSeconds": 180,
+      "code": {
+        "ts": "export class TokenBucket {\n  private tokens: number;\n\n  constructor(\n    private readonly capacity: number,\n    private readonly refillPerSec: number,\n  ) {\n    this.tokens = capacity;\n    setInterval(this.refill, 1000).unref(); //!issue:1\n  }\n\n  private refill(): void {\n    this.tokens = Math.min(this.capacity, this.tokens + this.refillPerSec);\n  }\n\n  tryTake(): boolean {\n    if (this.tokens < 1) return false;\n    this.tokens -= 1;\n    return true;\n  }\n}\n\nconst limiter = new TokenBucket(100, 20);\napp.use((req, res, next) => (limiter.tryTake() ? next() : res.status(429).end()));"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "`this.refill` is passed unbound; Node invokes timer callbacks with `this` set to the `Timeout` object, so refill writes `NaN` onto the timer instead of refilling the bucket",
+          "fix": "Bind it: `setInterval(() => this.refill(), 1000)` or declare `private refill = (): void => { ... }`; enable `@typescript-eslint/unbound-method` to catch this class of bug."
+        }
+      ],
+      "explanation": "Passing `this.refill` detaches the method from the instance. In a browser or a plain strict-mode call you would get `this === undefined` and a loud TypeError, but Node calls timer callbacks with `this` bound to the `Timeout` object. So `refill` reads `this.capacity` and `this.tokens` from the timer (both `undefined`), computes `NaN`, and stores it as `timeout.tokens`. Nothing throws, the bucket's own `tokens` drains to zero and stays there. TypeScript does not flag it: inside a class method `this` is typed as the class, and the compiler does not check how the method is later called unless it declares an explicit `this` parameter.\n\nTakeaway: never pass a method reference as a callback without binding it, and lint for unbound methods because the type checker will not.",
+      "tags": ["gotcha"]
+    },
+    {
+      "id": "lang-ts-stream-backpressure-01",
+      "domain": "performance",
+      "concepts": ["memory-gc", "backpressure"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "CSV export endpoint OOM-kills pods on slow clients",
+      "prompt": "Node 22. Pods serving this export get OOMKilled when a large customer downloads 40M events over a slow VPN link; the same export to a fast client in the same region peaks under 200 MB. Heap snapshots are dominated by `Buffer` and string chunks retained by the zlib stream. Find the bug.",
+      "language": "ts",
+      "estSeconds": 210,
+      "code": {
+        "ts": "import { createGzip } from 'node:zlib';\n\napp.get('/exports/:accountId.csv.gz', async (req, res) => {\n  res.setHeader('Content-Type', 'application/gzip');\n  const gzip = createGzip();\n  gzip.pipe(res);\n\n  const cursor = db.events\n    .find({ accountId: req.params.accountId })\n    .batchSize(5000);\n\n  for await (const event of cursor) {\n    gzip.write(toCsvLine(event)); //!issue:1\n  }\n  gzip.end();\n});"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Return value of `gzip.write()` is ignored, so the loop reads from the database as fast as it can while the slow socket pauses the pipe and every chunk queues in memory",
+          "fix": "Use `await pipeline(Readable.from(toCsvLines(cursor)), createGzip(), res)` from `node:stream/promises`, which propagates backpressure and destroys the cursor if the client disconnects; or await `once(gzip, 'drain')` whenever `write()` returns false."
+        }
+      ],
+      "explanation": "`gzip.pipe(res)` handles backpressure between gzip and the socket: when the client is slow, `res` buffers fill and the pipe stops reading from gzip. But the producer loop never asks gzip whether it can take more. `write()` returns `false` once the writable buffer passes its high-water mark, but the stream keeps accepting data anyway, so the whole cursor ends up buffered in the zlib stream's queue. A fast client drains it quickly enough to hide the bug. `stream.pipeline` (or awaiting `drain`) makes the database cursor wait for the slowest consumer and also cleans up on client abort, which the current code does not.\n\nTakeaway: a producer that ignores `write()`'s return value has no backpressure, and its memory use is bounded only by the slowest consumer.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lang-ts-late-await-crash-01",
+      "domain": "debugging",
+      "concepts": ["production-debugging", "unhandled-rejections"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 5,
+      "title": "Pods crash-loop on an error the handler clearly catches",
+      "prompt": "Node 22, Express 5. During a brownout where profile-service fast-fails with 503 in about 5 ms, every pod running this handler crash-loops with the output below. The handler has a `try/catch` that forwards to the error middleware, and other upstream failures are handled fine. Find the bug.",
+      "context": "```\n/app/dist/clients/profile-client.js:88\n      throw new UpstreamError(`profile-service ${res.status}`);\n            ^\n\nUpstreamError: profile-service 503\n    at ProfileClient.get (/app/dist/clients/profile-client.js:88:13)\n\nNode.js v22.11.0\n```\n\nflag-service p50 is 40 ms; widget-service p50 is 60 ms.",
+      "language": "ts",
+      "estSeconds": 240,
+      "code": {
+        "ts": "app.get('/dashboard/:userId', async (req, res, next) => {\n  try {\n    const { userId } = req.params;\n    const profileP = profileService.get(userId); //!issue:1\n\n    const flags = await flagService.evaluate(userId); //!issue:1\n    const widgets = await widgetService.list(userId, flags);\n\n    const profile = await profileP;\n    res.json({ profile, flags, widgets });\n  } catch (err) {\n    next(err);\n  }\n});"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`profileP` is started early but not awaited until later; when it rejects while the handler is awaiting other calls it has no handler, and Node's default `--unhandled-rejections=throw` kills the process",
+          "fix": "Await concurrent work together, e.g. `const [profile, flags] = await Promise.all([profileService.get(userId), flagService.evaluate(userId)])`, then fetch widgets; or attach a handler at creation time. Never leave a started promise un-awaited across another `await`."
+        }
+      ],
+      "explanation": "Node decides a rejection is unhandled when the microtask queue drains after the rejection and no handler is attached. `profileP` rejects after ~5 ms while the handler is suspended on `flagService.evaluate` (40 ms), so nothing is listening. Since Node 15 the default mode is `throw`, so the rejection becomes an uncaught exception and the process exits before the later `await profileP` (which would have handled it) ever runs. The `try/catch` only covers the rejection at the moment it is awaited. It only bites when the early-started call fails faster than the work awaited in between, which is why it appears during fast-fail brownouts and not in normal operation. `Promise.all` attaches handlers to every input immediately.\n\nTakeaway: starting a promise early is fine only if something awaits or handles it before the next `await`; otherwise a fast failure becomes a process crash.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "lang-ts-review-order-webhook-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice", "type-design", "input-validation"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review: order webhook handler",
+      "prompt": "Review this PR adding an order webhook to a long-running Node 22 service (Express 5, TypeScript 5.6). `audit.record` and `ledger.post` both return promises; `orderEvents` emits `fulfilled` once per order when the warehouse confirms it. Identify the issues.",
+      "language": "ts",
+      "estSeconds": 420,
+      "code": {
+        "ts": "import { EventEmitter } from 'node:events';\n\nexport const orderEvents = new EventEmitter();\n\ntype OrderWebhook = {\n  orderId: string;\n  items: { sku: string; price: number; qty: number }[]; // price in dollars, e.g. 19.99\n};\n\napp.post('/webhooks/orders', express.json(), async (req, res) => {\n  const body = req.body as OrderWebhook; //!issue:1\n\n  let total = 0;\n  for (const item of body.items) {\n    total += item.price * item.qty; //!issue:4\n  }\n\n  orderEvents.on('fulfilled', (id: string) => { //!issue:2\n    if (id === body.orderId) metrics.increment('orders.fulfilled');\n  });\n\n  audit.record({ type: 'order.received', orderId: body.orderId, total }); //!issue:3\n\n  await ledger.post(body.orderId, Math.round(total * 100));\n  res.status(202).json({ ok: true });\n});"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "`as OrderWebhook` asserts the shape of untrusted input without checking it; a missing `items` throws, and a string or missing `price` posts `NaN` or garbage to the ledger",
+          "fix": "Treat `req.body` as `unknown` and parse it with a schema (zod, valibot, ajv) that rejects with 400; also verify the webhook signature before trusting the payload."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "A new `fulfilled` listener is added to a module-level emitter on every request and never removed: unbounded memory growth (each closure retains the request body), O(n) work per event, and a `MaxListenersExceededWarning` after 10",
+          "fix": "Register one listener at startup that looks the order up, or use `once` with a per-order key and remove it on completion or timeout."
+        },
+        {
+          "id": "3",
+          "severity": "critical",
+          "summary": "`audit.record` is fire-and-forget; if it rejects there is no handler and Node 22's default unhandled-rejection mode crashes the whole process",
+          "fix": "Await it (and decide whether audit failure should fail the request), or explicitly `void audit.record(...).catch(err => logger.warn(...))` if it is truly best-effort."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Money summed as floating-point dollars and converted to cents only at the end",
+          "fix": "Carry integer minor units (cents) from the payload onward, or use a decimal type; reject prices with more than two decimal places."
+        }
+      ],
+      "explanation": "The two issues that hurt in production are the floating `audit.record` promise, which turns an audit-service outage into a crash loop of the whole order service, and the per-request listener, which leaks memory linearly with traffic and makes every `fulfilled` event run every closure ever registered. The `as` assertion is the TypeScript-specific trap: it compiles because `req.body` is `any`, so the type gives false confidence at exactly the trust boundary where runtime validation is required. The float sum is usually rescued by the final `Math.round`, but money should never be in binary floating point in the first place. Express 5 does forward rejected handler promises to the error middleware, so the `await ledger.post` path is fine.\n\nTakeaway: in a TS review, look hardest at the trust boundary (`as` on input), at promises nobody awaits, and at listeners registered in a request path.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lang-ts-review-price-client-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice", "caching", "input-validation"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review: memoised price client",
+      "prompt": "A PR introduces this client in a Node 22 API (TypeScript 5.6). One instance is created per process and lives for the life of the pod. `sku` comes straight from the request query string, and the catalogue has about 3M SKUs whose prices change daily. Identify the issues.",
+      "language": "ts",
+      "estSeconds": 360,
+      "code": {
+        "ts": "type Price = { sku: string; amountCents: number; currency: string };\n\nexport class PriceClient {\n  private readonly cache = new Map<string, Promise<Price>>(); //!issue:3\n\n  constructor(private readonly baseUrl: string) {}\n\n  get(sku: string): Promise<Price> {\n    let p = this.cache.get(sku);\n    if (!p) {\n      p = this.fetchPrice(sku);\n      this.cache.set(sku, p); //!issue:1\n    }\n    return p;\n  }\n\n  private async fetchPrice(sku: string): Promise<Price> {\n    const res = await fetch(`${this.baseUrl}/v1/prices/${sku}`); //!issue:4\n    return (await res.json()) as Price; //!issue:2\n  }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "A rejected promise is cached like a success, so one timeout or 503 poisons that SKU until the pod restarts",
+          "fix": "Evict the entry when the promise rejects (`p.catch(() => this.cache.delete(sku))`), or cache only resolved values while still coalescing in-flight requests."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "No `res.ok` check and `as Price` over `any`: a 404 or 500 error body is cached and returned as a Price with `amountCents` undefined",
+          "fix": "Throw on non-2xx responses and validate the body with a schema before returning it."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Unbounded Map with no TTL: memory grows towards 3M entries and prices are served stale forever",
+          "fix": "Use an LRU with a max size and a TTL aligned with how often prices change (for example lru-cache with `ttl`), and bound negative caching separately."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "User-controlled `sku` is interpolated into the path unencoded, so values like `../admin/flush` or `x?currency=` reach other price-service endpoints",
+          "fix": "Validate the SKU format and use `encodeURIComponent(sku)` when building the URL."
+        }
+      ],
+      "explanation": "Promise memoisation is a good idea (it coalesces concurrent misses) but it needs three guards this PR lacks: evict on rejection, bound the size, and expire entries. The `as Price` is the TypeScript trap: `res.json()` returns `Promise<any>`, so the assertion always compiles and silently admits error payloads, which the cache then keeps. The unencoded SKU lets a caller steer requests to other paths on an internal service that probably trusts its callers.\n\nTakeaway: when reviewing a cache, ask what happens on failure, how big it gets and how stale it can be, and treat every `as` on parsed JSON as unvalidated input.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lang-go-typed-nil-error-01",
+      "domain": "debugging",
+      "concepts": ["null-handling", "error-handling"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Valid orders rejected with error <nil>",
+      "prompt": "The checkout handler rejects perfectly valid orders with HTTP 422 and logs `process order: <nil>`. You reduce it to this program (Go 1.23). What does it print?\n\n```go\ntype ValidationError struct{ Field string }\n\nfunc (e *ValidationError) Error() string { return \"invalid field: \" + e.Field }\n\nfunc validate(o Order) *ValidationError {\n\tif o.Qty <= 0 {\n\t\treturn &ValidationError{Field: \"qty\"}\n\t}\n\treturn nil\n}\n\nfunc Process(o Order) error {\n\terr := validate(o)\n\treturn err\n}\n\nfunc main() {\n\terr := Process(Order{Qty: 3})\n\tfmt.Println(err == nil, err)\n}\n```",
+      "language": "go",
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "`false <nil>`" },
+        { "id": "b", "text": "`true <nil>`" },
+        { "id": "c", "text": "`false invalid field: `" },
+        { "id": "d", "text": "It panics with a nil pointer dereference inside `Error()`" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "The interface holds type `*ValidationError` with a nil value, so it is not nil; fmt catches the nil-receiver panic in `Error()` and prints `<nil>`.",
+        "b": "Only an interface with no dynamic type compares equal to nil. Returning a typed nil pointer gives it a type.",
+        "c": "`Error()` dereferences `e.Field` on a nil pointer, so it cannot return a string.",
+        "d": "It does panic inside `Error()`, but fmt recovers panics from nil-pointer receivers and prints `<nil>` instead, which is what makes this so confusing in logs."
+      },
+      "explanation": "An interface value is a (type, value) pair and is nil only when both are nil. `Process` converts a nil `*ValidationError` into an `error`, producing (`*ValidationError`, nil), which is not equal to nil. When fmt formats it, calling `Error()` panics on the nil receiver, and fmt's panic handler prints `<nil>` for nil pointers, so the log line looks like there was no error at all. The fix is to return the `error` interface type from helpers and return a literal `nil` on success: `func validate(o Order) error`.\n\nTakeaway: functions that can fail should return `error`, never a concrete error pointer type, because a typed nil is a non-nil error.",
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "lang-go-loopvar-go-directive-01",
+      "domain": "debugging",
+      "concepts": ["language-semantics", "backward-compatibility"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Loop variable semantics after a toolchain upgrade",
+      "prompt": "Your CI now builds everything with the Go 1.23 toolchain. This code lives in a module whose `go.mod` still declares `go 1.21`. What does it print, and what would change it?\n\n```go\nvar fns []func()\nfor i := 0; i < 3; i++ {\n\tfns = append(fns, func() { fmt.Print(i) })\n}\nfor _, f := range fns {\n\tf()\n}\n```",
+      "language": "go",
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "`333`; per-iteration loop variables follow the module's `go` directive, so it prints `012` once go.mod declares `go 1.22` or later" },
+        { "id": "b", "text": "`012`; the Go 1.22+ toolchain gives every loop a fresh variable per iteration whatever go.mod declares" },
+        { "id": "c", "text": "`333` whatever go.mod says; Go 1.22 changed only `for range` loops, and three-clause loops still share one variable" },
+        { "id": "d", "text": "Nondeterministic output, because the closures read `i` while the loop is still writing to it" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Language semantics are selected by the language version (the module's `go` line, or a file's `//go:build go1.N` constraint), not by the toolchain version.",
+        "b": "The common misreading of the 1.22 release. Gating on the `go` directive is how Go keeps old modules compiling with their old meaning.",
+        "c": "The 1.22 change applies to both `for range` and three-clause `for` loops.",
+        "d": "The closures run after the loop finishes and in the same goroutine, so there is no race, just shared versus per-iteration variables."
+      },
+      "explanation": "Go 1.22 made loop variables per-iteration, but only for code whose language version is 1.22 or later. With `go 1.21` in go.mod, the 1.23 toolchain compiles this with the old semantics: one `i` shared by every closure, which ends at 3, so it prints `333`. Bump the directive to `go 1.22` and the same source prints `012`. The practical consequence is that bumping the `go` line is a semantic change to every loop in the module: it usually fixes latent capture bugs, but it should be its own reviewed change with the test suite run under the race detector, not something buried in a dependency bump.\n\nTakeaway: in Go the `go` directive selects language semantics, so upgrading the toolchain and upgrading the language version are two different changes.",
+      "tags": ["gotcha"]
+    },
+    {
+      "id": "lang-go-append-aliasing-01",
+      "domain": "debugging",
+      "concepts": ["language-semantics", "heisenbugs"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Deploy tool targets the wrong service",
+      "prompt": "An internal deploy tool built the right flags in tests but in production a deploy of `api` occasionally ran with `--service=worker`. What does this reduced program print (Go 1.23)?\n\n```go\nfunc buildArgs(common []string, extra string) []string {\n\treturn append(common, extra)\n}\n\nfunc main() {\n\tcommon := make([]string, 0, 8)\n\tcommon = append(common, \"--region=us-east-1\", \"--profile=prod\")\n\tdeploy := buildArgs(common, \"--service=api\")\n\trollback := buildArgs(common, \"--service=worker\")\n\tfmt.Println(deploy[2], rollback[2], len(common))\n}\n```",
+      "language": "go",
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "`--service=worker --service=worker 2`" },
+        { "id": "b", "text": "`--service=api --service=worker 2`" },
+        { "id": "c", "text": "`--service=api --service=worker 4`" },
+        { "id": "d", "text": "`--service=worker --service=worker 4`" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "`common` has spare capacity, so both appends write index 2 of the same backing array; the second overwrites the first. `common` itself still has length 2.",
+        "b": "That is what you get when `common` is full (len == cap), because then each append copies into a new array. Whether it copies depends on capacity, which is why tests passed.",
+        "c": "`append` never changes the length of the slice header you passed in; it returns a new header.",
+        "d": "Right about the overwrite, wrong about the length: the caller's `common` header is unchanged."
+      },
+      "explanation": "A slice is a header (pointer, length, capacity) over a shared array. When `len < cap`, `append` writes into the existing array and returns a header that shares it. Both `deploy` and `rollback` therefore point at the same element 2, and the last write wins. In tests the prefix was built with a literal (len == cap), so each append reallocated and the bug was invisible. Fix it by giving the result its own array: `slices.Concat(common, []string{extra})`, or clip the capacity with `common[:len(common):len(common)]` so append must copy.\n\nTakeaway: never append to a slice you do not own unless you clip its capacity, because whether append aliases depends on spare capacity, not on your intent.",
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "lang-go-errors-wrapping-01",
+      "domain": "code_quality",
+      "concepts": ["error-handling"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Which wrapped errors still match the sentinel",
+      "prompt": "A retry middleware decides whether to retry using `errors.Is` and `errors.As`. What does this print (Go 1.23)?\n\n```go\nvar ErrNotFound = errors.New(\"not found\")\n\ntype RetryableError struct{ Err error }\n\nfunc (e *RetryableError) Error() string { return \"retryable: \" + e.Err.Error() }\nfunc (e *RetryableError) Unwrap() error { return e.Err }\n\nfunc main() {\n\tbase := fmt.Errorf(\"load profile 42: %w\", ErrNotFound)\n\terr1 := fmt.Errorf(\"handler: %v\", base)\n\terr2 := fmt.Errorf(\"handler: %w\", &RetryableError{Err: base})\n\n\tvar re *RetryableError\n\tfmt.Println(errors.Is(err1, ErrNotFound), errors.Is(err2, ErrNotFound), errors.As(err2, &re))\n}\n```",
+      "language": "go",
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "`false true true`" },
+        { "id": "b", "text": "`true true true`" },
+        { "id": "c", "text": "`false false true`" },
+        { "id": "d", "text": "`true true false`" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "`%v` flattens `base` into text, so err1's chain ends there. err2's chain is err2, then *RetryableError (via Unwrap), then base, then ErrNotFound, and As finds the pointer type.",
+        "b": "`%v` keeps only the message; `errors.Is` does not match on text.",
+        "c": "`errors.Is` walks custom `Unwrap()` methods too, so it passes through `RetryableError` to the sentinel.",
+        "d": "`errors.As` with a `**RetryableError` target matches the `*RetryableError` in the chain."
+      },
+      "explanation": "Only `%w` records the wrapped error; `%v` produces a new error whose chain stops at that point, so `errors.Is(err1, ErrNotFound)` is false even though the message contains \"not found\". `errors.Is` and `errors.As` follow the chain through any `Unwrap() error` method, so err2 reaches the sentinel through the custom type, and `As` succeeds because the target's element type (`*RetryableError`) matches what was wrapped. Two related traps: wrapping with `%w` makes the inner error part of your API, and declaring the target as a value (`var re RetryableError; errors.As(err, &re)`) when the methods are on the pointer receiver makes `errors.As` panic at runtime (go vet flags it).\n\nTakeaway: decide deliberately between `%w` (callers may depend on the cause) and `%v` (cause is an implementation detail), and always test classification with `errors.Is`/`As`, never with `==` or string matching.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "lang-go-select-default-spin-01",
+      "domain": "performance",
+      "concepts": ["profiling", "concurrency-models"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Idle worker pins a CPU core",
+      "prompt": "Each worker pod burns a full core even when the job queue has been empty for hours. A CPU profile points at the loop below (Go 1.23). What is the cause and the fix?\n\n```go\nfunc (w *Worker) run(ctx context.Context) {\n\tfor {\n\t\tselect {\n\t\tcase job := <-w.jobs:\n\t\t\tw.handle(job)\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\t}\n}\n```",
+      "context": "```\n(pprof) top 2\n      flat  flat%   sum%        cum   cum%\n     3.10s 31.6% 31.6%      9.61s 98.1%  example.com/worker.(*Worker).run\n     2.87s 29.3% 60.9%      6.51s 66.4%  runtime.selectgo\n```",
+      "language": "go",
+      "estSeconds": 45,
+      "options": [
+        { "id": "a", "text": "The empty `default` makes the select non-blocking, so the loop spins; delete it so the goroutine parks until a job or cancellation arrives" },
+        { "id": "b", "text": "`w.jobs` is unbuffered, so every receive attempt busy-waits in the scheduler; give the channel a buffer of a few thousand" },
+        { "id": "c", "text": "`ctx.Done()` allocates a fresh channel on every call; hoist it into a local variable before the loop starts" },
+        { "id": "d", "text": "GOMAXPROCS exceeds the pod's CPU limit, so idle Ps spin looking for work; set it to match the limit" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "With `default`, select never waits: when no case is ready it falls through immediately and the `for` loop retries, millions of times a second.",
+        "b": "Receiving on an empty channel, buffered or not, parks the goroutine; it does not spin.",
+        "c": "A context's `Done()` returns the same channel every time.",
+        "d": "A mismatched GOMAXPROCS causes throttling and some scheduler overhead, not 98% of CPU inside `(*Worker).run`."
+      },
+      "explanation": "A `select` with a `default` case is a non-blocking poll. Inside a bare `for` loop, when nothing is ready it becomes a busy loop, which is exactly what the profile shows: nearly all time inside `run` and `runtime.selectgo`. Removing `default` lets the runtime park the goroutine on both channels at no CPU cost. Use `default` only for genuine try-send or try-receive (for example dropping a metric when a buffer is full), never as the idle path of a loop.\n\nTakeaway: `select` with `default` in a loop is a spin lock in disguise, so let goroutines block.",
+      "tags": ["classic"]
+    },
+    {
+      "id": "lang-go-goroutine-leak-timeout-01",
+      "domain": "debugging",
+      "concepts": ["resource-leaks", "concurrency"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Goroutines pile up after a backend brownout and never recover",
+      "prompt": "Callers pass a 200 ms deadline to `Lookup`. During a backend brownout (p99 4 s) goroutine count climbed from 1.2k to 380k and RSS to 3 GB, and both stayed there after the backend recovered. Find the bug (Go 1.23).",
+      "context": "```\n$ curl -s localhost:6060/debug/pprof/goroutine?debug=1 | head -3\ngoroutine profile: total 381442\n380117 @ 0x43a8f6 0x40a1a5 0x40a0f2 0x9c2e1d 0x46e981\n#\t0x9c2e1c\texample.com/lookup.(*Client).Lookup.func1+0x9c\t/src/lookup/client.go:41\n```",
+      "language": "go",
+      "estSeconds": 180,
+      "code": {
+        "go": "type result struct {\n\tval string\n\terr error\n}\n\nfunc (c *Client) Lookup(ctx context.Context, key string) (string, error) {\n\tch := make(chan result) //!issue:1\n\tgo func() {\n\t\tv, err := c.backend.Get(key)\n\t\tch <- result{v, err} //!issue:1\n\t}()\n\n\tselect {\n\tcase r := <-ch:\n\t\treturn r.val, r.err\n\tcase <-ctx.Done():\n\t\treturn \"\", ctx.Err()\n\t}\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "When the deadline wins, nobody ever receives from the unbuffered channel, so the worker goroutine blocks on its send forever",
+          "fix": "Make the channel buffered with capacity 1 so the send always completes, and pass `ctx` into `backend.Get(ctx, key)` so abandoned work is cancelled instead of running to completion."
+        }
+      ],
+      "explanation": "On timeout, `Lookup` returns via `ctx.Done()` and drops the only reference to `ch`. The goroutine eventually gets its result and tries `ch <- result{...}` on an unbuffered channel with no receiver, so it blocks forever, holding its stack and anything it captured. Every timed-out call during the brownout leaked one goroutine, and they never exit even after the backend recovers, which matches the profile with 380k goroutines parked on the send at line 41. A buffer of one lets the send complete and the goroutine exit; propagating `ctx` into the backend call also stops spending backend capacity on answers nobody will read.\n\nTakeaway: every goroutine needs a guaranteed way to finish, so when a receiver can walk away, the sender must never block.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "lang-go-rlock-map-write-01",
+      "domain": "debugging",
+      "concepts": ["race-conditions"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Stats middleware crashes the process despite recover",
+      "prompt": "Under load the API process exits with the output below. The middleware has a `recover()`, but it never fires. Find the bug (Go 1.23).",
+      "context": "```\nfatal error: concurrent map writes\n\ngoroutine 8812 [running]:\nexample.com/api/stats.(*RouteStats).Inc(...)\n\t/src/stats/stats.go:13\n```",
+      "language": "go",
+      "estSeconds": 150,
+      "code": {
+        "go": "type RouteStats struct {\n\tmu     sync.RWMutex\n\tcounts map[string]int64\n}\n\nfunc (s *RouteStats) Inc(route string) {\n\ts.mu.RLock() //!issue:1\n\ts.counts[route]++ //!issue:1\n\ts.mu.RUnlock() //!issue:1\n}\n\nfunc (s *RouteStats) Snapshot() map[string]int64 {\n\ts.mu.RLock()\n\tdefer s.mu.RUnlock()\n\tout := make(map[string]int64, len(s.counts))\n\tfor k, v := range s.counts {\n\t\tout[k] = v\n\t}\n\treturn out\n}\n\nfunc Middleware(stats *RouteStats, next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tdefer func() {\n\t\t\tif rec := recover(); rec != nil {\n\t\t\t\thttp.Error(w, \"internal error\", http.StatusInternalServerError)\n\t\t\t}\n\t\t}()\n\t\tstats.Inc(r.URL.Path)\n\t\tnext.ServeHTTP(w, r)\n\t})\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`Inc` mutates the map under a read lock, which many goroutines can hold at once, so concurrent requests write the map simultaneously",
+          "fix": "Take the write lock (`s.mu.Lock()` / `Unlock()`) in `Inc`, or pre-populate the map with a fixed route set and store `*atomic.Int64` values so increments need only a read lock."
+        }
+      ],
+      "explanation": "`RLock` allows any number of concurrent holders; it only excludes writers who take `Lock`. `s.counts[route]++` is a map write, so two requests can write simultaneously. The runtime's map race detection then calls `fatal error`, which is not a panic: `recover()` cannot catch it and the whole process dies. That is why the middleware's recover is irrelevant. A second, smaller problem for review: keying by raw `r.URL.Path` gives unbounded cardinality (ids in paths), so key by the matched route pattern instead.\n\nTakeaway: a read lock protects reads only, and in Go a concurrent map write is a fatal crash rather than a recoverable panic, so run load tests with `-race`.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lang-go-waitgroup-add-01",
+      "domain": "debugging",
+      "concepts": ["race-conditions"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "FetchAll sometimes returns empty results",
+      "prompt": "The module's go.mod declares `go 1.23`. `FetchAll` intermittently returns zero-valued `Result` entries (about 2% of production calls, never on a laptop), and `go test -race` occasionally reports a race between the write to `results[i]` and the caller reading the slice. A reviewer blames the closures capturing `i` and `u`. Find the actual bug.",
+      "language": "go",
+      "estSeconds": 150,
+      "code": {
+        "go": "func FetchAll(ctx context.Context, urls []string) []Result {\n\tresults := make([]Result, len(urls))\n\tvar wg sync.WaitGroup\n\n\tfor i, u := range urls {\n\t\tgo func() {\n\t\t\twg.Add(1) //!issue:1\n\t\t\tdefer wg.Done()\n\t\t\tresults[i] = fetchOne(ctx, u)\n\t\t}()\n\t}\n\n\twg.Wait()\n\treturn results\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`wg.Add(1)` runs inside the new goroutine, so `wg.Wait()` can observe a zero counter and return before some goroutines have even registered",
+          "fix": "Call `wg.Add(1)` (or `wg.Add(len(urls))`) in the parent before each `go` statement; on Go 1.25+ use `wg.Go(func() { ... })`. Consider errgroup with `SetLimit` to bound concurrency."
+        }
+      ],
+      "explanation": "The WaitGroup counter must be incremented before `Wait` can possibly run. Here the parent can finish the loop and call `Wait` while some goroutines have not been scheduled yet; the counter is zero (or lower than the number of goroutines), `Wait` returns, and `FetchAll` returns a slice that late goroutines are still writing, which is both the missing results and the race report. On a laptop with idle cores the goroutines usually start fast enough to hide it. The reviewer's theory does not hold: with a `go 1.22+` directive each iteration has its own `i` and `u`. Recent `go vet` (1.25+) reports `WaitGroup.Add called from inside new goroutine`.\n\nTakeaway: register work with a WaitGroup in the goroutine that will call `Wait`, before spawning, and know which loop-variable semantics your go.mod selects before blaming captures.",
+      "tags": ["classic"]
+    },
+    {
+      "id": "lang-go-defer-in-loop-01",
+      "domain": "debugging",
+      "concepts": ["resource-leaks"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Nightly import dies with too many open files",
+      "prompt": "The nightly import processes about 30,000 files. It now fails partway with the error below; the container's `ulimit -n` is 1024. Find the bug (Go 1.23).",
+      "context": "```\nimport failed: open /data/import/part-01019.ndjson: too many open files\n```",
+      "language": "go",
+      "estSeconds": 120,
+      "code": {
+        "go": "func ImportDir(ctx context.Context, store *Store, dir string) error {\n\tpaths, err := filepath.Glob(filepath.Join(dir, \"*.ndjson\"))\n\tif err != nil {\n\t\treturn err\n\t}\n\tfor _, p := range paths {\n\t\tf, err := os.Open(p)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"open %s: %w\", p, err)\n\t\t}\n\t\tdefer f.Close() //!issue:1\n\n\t\tdec := json.NewDecoder(bufio.NewReader(f))\n\t\tfor dec.More() {\n\t\t\tvar rec Record\n\t\t\tif err := dec.Decode(&rec); err != nil {\n\t\t\t\treturn fmt.Errorf(\"decode %s: %w\", p, err)\n\t\t\t}\n\t\t\tif err := store.Upsert(ctx, rec); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "`defer f.Close()` inside the loop only runs when `ImportDir` returns, so every file stays open until the whole import finishes",
+          "fix": "Move the per-file body into its own function (`importFile(ctx, store, p) error`) that opens, defers Close and returns, or close the file explicitly at the end of each iteration and on every error path."
+        }
+      ],
+      "explanation": "Deferred calls are scoped to the function, not the block or loop iteration. Each pass opens a file and pushes a `Close` onto the defer stack, so descriptors accumulate until the function exits; at roughly a thousand open files (plus stdio, DB connections and sockets) the process hits the 1024 limit. Raising the ulimit only moves the cliff. Extracting a per-file function keeps the idiomatic `defer` and bounds open descriptors to one, and also gives you a natural place to add per-file error context and metrics. The same pattern bites with `rows.Close()`, `resp.Body.Close()` and `mu.Unlock()` in loops.\n\nTakeaway: `defer` runs at function exit, so any resource acquired per iteration needs its own function scope.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "lang-go-review-quote-fanout-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice", "concurrency"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review: cheapest-carrier quote fan-out",
+      "prompt": "Review this PR (Go 1.23, go.mod `go 1.23`). `h.carriers` holds six carrier clients; carrier APIs occasionally hang for 30 s or more, and the clients wrap their errors, for example `fmt.Errorf(\"ups: %w\", ErrNoCoverage)`. Identify the issues.",
+      "language": "go",
+      "estSeconds": 420,
+      "code": {
+        "go": "var ErrNoCoverage = errors.New(\"no coverage\")\n\nfunc (h *Handler) Quote(w http.ResponseWriter, r *http.Request) {\n\tzip := r.URL.Query().Get(\"zip\")\n\tresults := make(chan Quote)\n\n\tfor _, c := range h.carriers {\n\t\tgo func() {\n\t\t\tdefer close(results) //!issue:1\n\t\t\tq, err := c.Quote(context.Background(), zip) //!issue:2\n\t\t\tif err == ErrNoCoverage { //!issue:3\n\t\t\t\treturn\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\tlog.Printf(\"carrier %s: %v\", c.Name(), err)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tresults <- q\n\t\t}()\n\t}\n\n\tbest := Quote{PriceCents: math.MaxInt64}\n\tfor q := range results {\n\t\tif q.PriceCents < best.PriceCents {\n\t\t\tbest = q\n\t\t}\n\t}\n\tw.Header().Set(\"Content-Type\", \"application/json\")\n\tjson.NewEncoder(w).Encode(best) //!issue:4\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Every worker closes the shared channel: the first close ends the range loop early, the second panics with `close of closed channel`, and later sends panic with `send on closed channel`; panics in these goroutines are not recovered by net/http and kill the process",
+          "fix": "Exactly one closer: `wg.Add` per worker, then `go func() { wg.Wait(); close(results) }()`; or use errgroup and collect into a buffered channel or an indexed slice."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "`context.Background()` ignores client disconnects and deadlines, so hanging carriers keep goroutines and connections alive for 30 s or more per request",
+          "fix": "Derive from the request: `ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second); defer cancel()` and pass `ctx` to every carrier call."
+        },
+        {
+          "id": "3",
+          "severity": "minor",
+          "summary": "`err == ErrNoCoverage` never matches wrapped errors, so routine no-coverage responses are logged as carrier failures",
+          "fix": "Use `errors.Is(err, ErrNoCoverage)`."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "When no carrier returns a quote, the sentinel `MaxInt64` price is returned as a real quote with 200 OK, and the Encode error is dropped",
+          "fix": "Track whether any quote arrived and return 404 or 503 when none did; check or at least log the Encode error."
+        }
+      ],
+      "explanation": "The channel-close bug is the one that pages someone: with six workers, the first to finish closes `results`, the collector stops after at most one quote, and the next worker to close or send panics. A panic in a goroutine started by the handler is not covered by net/http's per-connection recover, so the whole server exits. The ownership rule is that only the sender side that knows all sends are done closes a channel, which means a WaitGroup-driven closer. Using `context.Background()` severs cancellation, so slow carriers accumulate work for clients that already left. The `==` comparison and the sentinel response are the quieter correctness bugs a careful reviewer should still block on. With `go 1.23` the per-iteration `c` capture is correct, so it is not an issue.\n\nTakeaway: in Go fan-out code, check who closes the channel, which context flows into each goroutine, and what the handler returns when every branch fails.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "lang-go-review-ttl-cache-01",
+      "domain": "code_quality",
+      "concepts": ["review-practice", "concurrency", "resource-leaks"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 5,
+      "title": "Review: per-tenant TTL cache with CDN invalidation",
+      "prompt": "Review this PR (Go 1.23). `NewCache` is called the first time a tenant is seen; when a tenant churns, its cache is dropped from a registry map. `onEvict` POSTs an invalidation to the CDN API (p99 800 ms). Large tenants expire a few hundred keys per minute. Identify the issues.",
+      "language": "go",
+      "estSeconds": 480,
+      "code": {
+        "go": "type entry struct {\n\tval     []byte\n\texpires time.Time\n}\n\ntype Cache struct {\n\tmu      sync.Mutex\n\titems   map[string]entry\n\tonEvict func(key string)\n}\n\nfunc NewCache(onEvict func(string)) *Cache {\n\tc := &Cache{items: make(map[string]entry), onEvict: onEvict}\n\tgo c.janitor() //!issue:1\n\treturn c\n}\n\nfunc (c *Cache) janitor() {\n\tt := time.NewTicker(time.Minute)\n\tfor range t.C { //!issue:1\n\t\tc.mu.Lock()\n\t\tfor k, e := range c.items {\n\t\t\tif time.Now().After(e.expires) {\n\t\t\t\tdelete(c.items, k)\n\t\t\t\tc.onEvict(k) //!issue:2\n\t\t\t}\n\t\t}\n\t\tc.mu.Unlock()\n\t}\n}\n\nfunc (c *Cache) Get(key string) ([]byte, bool) {\n\te, ok := c.items[key] //!issue:3\n\tif !ok || time.Now().After(e.expires) {\n\t\treturn nil, false\n\t}\n\treturn e.val, true //!issue:4\n}\n\nfunc (c *Cache) Set(key string, val []byte, ttl time.Duration) {\n\tc.mu.Lock()\n\tdefer c.mu.Unlock()\n\tc.items[key] = entry{val: val, expires: time.Now().Add(ttl)} //!issue:4\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The janitor goroutine and its ticker run forever with no way to stop them, so every cache ever created stays reachable from a live goroutine: dropping a churned tenant frees nothing",
+          "fix": "Add `Close()` that cancels a context or closes a `done` channel the janitor selects on, `defer t.Stop()` in the janitor, and call `Close` when the registry drops a tenant."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "`onEvict` does network I/O while holding `c.mu`; a few hundred expiries at up to 800 ms each block every `Set` (and `Get`, once it locks) for minutes",
+          "fix": "Collect expired keys under the lock, release it, then invalidate outside the lock, ideally batched or via a bounded async worker."
+        },
+        {
+          "id": "3",
+          "severity": "critical",
+          "summary": "`Get` reads the map without the lock while the janitor and `Set` write it, which triggers `fatal error: concurrent map read and map write` and kills the process",
+          "fix": "Lock in `Get` (switch to `sync.RWMutex` and use `RLock` for reads)."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "The cache stores and returns the caller's `[]byte` without copying, so any caller that mutates its slice corrupts the value for every other reader (and races with them)",
+          "fix": "Copy on `Set` with `bytes.Clone(val)` and document returned slices as read-only, or copy on `Get` if callers cannot be trusted."
+        }
+      ],
+      "explanation": "Three issues interact. The unlocked `Get` is the crash: Go's runtime detects concurrent map read and write and aborts with a fatal error that no `recover` can catch. Fixing it naively by locking in `Get` then exposes the lock-scope bug, because the janitor holds the mutex across slow CDN calls, so reads would stall for as long as a sweep takes; the review should ask for both fixes together. The janitor leak is the slow burn: a goroutine blocked on `t.C` keeps the `Cache` and its map reachable, so tenant churn grows memory and goroutine counts without bound. Go 1.23 made unstopped, unreferenced tickers collectable, but that does not help here because the running goroutine still references the ticker and the cache. The slice aliasing is minor but turns into a heisenbug if any caller decompresses or appends in place.\n\nTakeaway: for any cache with a background goroutine, ask who stops it, what the lock guards, and what work happens while the lock is held.",
+      "tags": ["on-the-job"]
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+/* ---------------------------------------------------------------------------------------------
+   Themes. Dark is the default (navy 60 / porcelain 30 / accent 10). Light inverts the split:
+   porcelain workspace 60, navy sidebar and type 30, accent 10. Device surfaces (the watch, LCD
+   readouts, knob caps) stay dark in both, the way real instruments do.
+   --------------------------------------------------------------------------------------------- */
+
+:root[data-theme='light'] {
+  --ink-rgb: 9, 39, 66;
+  --well-rgb: 222, 229, 220;
+  --text: var(--navy);
+  --text-dim: rgba(9, 39, 66, 0.7);
+  --text-faint: rgba(9, 39, 66, 0.48);
+  --line: rgba(9, 39, 66, 0.12);
+  --callout-border: rgba(108, 116, 124, 0.2);
+  --glass: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.7) 55%, rgba(248, 250, 245, 0.66) 100%);
+  --glass-edge: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(9, 39, 66, 0.06), inset 0 0 0 1px rgba(9, 39, 66, 0.08);
+  --drop: 0 1px 2px rgba(9, 39, 66, 0.08), 0 14px 30px -14px rgba(9, 39, 66, 0.28);
+  color-scheme: light;
+}
+
+[data-theme='light'] body {
+  background-color: var(--porcelain);
+  background-image:
+    radial-gradient(1100px 600px at 10% -10%, rgba(134, 174, 211, 0.28), transparent 60%),
+    radial-gradient(900px 600px at 100% 110%, rgba(210, 58, 0, 0.06), transparent 60%),
+    linear-gradient(180deg, #fbfcf7 0%, #f1f4ed 100%);
+}
+/* the same grain, darkened so it reads on porcelain */
+[data-theme='light'] body::before { filter: invert(1); mix-blend-mode: multiply; opacity: 0.07; }
+[data-theme='light'] .main a:not(.btn) { color: var(--navy-600); }
+[data-theme='light'] .eyebrow { color: var(--navy-400); }
+[data-theme='light'] .glass::before { background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0)); }
+[data-theme='light'] .porcelain { background: linear-gradient(180deg, #ffffff, #fbfcf8); }
+
+/* The sidebar stays navy: it is the 30% in light mode, so it re-declares the dark tokens locally. */
+[data-theme='light'] .sidebar {
+  --ink-rgb: 254, 255, 250;
+  --well-rgb: 4, 21, 38;
+  --text: var(--porcelain);
+  --text-dim: rgba(254, 255, 250, 0.7);
+  --text-faint: rgba(254, 255, 250, 0.45);
+  --line: rgba(254, 255, 250, 0.12);
+  --glass: linear-gradient(180deg, rgba(254, 255, 250, 0.14), rgba(254, 255, 250, 0.04));
+  --glass-edge: inset 0 1px 0 rgba(254, 255, 250, 0.32), inset 0 0 0 1px rgba(254, 255, 250, 0.09);
+  color: var(--porcelain);
+  background: linear-gradient(180deg, #0c3050 0%, var(--navy) 45%, var(--navy-900) 100%);
+  border-right: 0;
+  box-shadow: 6px 0 24px -12px rgba(9, 39, 66, 0.45);
+}
+
+/* buttons and controls: lighter wells and gloss on porcelain */
+[data-theme='light'] .btn:not(.primary):not(.light):not(.ghost) {
+  color: var(--navy);
+  background: linear-gradient(180deg, #ffffff, #e8ede5);
+  box-shadow: inset 0 1px 0 #fff, inset 0 -2px 0 rgba(9, 39, 66, 0.08), 0 0 0 1px rgba(9, 39, 66, 0.18), 0 4px 10px -4px rgba(9, 39, 66, 0.3);
+}
+[data-theme='light'] .main .btn.ghost { color: var(--navy); box-shadow: inset 0 0 0 1px rgba(9, 39, 66, 0.22); }
+[data-theme='light'] .main .input, [data-theme='light'] .main .textarea, [data-theme='light'] .main .select {
+  color: var(--navy);
+  background-color: #fff;
+  box-shadow: inset 0 2px 4px rgba(9, 39, 66, 0.14), inset 0 0 0 1px rgba(9, 39, 66, 0.14), 0 1px 0 #fff;
+}
+[data-theme='light'] .main .select {
+  background-image: linear-gradient(45deg, transparent 50%, var(--navy-400) 50%), linear-gradient(135deg, var(--navy-400) 50%, transparent 50%), linear-gradient(180deg, #eef2ea, #fbfcf8);
+}
+[data-theme='light'] .main .seg { box-shadow: inset 0 2px 4px rgba(9, 39, 66, 0.18), 0 1px 0 #fff; }
+[data-theme='light'] .main .seg:not(.accent) button.on {
+  color: var(--porcelain); background: linear-gradient(180deg, var(--navy-600), var(--navy)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 5px rgba(0, 0, 0, 0.3);
+}
+[data-theme='light'] .main .chip.on {
+  color: var(--porcelain); background: linear-gradient(180deg, var(--navy-600), var(--navy));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 2px 6px rgba(9, 39, 66, 0.3);
+}
+[data-theme='light'] .main .chip .star, [data-theme='light'] .main .chip.on .star { color: var(--accent-hi); }
+[data-theme='light'] .meter { box-shadow: inset 0 1px 3px rgba(9, 39, 66, 0.22), 0 1px 0 #fff; }
+[data-theme='light'] .meter > i { background: linear-gradient(180deg, var(--navy-400), var(--navy)); }
+[data-theme='light'] .meter.accent > i { background: linear-gradient(180deg, #ffb28d, var(--accent-hi) 45%, var(--accent)); }
+[data-theme='light'] .glass .inset, [data-theme='light'] .main > .stack > .inset {
+  background: linear-gradient(180deg, #e9eee6, #f4f6f0);
+  box-shadow: inset 0 2px 5px rgba(9, 39, 66, 0.14), inset 0 0 0 1px rgba(9, 39, 66, 0.08), 0 1px 0 #fff;
+}
+[data-theme='light'] .toggle-track { background: linear-gradient(180deg, #cfd8cc, #e4e9e1); box-shadow: inset 0 2px 5px rgba(9, 39, 66, 0.3), 0 1px 0 #fff; }
+[data-theme='light'] .knob-tick::before { background: rgba(9, 39, 66, 0.2); }
+[data-theme='light'] .dot { color: var(--navy); box-shadow: inset 0 1px 0 #fff, 0 0 0 1px rgba(9, 39, 66, 0.2); }
+[data-theme='light'] .day-bead { color: var(--navy); background: radial-gradient(circle at 35% 28%, #fff, #e6ebe3 55%, #cdd6ca); box-shadow: inset 0 1px 1px #fff, inset 0 -3px 6px rgba(9, 39, 66, 0.15), 0 4px 10px rgba(9, 39, 66, 0.2); }
+[data-theme='light'] .day.completed .day-bead { background: radial-gradient(circle at 35% 28%, #4f7fae, var(--navy) 70%); color: var(--porcelain); }
+[data-theme='light'] .mini-bead.completed { background: radial-gradient(circle at 35% 30%, var(--navy-400), var(--navy)); }
+[data-theme='light'] .preset.on { box-shadow: var(--porcelain-edge), 0 0 0 2px var(--accent), 0 12px 24px -12px var(--accent-glow); }
+[data-theme='light'] .toast { box-shadow: var(--porcelain-edge), 0 14px 30px -10px rgba(9, 39, 66, 0.35); }
+[data-theme='light'] .list-row:hover { background: rgba(9, 39, 66, 0.04); }
+[data-theme='light'] .watch-dock { filter: drop-shadow(0 22px 26px rgba(9, 39, 66, 0.35)); }
+
+/* star plot tones */
+:root { --star-ink: 254, 255, 250; --star-mastery: #fefffa; --star-well-a: rgba(134, 174, 211, 0.22); --star-well-b: rgba(4, 21, 38, 0.5); }
+[data-theme='light'] { --star-ink: 9, 39, 66; --star-mastery: #092742; --star-well-a: rgba(255, 255, 255, 0.95); --star-well-b: rgba(214, 224, 233, 0.6); }
+
+/* ---------------------------------------------------------------------------------------------
+   Code color schemes. Applied via data-code-theme on <html> (or on a preview element).
+   --------------------------------------------------------------------------------------------- */
+:root, [data-code-theme='staff'] {
+  --code-bg: linear-gradient(180deg, #041526, #08223b); --code-fg: #d7e3ef; --code-num: rgba(188, 212, 234, 0.35); --code-hover: rgba(134, 174, 211, 0.08);
+  --tk-kw: #ff9b6e; --tk-ty: #9fd0ff; --tk-str: #c9e7a7; --tk-com: #6f8aa5; --tk-num: #f7c97a; --tk-fn: #e8eef5;
+}
+[data-code-theme='github-light'] {
+  --code-bg: #ffffff; --code-fg: #1f2328; --code-num: #8c959f; --code-hover: rgba(9, 105, 218, 0.06);
+  --tk-kw: #cf222e; --tk-ty: #953800; --tk-str: #0a3069; --tk-com: #6e7781; --tk-num: #0550ae; --tk-fn: #8250df;
+}
+[data-code-theme='github-dark'] {
+  --code-bg: #0d1117; --code-fg: #e6edf3; --code-num: #6e7681; --code-hover: rgba(56, 139, 253, 0.1);
+  --tk-kw: #ff7b72; --tk-ty: #ffa657; --tk-str: #a5d6ff; --tk-com: #8b949e; --tk-num: #79c0ff; --tk-fn: #d2a8ff;
+}
+[data-code-theme='one-dark'] {
+  --code-bg: #282c34; --code-fg: #abb2bf; --code-num: #636d83; --code-hover: rgba(97, 175, 239, 0.08);
+  --tk-kw: #c678dd; --tk-ty: #e5c07b; --tk-str: #98c379; --tk-com: #5c6370; --tk-num: #d19a66; --tk-fn: #61afef;
+}
+[data-code-theme='dracula'] {
+  --code-bg: #282a36; --code-fg: #f8f8f2; --code-num: #6272a4; --code-hover: rgba(189, 147, 249, 0.1);
+  --tk-kw: #ff79c6; --tk-ty: #8be9fd; --tk-str: #f1fa8c; --tk-com: #6272a4; --tk-num: #bd93f9; --tk-fn: #50fa7b;
+}
+[data-code-theme='monokai'] {
+  --code-bg: #272822; --code-fg: #f8f8f2; --code-num: #90908a; --code-hover: rgba(166, 226, 46, 0.08);
+  --tk-kw: #f92672; --tk-ty: #66d9ef; --tk-str: #e6db74; --tk-com: #75715e; --tk-num: #ae81ff; --tk-fn: #a6e22e;
+}
+[data-code-theme='solarized-light'] {
+  --code-bg: #fdf6e3; --code-fg: #586e75; --code-num: #93a1a1; --code-hover: rgba(38, 139, 210, 0.08);
+  --tk-kw: #859900; --tk-ty: #b58900; --tk-str: #2aa198; --tk-com: #93a1a1; --tk-num: #d33682; --tk-fn: #268bd2;
+}
+[data-code-theme='solarized-dark'] {
+  --code-bg: #002b36; --code-fg: #93a1a1; --code-num: #586e75; --code-hover: rgba(38, 139, 210, 0.12);
+  --tk-kw: #859900; --tk-ty: #b58900; --tk-str: #2aa198; --tk-com: #586e75; --tk-num: #d33682; --tk-fn: #268bd2;
+}
+[data-code-theme='nord'] {
+  --code-bg: #2e3440; --code-fg: #d8dee9; --code-num: #4c566a; --code-hover: rgba(136, 192, 208, 0.1);
+  --tk-kw: #81a1c1; --tk-ty: #8fbcbb; --tk-str: #a3be8c; --tk-com: #616e88; --tk-num: #b48ead; --tk-fn: #88c0d0;
+}
+[data-code-theme='tokyo-night'] {
+  --code-bg: #1a1b26; --code-fg: #a9b1d6; --code-num: #565f89; --code-hover: rgba(122, 162, 247, 0.1);
+  --tk-kw: #bb9af7; --tk-ty: #2ac3de; --tk-str: #9ece6a; --tk-com: #565f89; --tk-num: #ff9e64; --tk-fn: #7aa2f7;
+}
+[data-code-theme='shades-of-purple'] { /* Ahmad Awais, github.com/ahmadawais/shades-of-purple-vscode */
+  --code-bg: #2d2b55; --code-fg: #ffffff; --code-num: #a599e9; --code-hover: rgba(31, 31, 65, 0.85);
+  --tk-kw: #ff9d00; --tk-ty: #fb94ff; --tk-str: #a5ff90; --tk-com: #b362ff; --tk-num: #ff628c; --tk-fn: #fad000;
+}
+[data-code-theme='catppuccin-mocha'] {
+  --code-bg: #1e1e2e; --code-fg: #cdd6f4; --code-num: #6c7086; --code-hover: rgba(137, 180, 250, 0.1);
+  --tk-kw: #cba6f7; --tk-ty: #f9e2af; --tk-str: #a6e3a1; --tk-com: #7f849c; --tk-num: #fab387; --tk-fn: #89b4fa;
+}
+
+/* ---------------------------------------------------------------- theme switch animation (theme.ts) */
+/* The new theme is revealed by a growing circle; the default cross-fade is turned off so only the clip animates. */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }
+/* Fallback where View Transitions are unavailable: a brief colour cross-fade. */
+html.theme-fade, html.theme-fade *, html.theme-fade *::before, html.theme-fade *::after {
+  transition: background-color 0.4s ease, color 0.4s ease, border-color 0.4s ease, box-shadow 0.4s ease, fill 0.4s ease, stroke 0.4s ease;
+}
+
+/* The toggle: sun and moon trade places with a spin. */
+.theme-icon { position: relative; display: inline-block; width: 16px; height: 16px; flex: none; }
+.theme-icon svg { position: absolute; inset: 0; transition: transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease; }
+.theme-toggle[data-mode='dark'] .icon-moon, .theme-toggle[data-mode='light'] .icon-sun { opacity: 0; transform: rotate(-120deg) scale(0.3); }
+.theme-toggle[data-mode='dark'] .icon-sun, .theme-toggle[data-mode='light'] .icon-moon { opacity: 1; transform: none; }
+.theme-toggle:active .theme-icon svg { transition-duration: 0.2s; }
+.theme-label { animation: theme-label-in 0.35s ease; }
+@keyframes theme-label-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .theme-icon svg, .theme-label { transition: none; animation: none; } }

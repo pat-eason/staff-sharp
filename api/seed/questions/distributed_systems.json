@@ -1,0 +1,1381 @@
+{
+  "file": "distributed_systems",
+  "questions": [
+    {
+      "id": "ds-raft-prior-term-commit-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "consensus"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Raft leader counting replicas of an old-term entry",
+      "prompt": "A 5-node Raft cluster (S1 to S5) goes through the sequence in the context. S1 is now leader in term 4 and has just replicated its term-2 entry at index 2 to S3, so S1, S2 and S3 all hold it. May S1 advance its commit index to 2 and apply that entry to the state machine now?",
+      "context": "```\nterm 2: S1 leader. Appends index 2 (term 2). Replicates to S2 only. S1 crashes.\nterm 3: S5 elected (votes S3, S4, S5). Appends index 2 (term 3) locally. S5 crashes.\nterm 4: S1 restarts, elected (votes S1, S2, S3).\n        S1 sends AppendEntries; S3 now stores index 2 (term 2).\n\nlogs now:\n  S1: [1:t1, 2:t2]\n  S2: [1:t1, 2:t2]\n  S3: [1:t1, 2:t2]\n  S4: [1:t1]\n  S5: [1:t1, 2:t3]   (down)\n```",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Yes. The entry is stored on a majority of servers, which is exactly Raft's commit rule"
+        },
+        {
+          "id": "b",
+          "text": "No. A leader only commits by counting replicas for entries of its current term; index 2 commits indirectly once a term-4 entry after it reaches a majority"
+        },
+        {
+          "id": "c",
+          "text": "Yes, but only after S1 confirms S5 is still down, since S5's conflicting term-3 entry could otherwise be chosen instead"
+        },
+        {
+          "id": "d",
+          "text": "No. Entries from earlier terms can never be committed; S1 must drop index 2 and the client must resubmit the command"
+        }
+      ],
+      "answer": [
+        "b"
+      ],
+      "optionNotes": {
+        "a": "The tempting reading of 'stored on a majority'. Raft restricts that rule to current-term entries precisely because of this scenario.",
+        "b": "Correct. This is the restriction in section 5.4.2 of the Raft paper.",
+        "c": "S5's liveness right now is irrelevant; the danger is S5 coming back later and winning an election.",
+        "d": "Old-term entries are kept and become committed by the Log Matching property once a current-term entry after them commits."
+      },
+      "explanation": "If S1 committed index 2 now and then crashed, S5 could restart, time out into term 5 and win votes from S2, S3 and S4: its last log term (3) is higher than theirs (2), so its log counts as more up to date. As leader it would overwrite index 2 on everyone, erasing an entry that was already applied. Raft avoids this by only counting replicas for entries from the leader's own term. Once S1 replicates a term-4 entry (typically the no-op it appends on election) to a majority, no server with a term-3 tail can win, and everything before that entry is committed too.\n\nTakeaway: in consensus, 'on a majority' is not the same as 'chosen'; what matters is whether any future leader could still overwrite it.",
+      "references": [
+        "Ongaro and Ousterhout, In Search of an Understandable Consensus Algorithm (USENIX ATC 2014), section 5.4.2"
+      ],
+      "tags": [
+        "classic",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "ds-cap-precise-statement-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "cap-pacelc"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Which statement of CAP would survive a skeptical reviewer",
+      "prompt": "Four engineers summarize the CAP theorem in an architecture review. Which summary matches what was actually proved?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "When the network partitions, a system cannot both keep every operation linearizable and guarantee that every request to a non-failed node gets a non-error response"
+        },
+        {
+          "id": "b",
+          "text": "A distributed system can have at most two of consistency, availability and partition tolerance, so every design is either CA, CP or AP"
+        },
+        {
+          "id": "c",
+          "text": "A CP system gives up some availability at all times to keep replicas consistent, which is why CP systems have higher latency than AP ones"
+        },
+        {
+          "id": "d",
+          "text": "The C in CAP is the C in ACID, so a system that picks availability cannot enforce invariants such as unique email addresses"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. This is the Gilbert and Lynch formulation: C means linearizability, A means every non-failing node answers, and the tradeoff only bites during a partition.",
+        "b": "The 'pick two' framing is folklore. Partitions are not optional in a real network, so 'CA' just means 'not designed for partitions'.",
+        "c": "CAP says nothing about latency or about normal operation. That tradeoff is what PACELC adds.",
+        "d": "CAP's consistency is linearizability of a register, not ACID consistency of application invariants."
+      },
+      "explanation": "CAP is a narrow impossibility result. Consistency is linearizability, availability is the strong requirement that every request to a non-failed node eventually gets a non-error answer, and the result only applies while a partition is happening. Outside partitions you can have both, and the theorem is silent about latency. The 'pick two of three' slogan misleads teams into treating 'CA' as a real option and labelling whole products as CP or AP, when most systems make different choices per operation and per configuration.\n\nTakeaway: state CAP as 'during a partition, choose between linearizability and total availability' and use PACELC when you want to talk about latency.",
+      "references": [
+        "Gilbert and Lynch, Brewer's Conjecture and the Feasibility of Consistent, Available, Partition-Tolerant Web Services (SIGACT News, 2002)",
+        "Brewer, CAP Twelve Years Later: How the Rules Have Changed (IEEE Computer, 2012)"
+      ],
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "ds-pacelc-quorum-classify-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "cap-pacelc",
+        "quorums"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Classify a majority-replicated store under PACELC",
+      "prompt": "A database keeps 3 replicas in 3 availability zones. A write is acknowledged only after it is durable on 2 of the 3. Reads go to the leader, which holds a leadership lease. Clients on the minority side of a partition get errors. How does PACELC classify this configuration?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "PC/EC: during a partition it refuses on the minority side, and in normal operation every write pays a cross-AZ round trip to stay consistent"
+        },
+        {
+          "id": "b",
+          "text": "PA/EL: a majority quorum keeps it available during partitions, and leader reads keep normal-operation latency low"
+        },
+        {
+          "id": "c",
+          "text": "PC/EL: it is consistent under partition, but because reads are served locally by the leader it favors latency the rest of the time"
+        },
+        {
+          "id": "d",
+          "text": "CA: all three replicas are in one region, so partitions are rare enough that the P side does not apply"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Minority-side errors are the PC choice; waiting for a second AZ on every write is the EC choice.",
+        "b": "Minority-side clients get errors, which is exactly not CAP-available.",
+        "c": "Fast leader reads do not make it EL; the system still chose to make every write wait for a remote replica rather than acknowledge locally.",
+        "d": "AZs do partition, and the design explicitly handles it by refusing on the minority side."
+      },
+      "explanation": "PACELC asks two questions: if there is a Partition, Availability or Consistency; Else, Latency or Consistency. This store answers C to both. On partition, the minority cannot form a quorum and returns errors. In normal operation, it could acknowledge after the local write but instead waits for a second AZ, paying roughly 1 to 2 ms per write for consistency. An asynchronous-replication setup would be the EL counterpart.\n\nTakeaway: the 'else' half of PACELC is where you pay every day, so it usually matters more to product latency than the partition half.",
+      "references": [
+        "Abadi, Consistency Tradeoffs in Modern Distributed Database System Design (IEEE Computer, 2012)"
+      ]
+    },
+    {
+      "id": "ds-write-skew-oncall-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "transaction-isolation"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Two engineers both leave the on-call rotation",
+      "prompt": "The rota service must keep at least one engineer on call per shift. Two engineers click 'go off call' within the same second and both requests succeed, leaving shift 42 with nobody on call. Both transactions ran under PostgreSQL REPEATABLE READ (snapshot isolation). Which change prevents this anomaly?",
+      "context": "```sql\n-- T1 (ana)                                 -- T2 (ben)\nBEGIN ISOLATION LEVEL REPEATABLE READ;      BEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT count(*) FROM oncall                 SELECT count(*) FROM oncall\n WHERE shift = 42 AND on_call;  -- 2         WHERE shift = 42 AND on_call;  -- 2\nUPDATE oncall SET on_call = false           UPDATE oncall SET on_call = false\n WHERE shift = 42 AND eng = 'ana';           WHERE shift = 42 AND eng = 'ben';\nCOMMIT;                                     COMMIT;\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Run both transactions at SERIALIZABLE and retry when PostgreSQL raises serialization_failure (SQLSTATE 40001)"
+        },
+        {
+          "id": "b",
+          "text": "Add a version column to each oncall row and make each UPDATE check the version it read"
+        },
+        {
+          "id": "c",
+          "text": "Drop to READ COMMITTED so each transaction sees the other's committed update before it decides"
+        },
+        {
+          "id": "d",
+          "text": "Add a CHECK constraint on oncall that requires at least one on_call row per shift"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. PostgreSQL's serializable snapshot isolation detects the read-write dependency cycle and aborts one transaction.",
+        "b": "Each transaction updates a different row, so per-row version checks never conflict. This is the classic reason optimistic locking misses write skew.",
+        "c": "Both counts happen before either commit, so READ COMMITTED sees the same 2 and has the same race.",
+        "d": "PostgreSQL CHECK constraints are evaluated per row and cannot reference other rows."
+      },
+      "explanation": "This is write skew: two transactions read an overlapping set, each decides based on what it read, then each writes a different row. Snapshot isolation only detects write-write conflicts on the same row, so both commit and the invariant across rows breaks. Fixes are to make the database detect the dependency (SERIALIZABLE, with a retry loop), or to materialize the conflict yourself, for example `SELECT ... FROM oncall WHERE shift = 42 FOR UPDATE` so both transactions lock the same rows, or a per-shift row both must update.\n\nTakeaway: any 'check a condition across rows, then write one of them' flow is a write-skew candidate, and REPEATABLE READ will not save you.",
+      "references": [
+        "Kleppmann, Designing Data-Intensive Applications, chapter 7 (write skew and phantoms)",
+        "Ports and Grittner, Serializable Snapshot Isolation in PostgreSQL (VLDB 2012)"
+      ],
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-lost-update-inventory-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "transaction-isolation"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Inventory counts drift upward under concurrent orders",
+      "prompt": "Two orders for the same SKU (3 units and 2 units) arrive together. Stock started at 10 and ended at 8 instead of 5. What is the simplest correct fix?",
+      "context": "```sql\n-- run by each order, READ COMMITTED\nBEGIN;\nSELECT qty FROM stock WHERE sku = 'A1';      -- both read 10\n-- application computes new_qty = qty - ordered\nUPDATE stock SET qty = :new_qty WHERE sku = 'A1';\nCOMMIT;\n```",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Replace read-then-write with one atomic `UPDATE stock SET qty = qty - :n WHERE sku = 'A1' AND qty >= :n` and check the affected row count"
+        },
+        {
+          "id": "b",
+          "text": "Switch the transaction to REPEATABLE READ, which prevents lost updates in every mainstream relational database"
+        },
+        {
+          "id": "c",
+          "text": "Add an index on `sku` so the SELECT and UPDATE finish faster and the race window becomes negligible"
+        },
+        {
+          "id": "d",
+          "text": "Keep the counter in Redis with DECRBY and copy it to the database once per second for durability"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. The database applies the decrement against the current value under a row lock, and the guard enforces no overselling.",
+        "b": "PostgreSQL aborts one transaction at REPEATABLE READ, but MySQL InnoDB's REPEATABLE READ does not detect lost updates; the UPDATE just writes 8.",
+        "c": "A faster race is still a race; under load it will still lose updates.",
+        "d": "Moves the problem and adds a one-second durability gap plus a second source of truth."
+      },
+      "explanation": "This is a lost update: both transactions read 10, compute independently, and the second write clobbers the first. The cheapest robust fix is to let the database do the arithmetic atomically and encode the invariant in the WHERE clause; zero rows affected means insufficient stock. Alternatives are `SELECT ... FOR UPDATE` before computing, or optimistic compare-and-set on a version column with retry. Relying on isolation level behavior is fragile because engines differ.\n\nTakeaway: read-modify-write in application code is a lost update waiting for traffic; push the modification into a single conditional statement.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-read-skew-reconciliation-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "transaction-isolation"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Nightly reconciliation reports $100 that does not exist",
+      "prompt": "A reconciliation job sums all account balances and alerts when the total differs from the general ledger. Last night it reported $100 too much. The transfer code is correct and every transfer is a single transaction. Which diagnosis and fix are right?",
+      "context": "```\n02:00:00.100 recon  BEGIN (READ COMMITTED)\n02:00:00.101 recon  SELECT balance FROM accounts WHERE id = 1   -> 500\n02:00:00.140 xfer   BEGIN; acct 1 -= 100; acct 2 += 100; COMMIT\n02:00:00.190 recon  SELECT balance FROM accounts WHERE id = 2   -> 600\n02:00:00.191 recon  total(1,2) = 1100   (true total = 1000)\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        {
+          "id": "a",
+          "text": "Read skew: the job's two reads saw different committed states. Run the whole job in one snapshot (REPEATABLE READ) so every read sees a single point in time"
+        },
+        {
+          "id": "b",
+          "text": "Lost update: the transfer overwrote a concurrent change. Make the transfer lock both rows with SELECT ... FOR UPDATE"
+        },
+        {
+          "id": "c",
+          "text": "Dirty read: the job saw the transfer before it committed. Raise the job's isolation to READ COMMITTED"
+        },
+        {
+          "id": "d",
+          "text": "Write skew: the transfer and the job wrote based on stale reads. Run the transfer at SERIALIZABLE"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. The reader needs a consistent snapshot; nothing is wrong with the writer.",
+        "b": "Nothing was overwritten. Both balances are correct after the transfer.",
+        "c": "Both values the job read were committed, and the job is already at READ COMMITTED.",
+        "d": "The job does not write, so there is no write skew; changing the transfer's isolation does not change what the reader sees."
+      },
+      "explanation": "READ COMMITTED takes a fresh snapshot per statement, so a multi-statement reader can observe account 1 before a transfer and account 2 after it. Each value was real, the combination never existed. Running the job in one REPEATABLE READ transaction (or a single SELECT) gives it one snapshot. On PostgreSQL a long snapshot on the primary holds back vacuum, so large jobs usually run against a replica or an exported snapshot.\n\nTakeaway: fix read skew on the reader's side with a single snapshot; locking the writers is the wrong lever."
+    },
+    {
+      "id": "ds-lamport-concurrency-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "clocks-ordering"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "What two Lamport timestamps can tell a merge UI",
+      "prompt": "A collaborative editor stamps each edit with a Lamport timestamp and wants to show a merge prompt only when two edits to the same paragraph were concurrent. Edit A from node X has timestamp 17; edit B from node Y has timestamp 21. What can the service conclude from the timestamps alone?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "B did not happen before A, but A may have happened before B or they may be concurrent; Lamport clocks cannot distinguish the two"
+        },
+        {
+          "id": "b",
+          "text": "A happened before B, because Lamport clocks guarantee that a lower timestamp means causally earlier"
+        },
+        {
+          "id": "c",
+          "text": "A and B are concurrent, because they came from different nodes and Lamport clocks only order events on one node"
+        },
+        {
+          "id": "d",
+          "text": "Nothing, because Lamport timestamps from different nodes are not comparable to each other"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. If B had happened before A, B's timestamp would be lower. The converse does not hold.",
+        "b": "That is the converse of the clock condition. a → b implies L(a) < L(b), not the other way round.",
+        "c": "Different nodes can be causally related through messages, and Lamport clocks do track that.",
+        "d": "They are comparable enough to rule out B → A, which is useful but not sufficient here."
+      },
+      "explanation": "Lamport clocks satisfy: if a happened before b, then L(a) < L(b). So L(B) > L(A) rules out B → A, but leaves both A → B and A ∥ B possible. To detect concurrency you need vector clocks or version vectors, where A → B exactly when A's vector is less than or equal to B's in every component and different, and incomparable vectors mean concurrent.\n\nTakeaway: Lamport timestamps give a total order consistent with causality; detecting conflicts needs vector-style clocks.",
+      "references": [
+        "Lamport, Time, Clocks, and the Ordering of Events in a Distributed System (CACM, 1978)"
+      ],
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "ds-read-your-writes-profile-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "replication-lag",
+        "consistency-models"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "User saves a new display name and sees the old one",
+      "prompt": "Profile updates go to the primary; the redirect that follows loads the profile from a pool of asynchronous read replicas whose p99 lag is 800 ms. About 5% of users see their old display name right after saving and file bugs. Which fix addresses this with the least cost?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "After a user writes, route that user's reads of their own profile to the primary, or to a replica that has replayed past the write's log position, for a short window"
+        },
+        {
+          "id": "b",
+          "text": "Put a 30-second cache in front of the replicas so profile reads are served from one consistent place"
+        },
+        {
+          "id": "c",
+          "text": "Make replication synchronous to every replica so no replica can ever be behind the primary"
+        },
+        {
+          "id": "d",
+          "text": "Have the client re-fetch the profile after one second whenever the displayed name looks unchanged"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Read-your-writes only needs to hold for the writer, so scope the expensive read path to them.",
+        "b": "A cache populated from a lagging replica makes stale reads last longer, not shorter.",
+        "c": "Works, but makes every write wait on the slowest replica and lets one sick replica block writes.",
+        "d": "The client cannot tell 'stale' from 'unchanged', and it still shows the wrong name first."
+      },
+      "explanation": "This is a read-your-writes violation caused by replication lag. The guarantee only matters for the user who wrote, so the cheap fix is session-scoped: remember the write time or log sequence number (LSN) in the session or a cookie, and send that user's reads to the primary or to a replica known to be caught up until the lag window passes. Everyone else keeps reading from replicas.\n\nTakeaway: session guarantees are cheap when you scope them to the session that needs them instead of strengthening the whole system."
+    },
+    {
+      "id": "ds-monotonic-reads-flicker-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "replication-lag",
+        "consistency-models"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Comment count flickers between 12 and 14 on refresh",
+      "prompt": "Support reports that a ticket's comment count goes 12, 14, 12, 14 as an agent refreshes, even though nobody is adding comments. Reads are spread round-robin across three asynchronous replicas whose lag ranges from 50 ms to 4 s. Which fix gives agents monotonic reads without sending all reads to the primary?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Pin each session to one replica by hashing the session id, and on failover only use a replica that has replayed at least the last log position the session saw"
+        },
+        {
+          "id": "b",
+          "text": "Route each agent's reads to the primary for 10 seconds after any write they make"
+        },
+        {
+          "id": "c",
+          "text": "Eject replicas from the pool when their lag exceeds 5 seconds"
+        },
+        {
+          "id": "d",
+          "text": "Add two more replicas so each serves less traffic and replication lag drops"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. One replica only moves forward, and the log-position check keeps that true across failover.",
+        "b": "That is read-your-writes. The agent did not write anything, so it does not help.",
+        "c": "Replicas 4 s apart are both inside the threshold, so reads still go backwards.",
+        "d": "Lag may shrink, but round-robin across replicas at different positions still goes backwards."
+      },
+      "explanation": "Monotonic reads means a session never sees older data after newer data. Round-robin across replicas at different positions violates it on every refresh. Pinning a session to one replica fixes it cheaply; tracking the highest LSN the session has seen lets you fail over to another replica safely, or wait briefly until it catches up. Read-your-writes and monotonic reads are different session guarantees and need different fixes.\n\nTakeaway: name the exact session guarantee that is broken before picking the fix; they look alike to users and differ in code."
+    },
+    {
+      "id": "ds-watermark-late-payments-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "stream-processing"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Per-minute payment totals are short by 0.8%",
+      "prompt": "A Flink job computes per-minute payment totals using event-time tumbling windows, a bounded-out-of-orderness watermark of 5 seconds and zero allowed lateness. Some mobile clients buffer offline and upload hours later. Finance says totals are 0.8% below the ledger, and `numLateRecordsDropped` keeps climbing. What should you do?",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Send records behind the watermark to a side output and apply them as corrections to the stored totals, keeping the 5 s watermark for timely results"
+        },
+        {
+          "id": "b",
+          "text": "Raise job parallelism; backpressure is delaying records past their windows and the operator is dropping them"
+        },
+        {
+          "id": "c",
+          "text": "Switch to processing-time windows so records are never late and every payment is counted"
+        },
+        {
+          "id": "d",
+          "text": "Raise the bounded-out-of-orderness to 6 hours so the watermark waits long enough for every mobile upload"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Timely results for the common case, corrections for the long tail, and nothing silently dropped.",
+        "b": "Backpressure slows processing, but event-time lateness is about event timestamps relative to the watermark, not processing speed.",
+        "c": "Counts every payment but attributes offline payments to the upload minute, so per-minute totals no longer match the ledger either.",
+        "d": "Correct totals, but every window waits 6 hours to fire and the job holds 6 hours of window state."
+      },
+      "explanation": "The watermark asserts that no events older than it will arrive. With a 5 s bound, hours-late mobile uploads fall behind it and are dropped because allowed lateness is zero. The fix is to stop dropping: capture late records (side output, or allowed lateness with update semantics downstream) and apply them as corrections to the per-minute totals the sink stores, which must accept upserts. The watermark delay then remains a latency knob for the common case, not a completeness guarantee.\n\nTakeaway: a watermark trades latency against completeness; for money, never let the trade silently drop data.",
+      "references": [
+        "Akidau et al., The Dataflow Model (VLDB 2015)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-avro-backward-default-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "schema-evolution"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Schema registry rejects a new Avro field",
+      "prompt": "A Kafka topic's subject in Confluent Schema Registry uses the BACKWARD compatibility mode. A team adds `{\"name\": \"currency\", \"type\": \"string\"}` to the `Payment` record and registration fails. Why?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Consumers on the new schema must be able to read records written with the old one, and old records have no `currency` value to fill in without a default"
+        },
+        {
+          "id": "b",
+          "text": "Consumers still on the old schema must be able to read new records, and they do not know about the `currency` field"
+        },
+        {
+          "id": "c",
+          "text": "Avro only allows new fields that are unions with null; a plain string field can never be added to an existing record"
+        },
+        {
+          "id": "d",
+          "text": "BACKWARD mode only permits removing fields; adding any field needs FULL or FORWARD mode"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Adding `\"default\": \"USD\"` (or a nullable union with a null default) makes the change backward compatible.",
+        "b": "That describes FORWARD compatibility, and Avro readers ignore fields they do not know, so it would pass anyway.",
+        "c": "A default is what matters, not the null union. A string with a default is fine.",
+        "d": "BACKWARD allows deleting fields and adding fields that have defaults."
+      },
+      "explanation": "Avro resolves the writer's schema against the reader's schema. BACKWARD means the new schema, as a reader, can read data written by the previous schema. A field the reader expects but the writer never wrote can only be filled from the reader's default; without one, decoding fails, so the registry rejects it. BACKWARD also implies upgrading consumers before producers.\n\nTakeaway: know which side (reader or writer) each compatibility mode protects, because it decides both the allowed changes and the deploy order."
+    },
+    {
+      "id": "ds-kafka-eos-side-effect-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "exactly-once"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "PR claims Kafka transactions make payouts exactly-once",
+      "prompt": "A PR description reads: \"We enabled idempotent producers, transactions with sendOffsetsToTransaction, and isolation.level=read_committed. Processing is now exactly-once end to end, so the payout HTTP call in the handler can't be duplicated.\" The handler reads `PayoutApproved`, calls the payout provider's API, then produces `PayoutSent` in the same transaction. What is accurate?",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "The transaction makes consumed offsets and produced records atomic, but the HTTP call is outside it and can repeat after an abort or rebalance, so it still needs an idempotency key"
+        },
+        {
+          "id": "b",
+          "text": "The claim is right: read_committed ensures the handler runs exactly once per record, so any side effect inside it happens once"
+        },
+        {
+          "id": "c",
+          "text": "The claim is right only if `transactional.id` is stable across restarts; with that set, the payout call cannot repeat"
+        },
+        {
+          "id": "d",
+          "text": "The claim is wrong because Kafka transactions only give at-most-once; the handler can skip records but never repeats them"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Exactly-once in Kafka covers Kafka state, not arbitrary side effects.",
+        "b": "read_committed controls what consumers see of other producers' transactions. If this transaction aborts, the handler reprocesses the record and calls the API again.",
+        "c": "A stable transactional.id fences zombie producers, which protects Kafka writes, not the external call.",
+        "d": "Kafka transactions are designed to stop both loss and duplication of Kafka writes; at-most-once is not what they provide."
+      },
+      "explanation": "Kafka's exactly-once semantics mean that within a consume-transform-produce loop the output records and the consumer offset commit succeed or fail together, and read_committed consumers never see aborted output. The handler itself can still run several times for one input record: after a crash before commit, an abort, or a rebalance. Anything it does outside Kafka (HTTP calls, database writes, emails) is at-least-once and needs its own idempotency, typically a provider idempotency key derived from the payout id.\n\nTakeaway: 'exactly-once' is always scoped to a boundary; ask which state is inside the transaction before accepting the claim.",
+      "tags": [
+        "gotcha",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-crdt-merge-validity-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "crdts"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 4,
+      "title": "Which merge functions are valid state-based CRDTs",
+      "prompt": "Replicas gossip full state and may receive the same state twice, in any order. Which designs are valid state-based CRDTs, meaning the merge is commutative, associative and idempotent and gives the stated semantics? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Grow-only counter: a map of replica id to count; each replica increments its own entry; merge takes the per-entry max; value is the sum"
+        },
+        {
+          "id": "b",
+          "text": "Counter: a single integer per replica; merge(a, b) = a + b; value is the integer"
+        },
+        {
+          "id": "c",
+          "text": "Observed-remove set: each add gets a unique tag; remove records the tags it has seen for that element; merge takes the union of the add-tags and of the removed-tags; present if any add-tag is not removed"
+        },
+        {
+          "id": "d",
+          "text": "Increment/decrement counter: two grow-only counter maps P and N, each merged by per-entry max; value is sum(P) minus sum(N)"
+        },
+        {
+          "id": "e",
+          "text": "Register: merge keeps the value with the higher wall-clock timestamp; on equal timestamps each replica keeps its own local value"
+        }
+      ],
+      "answer": [
+        "a",
+        "c",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Valid. Max is commutative, associative and idempotent, and each replica only grows its own entry.",
+        "b": "Addition is not idempotent: receiving the same state twice double counts.",
+        "c": "Valid. Unions are a join, and unique tags let a re-add survive an earlier remove.",
+        "d": "Valid. This is the PN-Counter; it composes two G-Counters.",
+        "e": "Not commutative on ties: two replicas with equal timestamps keep different values forever. A deterministic tie-break such as replica id fixes convergence."
+      },
+      "explanation": "A state-based CRDT needs a merge that forms a join semilattice: commutative, associative and idempotent, so duplicates and reordering in gossip do not matter. Per-entry max and set union qualify; addition does not. The PN-Counter and OR-Set are the standard ways to support decrements and re-adds. A last-writer-wins register is a valid CRDT only with a deterministic total order on (timestamp, replica id), and even then it silently discards one of two concurrent writes.\n\nTakeaway: check idempotence and tie-breaking first; those are where hand-rolled 'CRDTs' usually fail.",
+      "references": [
+        "Shapiro et al., Conflict-free Replicated Data Types (SSS 2011)"
+      ]
+    },
+    {
+      "id": "ds-saga-vs-2pc-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "distributed-transactions",
+        "outbox-saga"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "True statements about sagas and two-phase commit",
+      "prompt": "Your team is choosing between a saga and two-phase commit (2PC) for an order flow that spans three services. Which statements are true? Select all that apply.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "In 2PC, if the coordinator fails after participants vote yes, those participants must keep holding locks until they learn the outcome"
+        },
+        {
+          "id": "b",
+          "text": "Sagas isolate concurrent sagas from each other, because each step commits as its own local ACID transaction"
+        },
+        {
+          "id": "c",
+          "text": "Compensating actions must be idempotent and retryable, since a compensation may run more than once or after a timeout"
+        },
+        {
+          "id": "d",
+          "text": "2PC can commit while a minority of participants are unreachable, because the coordinator only needs a majority of yes votes"
+        },
+        {
+          "id": "e",
+          "text": "Steps after a saga's pivot step should be retryable until they succeed, because the saga can no longer be rolled back past the pivot"
+        }
+      ],
+      "answer": [
+        "a",
+        "c",
+        "e"
+      ],
+      "optionNotes": {
+        "a": "True. This is 2PC's blocking problem: a prepared participant cannot decide alone.",
+        "b": "False. Other sagas and readers can see intermediate committed states; you need countermeasures such as semantic locks or pending states.",
+        "c": "True. Compensations run under the same at-least-once conditions as forward steps.",
+        "d": "False. 2PC needs a yes from every participant; it is not a quorum protocol.",
+        "e": "True. Steps before the pivot are compensatable, the pivot is the point of no return, and steps after it must eventually succeed."
+      },
+      "explanation": "2PC gives atomicity across participants at the cost of blocking: prepared participants hold locks until the coordinator's decision reaches them, and any participant can veto. Sagas trade atomic isolation for availability: each step commits locally, failures are undone by compensations, and intermediate states are visible. A well-designed saga orders steps as compensatable, then one pivot, then retryable, and makes every step and compensation idempotent.\n\nTakeaway: choosing a saga means designing for the missing isolation explicitly, not just writing undo functions.",
+      "references": [
+        "Garcia-Molina and Salem, Sagas (SIGMOD 1987)",
+        "Richardson, Microservices Patterns, chapter 4"
+      ]
+    },
+    {
+      "id": "ds-outbox-cdc-properties-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "outbox-saga"
+      ],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "What a transactional outbox with CDC does and does not give you",
+      "prompt": "An order service writes an `outbox` row in the same transaction as the order, and a change data capture (CDC) connector streams outbox inserts from the write-ahead log to Kafka, keyed by order id. Which statements are true? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Either both the order and its event are committed or neither is, because they share one local transaction"
+        },
+        {
+          "id": "b",
+          "text": "Consumers still need to deduplicate, because the connector can publish the same outbox row again after a crash or restart"
+        },
+        {
+          "id": "c",
+          "text": "Each event is now delivered to each consumer exactly once, because the database and the broker can no longer disagree"
+        },
+        {
+          "id": "d",
+          "text": "Keying messages by order id lets a consumer see one order's events in commit order within its partition"
+        },
+        {
+          "id": "e",
+          "text": "The pattern is only safe if the database and Kafka take part in an XA (2PC) transaction"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "True. That is the whole point of the outbox.",
+        "b": "True. Connectors resume from a stored log position, which can be behind what they already published.",
+        "c": "False. The outbox prevents lost and phantom events; delivery is still at-least-once.",
+        "d": "True. CDC reads the log in commit order and one key maps to one partition.",
+        "e": "False. The outbox exists to avoid XA between the database and the broker."
+      },
+      "explanation": "The outbox turns a dual write into one local write plus an asynchronous, retryable relay. That removes lost events (commit then crash before publish) and phantom events (publish then rollback). It does not remove duplicates, so consumers dedupe on an event id. Per-aggregate ordering holds if the relay preserves commit order and messages are keyed by aggregate id.\n\nTakeaway: an outbox turns 'maybe lost' into 'maybe duplicated', which is the failure you can actually handle.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "ds-consistency-models-truths-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "consistency-models"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 5,
+      "title": "Precise claims about linearizability and serializability",
+      "prompt": "Which of these statements about consistency models are true? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "Linearizability is a real-time guarantee about single operations on objects; strict serializability adds the same real-time constraint to serializable multi-object transactions"
+        },
+        {
+          "id": "b",
+          "text": "Serializability alone guarantees that a transaction sees the effects of every transaction that committed before it started in wall-clock time"
+        },
+        {
+          "id": "c",
+          "text": "Sequential consistency requires one total order that respects each process's program order, but not real-time order between different processes"
+        },
+        {
+          "id": "d",
+          "text": "No system that stays available to every client during a network partition can provide causal consistency"
+        },
+        {
+          "id": "e",
+          "text": "Linearizability is composable: if every object in a system is linearizable, the system as a whole is linearizable"
+        }
+      ],
+      "answer": [
+        "a",
+        "c",
+        "e"
+      ],
+      "optionNotes": {
+        "a": "True. Strict serializability is serializability plus a serial order consistent with real time.",
+        "b": "False. Serializability only requires some equivalent serial order; a read-only transaction may be ordered before a transaction that already committed, which is a stale read.",
+        "c": "True. This is Lamport's definition; real-time order across processes is what linearizability adds.",
+        "d": "False. Causal consistency can be kept available during partitions for clients that stay connected to the same replica (sticky availability).",
+        "e": "True. This locality property, from Herlihy and Wing, is one reason linearizability is easier to reason about than sequential consistency."
+      },
+      "explanation": "These models are often conflated. Serializability is about transactions and says nothing about real time, so a serializable system may serve stale reads. Linearizability is about single objects and real time. Strict serializability combines both. Sequential consistency keeps per-process order but not cross-process real-time order, and unlike linearizability it is not composable. Causal consistency is the strong model you can keep during a partition if clients stick to a replica.\n\nTakeaway: when a vendor says 'strongly consistent', ask whether they mean serializable, linearizable or strictly serializable, because the bugs differ.",
+      "references": [
+        "Herlihy and Wing, Linearizability: A Correctness Condition for Concurrent Objects (TOPLAS, 1990)",
+        "Lamport, How to Make a Multiprocessor Computer That Correctly Executes Multiprocess Programs (IEEE Transactions on Computers, 1979)",
+        "Mahajan, Alvisi and Dahlin, Consistency, Availability, and Convergence (UT Austin TR-11-22, 2011)"
+      ]
+    },
+    {
+      "id": "ds-partial-failure-payment-timeout-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "partial-failure"
+      ],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 1,
+      "title": "Payment call timed out after 30 seconds",
+      "prompt": "Checkout sends a charge request to the payment provider with an idempotency key. The call times out after 30 seconds with no response. Which statements are true? Select all that apply.",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "The charge may have succeeded at the provider; the timeout only says that no response arrived in time"
+        },
+        {
+          "id": "b",
+          "text": "Retrying with the same idempotency key is safe as long as the provider keeps keys longer than your retry window"
+        },
+        {
+          "id": "c",
+          "text": "The timeout shows the provider is unhealthy, so marking the order failed and inviting the customer to retry is correct"
+        },
+        {
+          "id": "d",
+          "text": "Before telling the customer it failed, look up the outcome by idempotency key or reconcile against the provider's records"
+        },
+        {
+          "id": "e",
+          "text": "Retrying with a fresh idempotency key is safest, since the first attempt evidently did not complete"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "True. Request lost, provider slow, or response lost all look the same from the caller.",
+        "b": "True. The key turns the retry into a lookup of the first attempt's outcome.",
+        "c": "False. The customer may be charged twice when they retry.",
+        "d": "True. Unknown outcomes resolve to known ones by asking, not by guessing.",
+        "e": "False. A new key tells the provider this is a new charge, which is how double charges happen."
+      },
+      "explanation": "A timeout is the defining partial failure: the caller cannot tell whether the request was never received, is still running, or succeeded with the response lost. Treat it as 'unknown'. Resolve unknowns by retrying idempotently with the same key, or by querying the provider's record, and keep the order in a pending state until then.\n\nTakeaway: model 'unknown' as a first-class outcome of every remote call that has side effects.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-event-sourcing-upcast-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "event-sourcing-cqrs",
+        "schema-evolution"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Change a money field in a three-year event store",
+      "prompt": "Your payments ledger is event-sourced. `FundsDeposited` v1 stores `amount` as a JSON float in dollars. Finance now requires integer minor units plus a currency (v2: `amountMinor`, `currency`). Two CQRS read models, account balances and monthly statements, are projected from the stream. Explain how you evolve the event schema and rebuild both read models with no write downtime and no balance change any customer can see.",
+      "context": "```\nevent store:        420M events over 3 years (FundsDeposited v1: 61M)\nprojector replay:   ~25k events/s per partition, 16 partitions\nbalances model:     9M accounts, 4k reads/s\nsnapshots:          Account aggregate snapshot every 500 events (v1 shape)\n```",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Keeps stored events immutable: adds a v2 event type and converts v1 to v2 on read with an upcaster instead of rewriting payloads in place",
+          "Defines the float-to-minor-units conversion explicitly (parse as decimal, a stated rounding rule, a currency for legacy events) and proves it by recomputing every balance from upcast events and diffing against the current read model before cutover",
+          "Rebuilds read models side by side from position 0 into new tables, catches up to the live head, switches reads with an alias or flag, and keeps the old model for rollback",
+          "Makes projectors checkpoint their stream position and apply events idempotently, so restarts during replay do not double count",
+          "Deploys v2 readers (projectors, upcasters, consumers) before writers emit v2, and versions or invalidates the v1-shaped aggregate snapshots",
+          "Estimates replay time from the numbers given (420M at about 400k events/s is roughly 18 minutes) and plans for live events arriving during catch-up"
+        ],
+        "redFlags": [
+          "Runs an UPDATE over the event store to rewrite v1 payloads",
+          "Rebuilds the live balances table in place so customers see partial balances",
+          "Converts with float multiplication and truncation (19.99 * 100 is 1998.9999..., which truncates to 1998)",
+          "Pauses writes for the migration"
+        ],
+        "exemplar": "Events are facts, so I would not rewrite them. I add `FundsDeposited` v2 and an upcaster in the event-store client that turns v1 into v2 on read: parse the raw JSON number as a decimal string, multiply by 100, round half-even (agreed with finance), and set currency to USD for legacy events, since that is the only currency we had.\n\nRollout is readers first. I ship projectors and the aggregate loader with the upcaster, and bump the snapshot version so v1 snapshots are ignored and rebuilt lazily. Then I build `balances_v2` and `statements_v2` side by side by replaying from position 0. Projectors store their checkpoint in the same transaction as each batch, so a restart resumes without double counting. At about 400k events/s across 16 partitions the replay takes roughly 18 minutes, then the projectors tail the live stream.\n\nBefore switching, I diff all 9M balances between the old and new models. Any mismatch blocks cutover, and each one is a rounding case to explain to finance. Then I flip reads with a flag, keep v1 for a week for rollback, and only then let writers emit v2."
+      },
+      "explanation": "Strong answers treat the event log as immutable, upcast on read, rebuild projections next to the live ones, and prove the money conversion with a full diff before any customer sees the new numbers. The tempting shortcut, an in-place UPDATE of 61M events, destroys the audit trail that is the reason for event sourcing, and float truncation creates one-cent errors that finance will find.\n\nTakeaway: in an event-sourced system, schema evolution happens in the readers, and a projection rebuild is a deploy with its own cutover and rollback.",
+      "references": [
+        "Young, Versioning in an Event Sourced System (Leanpub, 2017)"
+      ]
+    },
+    {
+      "id": "ds-exactly-once-receipts-pm-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "exactly-once"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "PM wants exactly one receipt email per order in the spec",
+      "prompt": "A product manager asks in Slack: \"Can we guarantee every customer gets exactly one receipt email? Legal wants it written in the spec.\" The pipeline is order DB → outbox → Kafka → email worker → third-party email API. Write your reply: what you can and cannot guarantee, and what you will build.",
+      "language": null,
+      "estSeconds": 420,
+      "rubric": {
+        "keyPoints": [
+          "States plainly that exactly-once delivery through an external email API cannot be guaranteed: if the worker crashes or the response is lost after the provider accepted the email, the worker cannot know whether it was sent",
+          "Offers 'effectively once' instead: at-least-once delivery plus deduplication keyed on order id, and the provider's idempotency key if it offers one",
+          "Records 'receipt sent for order X' durably and checks it before sending, and is honest that a crash between provider acceptance and that record leaves a small duplicate window",
+          "Asks which failure is worse, a duplicate or a missing receipt, and biases retries accordingly (for receipts a rare duplicate is usually acceptable, a missing one is not)",
+          "Proposes a measurable spec line and a reconciliation, for example a daily job comparing orders to provider delivery logs that reports duplicate and missing rates"
+        ],
+        "redFlags": [
+          "Promises exactly-once because Kafka has exactly-once semantics",
+          "Acks the message before sending to avoid duplicates, which silently loses receipts",
+          "Replies with theory only and gives the PM nothing concrete to put in the spec"
+        ],
+        "exemplar": "Short answer: we can't promise *exactly* one, and nobody honestly can when a third-party API sits at the end. If our worker sends the email and crashes before it hears back, it can't tell whether the email went out. It has to choose between maybe sending twice and maybe not sending.\n\nWhat we can promise, and what I'd put in the spec:\n- Every order gets at least one receipt. We retry until the provider confirms.\n- Duplicates are rare and bounded. We key every send on the order id, record it as sent, and pass the provider an idempotency key so their side also drops repeats.\n- We measure it. A daily job matches orders against the provider's delivery log and alerts on any missing receipt or duplicate rate above 0.01%.\n\nOne question for legal: if we have to fail one way, is a duplicate receipt acceptable? I assume yes, since a missing receipt is the real compliance problem. If that's wrong, the design changes."
+      },
+      "explanation": "The staff move is to translate an impossible guarantee into one that can be met and measured, then let the business pick which failure to prefer. Answers that cite Kafka transactions miss that the email API sits outside any transaction. Answers that just say 'impossible' leave the PM with nothing to write.\n\nTakeaway: replace 'exactly once' with 'at least once, deduplicated, and reconciled', and state the residual risk in numbers.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "ds-global-secondary-index-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "indexing"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Email login on a table sharded by user id",
+      "prompt": "`users` is sharded by `user_id` across 64 PostgreSQL shards. Two new requirements arrive: log in by email (emails must be unique across all users; 3k lookups/s at peak) and list every user in an org (orgs have up to 50k users; used by a low-traffic admin page). For each requirement, compare a local per-shard index with a global index, then propose a design.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "A local index means every email lookup scatters to all 64 shards: latency is the slowest of 64 and one unavailable shard fails logins",
+          "A local index cannot enforce global uniqueness; uniqueness needs one authoritative place, such as an email → user_id table partitioned by hash(email)",
+          "A global index lives on a different shard from the row, so a write touches two partitions; the answer says whether it updates both atomically (distributed transaction) or asynchronously via CDC with index lag",
+          "For uniqueness, claims the email in the global index first (insert if absent), then creates the user, with a cleanup path for orphaned claims",
+          "For org listing, accepts scatter-gather or an asynchronously maintained org_id → user_id index for the low-traffic admin page, and gives the reason",
+          "On reads through a lagging global index, verifies the fetched user row still has that email before trusting the entry"
+        ],
+        "redFlags": [
+          "Re-shards the whole table by email",
+          "Assumes a unique index on each shard guarantees global uniqueness",
+          "Ignores what happens to the index when the index update fails after the user row commits"
+        ],
+        "exemplar": "Login and org listing have opposite needs, so I'd treat them differently.\n\nEmail login is hot and needs global uniqueness, so it gets a global index: a `user_emails(email PK, user_id)` table partitioned by hash(email). Lookup is one shard, then one shard for the user. Signup claims the email first with `INSERT ... ON CONFLICT DO NOTHING`. If the claim wins, we create the user on its shard. A sweeper deletes claims older than an hour with no user. Email changes claim the new address before releasing the old one. This index is the source of truth for uniqueness, so I update it synchronously in the request path rather than via CDC.\n\nThe org listing is rare and tolerates lag, so I'd start with scatter-gather across 64 shards, paginated, with a per-shard timeout. If it gets slow, I add an `org_members(org_id, user_id)` table partitioned by org_id, maintained from CDC. Because it can lag or briefly hold stale entries, the page reads the user rows it returns and drops mismatches.\n\nA local email index would turn 3k logins/s into 192k shard queries/s and tie login availability to all 64 shards."
+      },
+      "explanation": "The core tradeoff: local (document-partitioned) indexes make writes cheap and reads scatter; global (term-partitioned) indexes make reads targeted and writes cross partitions. Uniqueness forces a global, authoritative structure. A strong answer picks per access pattern instead of one index strategy for everything.\n\nTakeaway: choose index partitioning per query, and decide explicitly whether each global index is synchronous truth or an asynchronous hint.",
+      "references": [
+        "Kleppmann, Designing Data-Intensive Applications, chapter 6 (partitioning and secondary indexes)"
+      ]
+    },
+    {
+      "id": "ds-lww-wall-clock-review-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "clocks-ordering",
+        "crdts"
+      ],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Review last-writer-wins by wall clock for active-active",
+      "prompt": "A team proposes active-active replication of the user-preferences store across us-east and eu-west. Conflicts will be resolved last-writer-wins using the receiving server's wall-clock timestamp on the whole preferences document. Review the proposal: what goes wrong, and what would you recommend?",
+      "context": "```\nntp_offset_ms (fleet, last 30d)   p50 0.4   p99 38   max 2100 (eu-west host after VM migration)\npreferences doc: { theme, language, timezone, notifications{...}, updated_at }\n```",
+      "language": null,
+      "estSeconds": 420,
+      "rubric": {
+        "keyPoints": [
+          "Clock skew (up to 2.1 s here) means a write that happened later can carry an earlier timestamp and silently lose, with no error anywhere",
+          "Whole-document LWW discards concurrent edits to different fields: theme changed in one region and language in the other means one change vanishes",
+          "Recommends finer-grained merge: per-field LWW (a map of registers) or CRDT types, so independent fields merge",
+          "Replaces raw wall-clock time with hybrid logical clocks (to preserve causality on a key's update chain) or version vectors (to detect true concurrency)",
+          "Requires a deterministic tie-break such as region id so replicas converge, plus a metric for conflicts resolved",
+          "Questions whether active-active is needed: homing each user's preferences in one region with async replicas elsewhere may remove the conflict entirely"
+        ],
+        "redFlags": [
+          "Says NTP keeps clocks close enough for LWW to be safe",
+          "Proposes a synchronous cross-region lock on every preference write",
+          "Only discusses clock skew and ignores concurrent edits to different fields"
+        ],
+        "exemplar": "Two problems, one of them obvious.\n\nClock skew: our own metrics show a 2.1 s offset after a VM migration. With wall-clock LWW, a user who changes timezone and then corrects it a second later can end up with the first value on every replica. Nothing errors or logs, so we would only hear about it from support.\n\nGranularity: LWW on the whole document loses concurrent edits to different fields. A user who changes theme on their laptop (served from us-east) while their phone's sync changes notifications (served from eu-west) loses one change entirely.\n\nWhat I'd ask for:\n1. Merge per field: model the document as a map of LWW registers, and notifications as a nested map or set CRDT.\n2. Order with a hybrid logical clock instead of raw wall time, so causally later writes always win; tie-break on region id so replicas converge.\n3. Emit a counter whenever a merge discards a value.\n\nAlso, do we need active-active at all? Preferences are per user, so homing each user in one region and replicating read-only elsewhere removes conflicts, at the cost of cross-region write latency for travelling users."
+      },
+      "explanation": "LWW is a valid convergence rule but a lossy one, and wall clocks make the loss arbitrary rather than recent. The common miss is fixating on skew while ignoring that document-level LWW drops concurrent edits to independent fields. Per-field merge, HLCs and a deterministic tie-break address both.\n\nTakeaway: before accepting LWW, ask what data it is allowed to lose and whether a clock you do not control decides which.",
+      "references": [
+        "Kulkarni et al., Logical Physical Clocks and Consistent Snapshots in Globally Distributed Databases (OPODIS 2014)"
+      ]
+    },
+    {
+      "id": "ds-checkout-saga-design-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "distributed-transactions",
+        "partial-failure"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Design the checkout saga across four services",
+      "prompt": "Checkout touches four services, each with its own database: Orders, Inventory, Payments (wrapping an external card processor) and Shipping. Today a failure halfway through leaves stock reserved and cards authorized with no order. Design the saga: step order, compensations, coordination style, and how you handle the fact that it is not isolated.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Picks orchestration (a persisted state machine, for example in Orders) or choreography and justifies it; with four steps and compensations, orchestration makes saga state and stuck sagas visible",
+          "Orders steps compensatable first, then an explicit pivot, then retryable: reserve stock (release) → authorize card (void) → confirm order and capture as the pivot → create shipment and send email, retried until done",
+          "Makes every step and compensation idempotent, keyed by saga id and step, and writes saga state and outgoing commands atomically through an outbox",
+          "Treats a processor timeout as an unknown outcome: queries by idempotency key before compensating, never voids or re-charges blindly",
+          "Handles missing isolation with countermeasures: order held in PENDING as a semantic lock, stock reservations with expiry, price and stock re-checked at the pivot",
+          "Adds per-step timeouts, an alert on sagas stuck past a threshold, and a manual resolution path"
+        ],
+        "redFlags": [
+          "Uses 2PC or XA across the services and the card processor",
+          "Assumes compensations always succeed and runs each only once",
+          "Captures payment before stock is reserved",
+          "No handling for an unknown payment outcome"
+        ],
+        "exemplar": "I'd orchestrate from Orders: a `checkout_saga` row holds the state, and each transition writes the next command to an outbox in the same transaction. Choreography spreads four steps and their compensations across four services, and then nobody can answer 'where is order 123?'.\n\nSteps:\n1. Create the order in PENDING. It is a semantic lock: it is invisible to fulfilment and shown as 'processing'.\n2. Reserve stock with a 15-minute expiry. Compensation: release.\n3. Authorize the card with idempotency key `saga:{id}:auth`. Compensation: void. On timeout, look the authorization up by key before deciding anything.\n4. Pivot: re-check that the reservation is still valid, capture, and mark the order CONFIRMED. After this point we never roll back; problems become refunds handled by support.\n5. Create the shipment and send the email. Both are retried with backoff until they succeed.\n\nEvery handler dedupes on (saga id, step), so redelivered commands are harmless, and compensations are retried like forward steps. Each step has a timeout that triggers compensation, sagas pending for more than 30 minutes page someone, and an admin tool can force a saga forward or back. Expiring reservations are the backstop if the orchestrator dies mid-saga."
+      },
+      "explanation": "The key ideas are ordering steps around a pivot, idempotency everywhere, treating unknown outcomes as unknown, and countering the lack of isolation deliberately. Many answers list compensations but put the irreversible step first, or assume a void always succeeds on the first try.\n\nTakeaway: a saga is a state machine you operate, not a sequence of calls; design its stuck states and its pivot first.",
+      "references": [
+        "Garcia-Molina and Salem, Sagas (SIGMOD 1987)",
+        "Richardson, Microservices Patterns, chapter 4"
+      ],
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "ds-pacelc-rfc-review-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "cap-pacelc",
+        "quorums"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Review an RFC that calls its inventory store CA",
+      "prompt": "You are reviewing this RFC excerpt for an inventory service that must never oversell. Write your review comments: which claims are wrong or imprecise, and what you require before approving.",
+      "context": "> **Data store.** Cassandra, RF=3 per region, two regions (us-east, eu-west).\n> Cassandra is AP, so inventory stays available during any outage.\n> Reads and writes use QUORUM, so R + W > N gives us strong consistency.\n> For latency we will switch to LOCAL_QUORUM; each region is strongly consistent, which is what matters.\n> Cross-region partitions are rare, so effectively we are CA.\n> Decrement: read `available`, write `available - n`.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Availability in the CAP sense belongs to an operation at a consistency level, not to the product: at QUORUM or LOCAL_QUORUM, a partitioned minority returns errors, so 'available during any outage' is false",
+          "R + W > N gives quorum overlap, not linearizability: concurrent writes resolve by timestamp last-write-wins, a timed-out write that reached one replica can surface later, and read-then-write decrements are lost updates under any quorum",
+          "With LOCAL_QUORUM in each region, both regions can decrement the same SKU at the same time and replicate later, so overselling is the expected outcome rather than an edge case",
+          "'Effectively CA' is not a design: the RFC must state what each region does for decrements during an inter-region partition (refuse, or accept and reconcile oversells)",
+          "Frames the normal-operation cost with PACELC: cross-region coordination (EACH_QUORUM, or SERIAL lightweight transactions) adds at least one inter-region round trip, roughly 70 to 90 ms, per decrement",
+          "Requires a concrete never-oversell mechanism: compare-and-set with lightweight transactions at SERIAL, or a home region per SKU, or per-region stock allocations that are rebalanced"
+        ],
+        "redFlags": [
+          "Accepts 'Cassandra is AP' as a property of the whole system",
+          "Treats QUORUM reads and writes as linearizable",
+          "Suggests retries as the fix for overselling",
+          "Rejects the RFC without proposing a workable mechanism"
+        ],
+        "exemplar": "Blocking comments, in order:\n\n1. 'Cassandra is AP' describes defaults, not this design. At QUORUM or LOCAL_QUORUM, the minority side of a partition returns errors. Please state the availability of each operation at its consistency level.\n2. R + W > N means quorums overlap. It is not linearizability. Concurrent writes resolve by timestamp, a timed-out write can still land later, and 'read available, write available - n' is a lost update under any consistency level. Two concurrent orders for the last unit both succeed.\n3. LOCAL_QUORUM with two writable regions means us-east and eu-west decrement independently and reconcile by last-write-wins. That is overselling by design.\n4. 'Effectively CA' is not an option. Partitions happen, so tell me what eu-west does with a decrement when it cannot reach us-east.\n\nWhat would get my approval: either (a) a home region per SKU, with decrements as lightweight transactions (`UPDATE ... IF available >= n`) at SERIAL in the home region, accepting about 80 ms extra for remote buyers, or (b) per-region stock allocations, each decremented with LOCAL_SERIAL compare-and-set, plus a rebalancer. That one is PA/EL for most traffic and only refuses once a region's allocation is exhausted. Pick one, and add the latency numbers and the partition behaviour to the RFC."
+      },
+      "explanation": "Every sentence in the excerpt is a common CAP misreading: availability treated as a product label, quorum overlap treated as linearizability, regional consistency treated as global, and CA treated as a choice. A principal-level review names each precisely and then makes approval achievable by offering mechanisms with their PACELC costs.\n\nTakeaway: review consistency claims per operation and per consistency level, and always ask what happens on each side of a partition.",
+      "references": [
+        "Abadi, Consistency Tradeoffs in Modern Distributed Database System Design (IEEE Computer, 2012)",
+        "Kingsbury, Jepsen: Cassandra (aphyr.com, 2013)"
+      ],
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "ds-quorum-availability-minutes-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "quorums"
+      ],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Monthly unavailability of a 2-of-3 quorum",
+      "prompt": "A key is stored on 3 replicas, and both reads and writes need 2 of 3 to respond. Assume each replica is independently unavailable 1% of the time. In a 30-day month, roughly how many minutes is the key unavailable for quorum operations?",
+      "language": null,
+      "estSeconds": 150,
+      "numeric": {
+        "answer": 12.9,
+        "unit": "minutes/month",
+        "fullCreditRatio": 1.3,
+        "zeroCreditRatio": 3
+      },
+      "explanation": "Quorum fails when at least 2 of 3 replicas are down:\n\nP = 3·p²·(1−p) + p³ = 3 × 0.0001 × 0.99 + 0.000001 ≈ 0.000298.\n\nA 30-day month is 43,200 minutes, so 0.000298 × 43,200 ≈ 12.9 minutes. Compare a single replica at 1%: 432 minutes. The quorum turns 99% replicas into about 99.97%.\n\nThe weak point is the independence assumption. Replicas in the same AZ, on the same rack or receiving the same bad deploy fail together, and correlated failure dominates real availability.\n\nTakeaway: quorum math only holds if you place replicas in independent failure domains and stagger changes across them."
+    },
+    {
+      "id": "ds-raft-commit-latency-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "consensus",
+        "quorums"
+      ],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Commit latency for a geo-spread Raft group",
+      "prompt": "A 5-voter Raft group has its leader in us-east-1a. Round-trip times from the leader to its four followers are 0.8 ms, 11 ms, 64 ms and 140 ms. Each follower fsyncs the entry (2 ms) before acknowledging, and the leader fsyncs its own copy (2 ms) in parallel with sending. Ignoring CPU time and the client hop, what is the commit latency of a write at the leader?",
+      "language": null,
+      "estSeconds": 120,
+      "numeric": {
+        "answer": 13,
+        "unit": "ms",
+        "fullCreditRatio": 1.25,
+        "zeroCreditRatio": 3
+      },
+      "explanation": "A commit needs a majority of 5, which is 3 voters, and the leader counts as one. So it needs acks from the 2 fastest followers.\n\nFollower ack times are RTT + 2 ms fsync: 2.8, 13, 66 and 142 ms. The second fastest arrives at 13 ms, and the leader's own fsync finished at 2 ms, so commit happens at about 13 ms.\n\nCommon mistakes: 66 ms (waiting for 3 followers, forgetting the leader votes), or 2.8 ms (one follower). It also shows why placement matters: if the 11 ms follower moved to the 64 ms region, every write would take 66 ms.\n\nTakeaway: consensus latency is set by the k-th fastest voter, so place voters so that a majority sits close to the leader."
+    },
+    {
+      "id": "ds-raft-election-sequence-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "leader-election",
+        "consensus"
+      ],
+      "skill": "recall",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Raft leader election after the leader crashes",
+      "prompt": "The leader of a 5-node Raft cluster crashes. Put the events that lead to a new leader serving linearizable reads in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        {
+          "id": "1",
+          "text": "A follower's randomized election timeout expires without a heartbeat from the leader"
+        },
+        {
+          "id": "2",
+          "text": "It increments its current term, votes for itself and sends RequestVote to every peer"
+        },
+        {
+          "id": "3",
+          "text": "Each peer grants its vote if it has not voted this term and the candidate's log is at least as up to date as its own"
+        },
+        {
+          "id": "4",
+          "text": "The candidate receives votes from a majority and becomes leader"
+        },
+        {
+          "id": "5",
+          "text": "The new leader sends AppendEntries heartbeats to assert leadership and suppress further elections"
+        },
+        {
+          "id": "6",
+          "text": "The leader commits a no-op entry from its own term, which tells it the true commit index, so it can serve linearizable reads"
+        }
+      ],
+      "explanation": "Randomized timeouts make it likely that one follower starts an election alone. The vote rule (one vote per term, only for an up-to-date log) guarantees the winner holds every committed entry. Heartbeats go out immediately to stop other followers timing out. The no-op commit matters because a new leader cannot know which earlier entries are committed until an entry from its own term commits; serving reads before then can return stale data.\n\nTakeaway: winning the election is not the end; a Raft leader is not safe for linearizable reads until it commits an entry in its own term.",
+      "references": [
+        "Ongaro and Ousterhout, In Search of an Understandable Consensus Algorithm (USENIX ATC 2014), sections 5.2 and 8"
+      ],
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "ds-two-phase-commit-order-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "distributed-transactions"
+      ],
+      "skill": "recall",
+      "type": "ordering",
+      "difficulty": 1,
+      "title": "The durable steps of two-phase commit",
+      "prompt": "Put the steps of a successful two-phase commit in order, including the points where state must be durable.",
+      "language": null,
+      "estSeconds": 75,
+      "items": [
+        {
+          "id": "1",
+          "text": "Coordinator sends PREPARE to every participant"
+        },
+        {
+          "id": "2",
+          "text": "Each participant makes its changes and a prepare record durable, keeps its locks, and votes YES"
+        },
+        {
+          "id": "3",
+          "text": "Coordinator receives YES from every participant and durably logs the COMMIT decision"
+        },
+        {
+          "id": "4",
+          "text": "Coordinator sends COMMIT to every participant"
+        },
+        {
+          "id": "5",
+          "text": "Each participant commits locally, releases its locks and acknowledges"
+        },
+        {
+          "id": "6",
+          "text": "After all acknowledgements, coordinator writes an end record and forgets the transaction"
+        }
+      ],
+      "explanation": "The two durable writes carry the protocol. A participant persists its prepare record before voting YES, because a YES is a promise it must keep even after a crash. The coordinator persists the decision before telling anyone, so after a crash it re-sends the same decision instead of inventing a new one. Between steps 2 and 4 participants are blocked holding locks, which is why a slow or dead coordinator hurts.\n\nTakeaway: 2PC is correct because of when it writes to disk, and it blocks because prepared participants cannot decide on their own.",
+      "references": [
+        "Gray and Reuter, Transaction Processing: Concepts and Techniques (Morgan Kaufmann, 1992)"
+      ]
+    },
+    {
+      "id": "ds-cdc-search-cache-sync-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "outbox-saga",
+        "indexing",
+        "replication-lag"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 4,
+      "title": "Keep search and cache in sync without dual writes",
+      "prompt": "Orders live in PostgreSQL, the source of truth, at 1.2k writes/s. The API also writes each order to Elasticsearch for search and to Redis for an order-summary cache, using dual writes. Search results and cached summaries drift from the database by a few hundred orders a week. Sketch a replacement that keeps search and cache in sync, and explain how you backfill and how a user who just placed an order sees it.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Removes dual writes from the API and captures changes from the database log with CDC (or a transactional outbox) into a durable stream keyed by order id",
+          "Indexer workers apply changes idempotently with a monotonic version per document (for example the commit LSN or a row version used as the Elasticsearch external version), so duplicates and reordering cannot replace newer data with older",
+          "Invalidates the cache from the stream (delete on change) instead of having the API write it, or writes with a version check, so a stale write cannot win",
+          "Backfills by taking a snapshot while recording the log position, bulk loading a new index, replaying the stream from that position, then switching an index alias; reindexing uses the same path",
+          "Monitors commit-to-index lag and serves read-your-writes on the confirmation page from the database rather than search",
+          "Keeps stream retention longer than the longest plausible indexer outage and alerts on consumer lag"
+        ],
+        "redFlags": [
+          "Keeps dual writes but adds retries",
+          "Applies index updates without a version check",
+          "Backfills by pausing writes or by scanning the table without a log position to resume from"
+        ],
+        "exemplar": "API → PostgreSQL only. Debezium reads the WAL (or an outbox table) into Kafka `orders.cdc`, keyed by order id so each order's changes stay in order on one partition, with 7-day retention.\n\nThe search indexer consumes it and upserts into Elasticsearch with `version_type=external` and version = commit LSN, so a redelivered or older change is rejected. A cache invalidator consumes the same topic and deletes `order:{id}` in Redis. Reads repopulate the cache from Postgres, and the populate step stores the row version and refuses to overwrite a newer one.\n\nBackfill: the connector's initial snapshot records the LSN it started at, streams the snapshot into a new index `orders_v2`, then continues from that LSN. When lag is near zero we move the `orders` alias to the new index. Reindexing later follows the same path.\n\nLag (commit time vs index time) is a dashboard with an alert at 30 s. The confirmation page and 'my recent orders' read from Postgres, so a user never misses an order they just placed.",
+        "requiredComponents": [
+          "service",
+          "database",
+          "stream",
+          "worker",
+          "search_index",
+          "cache"
+        ]
+      },
+      "explanation": "Dual writes drift because the second write can fail or apply out of order. Moving to a single write plus a log-driven, versioned, idempotent apply removes both failure modes. Strong answers also cover backfill with a resume position and give read-your-writes to the user who just ordered.\n\nTakeaway: derived stores should be functions of the database log, applied with versions, never parallel writes from the API.",
+      "references": [
+        "Kleppmann, Designing Data-Intensive Applications, chapter 11 (change data capture)"
+      ]
+    },
+    {
+      "id": "ds-ad-click-aggregation-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "stream-processing",
+        "exactly-once"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 4,
+      "title": "Ad click aggregation that can bill without double counting",
+      "prompt": "Design click aggregation for an ad platform. Peak traffic is 200k clicks/s. Advertisers see per-minute spend dashboards within 2 minutes, and are billed daily from the same data, so billing must not double count. Each real click has a unique click id, but SDKs retry and can resend a click, and offline SDKs upload batches up to 24 hours late. Sketch the components and explain dedupe, lateness and failure recovery.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Ingests through stateless collectors into a partitioned durable log, acknowledges the SDK only after the log write, and archives raw events to object storage",
+          "Deduplicates by click id with keyed state kept at least 24 hours plus margin (or a dedupe store), because retries and late uploads can arrive that far apart",
+          "Uses event-time windows with a watermark sized for the 2-minute dashboard target, and turns clicks behind the watermark into corrections (side output or upserts) instead of dropping them",
+          "Writes aggregates with idempotent upserts keyed by (advertiser, minute) or through a transactional sink, so replay after a failure does not double count",
+          "Bills from a daily batch recompute over the deduplicated raw archive, or from a closed and reconciled aggregate, and reconciles real-time totals against it",
+          "Handles hot advertisers by partitioning on click id for dedupe and pre-aggregating before re-keying by advertiser"
+        ],
+        "redFlags": [
+          "Counts with non-idempotent increments in the serving database",
+          "Dedupes only within a window of a few minutes",
+          "Drops late clicks or bills from the real-time dashboard numbers",
+          "Partitions directly by advertiser id with no skew handling"
+        ],
+        "exemplar": "SDK → load balancer → stateless collectors → Kafka `clicks.raw` (partitioned by click id, acks=all). We return 200 to the SDK only after Kafka acknowledges. A connector archives `clicks.raw` to object storage in hourly Parquet files.\n\nFlink job 1, keyed by click id, keeps a 26-hour state TTL of seen ids and emits only first sightings to `clicks.dedup`. Job 2 pre-aggregates per (advertiser, minute) on each partition, then re-keys by advertiser to sum. It uses event-time tumbling windows with a 90 s watermark, and clicks that arrive behind the watermark go to a corrections stream. Both jobs checkpoint, and the sink upserts `spend(advertiser, minute) = value` into the serving database, so replaying from a checkpoint rewrites the same rows instead of adding to them. Corrections upsert the affected minute too.\n\nBilling: a daily Spark job reads the raw archive for the day plus 24 h, dedupes by click id, and produces the invoice totals. It also compares them with the streaming totals; a drift above 0.1% pages someone before invoices go out.",
+        "requiredComponents": [
+          "load_balancer|api_gateway",
+          "service",
+          "stream",
+          "worker",
+          "object_storage",
+          "database|data_warehouse"
+        ]
+      },
+      "explanation": "The design hinges on three separations: dedupe by click id with state as long as the lateness bound, event-time windows that correct rather than drop, and an idempotent sink so recovery cannot double count. Billing from a batch recompute over the raw log gives you a source of truth that does not depend on the streaming job never having a bug.\n\nTakeaway: make streaming totals fast and correctable, and make money come from a replayable log.",
+      "references": [
+        "Akidau et al., The Dataflow Model (VLDB 2015)"
+      ],
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "ds-non-idempotent-consumer-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "exactly-once"
+      ],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Wallet credited twice around deploys",
+      "prompt": "This consumer handles `PaymentCaptured` events from a queue with at-least-once delivery. Finance found about 40 wallets credited twice last week, clustered around deploys and consumer restarts. Find the bug.",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "export async function handlePaymentCaptured(msg: QueueMessage, db: Pool): Promise<void> {\n  const evt = JSON.parse(msg.body) as PaymentCaptured; // { paymentId, userId, amountCents }\n  const client = await db.connect();\n  try {\n    await client.query(\"BEGIN\");\n    await client.query(\n      \"UPDATE wallets SET balance_cents = balance_cents + $1 WHERE user_id = $2\", //!issue:1\n      [evt.amountCents, evt.userId],\n    );\n    await client.query(\n      \"INSERT INTO wallet_ledger (user_id, amount_cents, reason) VALUES ($1, $2, 'payment_captured')\",\n      [evt.userId, evt.amountCents],\n    );\n    await client.query(\"COMMIT\");\n  } catch (err) {\n    await client.query(\"ROLLBACK\");\n    throw err;\n  } finally {\n    client.release();\n  }\n  await msg.ack();\n}",
+        "go": "func (h *Handler) HandlePaymentCaptured(ctx context.Context, msg *queue.Message) error {\n\tvar evt PaymentCaptured // PaymentID, UserID, AmountCents\n\tif err := json.Unmarshal(msg.Body, &evt); err != nil {\n\t\treturn err\n\t}\n\ttx, err := h.db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer tx.Rollback()\n\tif _, err := tx.ExecContext(ctx,\n\t\t\"UPDATE wallets SET balance_cents = balance_cents + $1 WHERE user_id = $2\", //!issue:1\n\t\tevt.AmountCents, evt.UserID); err != nil {\n\t\treturn err\n\t}\n\tif _, err := tx.ExecContext(ctx,\n\t\t\"INSERT INTO wallet_ledger (user_id, amount_cents, reason) VALUES ($1, $2, 'payment_captured')\",\n\t\tevt.UserID, evt.AmountCents); err != nil {\n\t\treturn err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn err\n\t}\n\treturn msg.Ack(ctx)\n}",
+        "rust": "pub async fn handle_payment_captured(pool: &PgPool, msg: &Message) -> anyhow::Result<()> {\n    // PaymentCaptured { payment_id: Uuid, user_id: Uuid, amount_cents: i64 }\n    let evt: PaymentCaptured = serde_json::from_slice(&msg.body)?;\n    let mut tx = pool.begin().await?;\n    sqlx::query(\"UPDATE wallets SET balance_cents = balance_cents + $1 WHERE user_id = $2\") //!issue:1\n        .bind(evt.amount_cents)\n        .bind(evt.user_id)\n        .execute(&mut *tx)\n        .await?;\n    sqlx::query(\"INSERT INTO wallet_ledger (user_id, amount_cents, reason) VALUES ($1, $2, 'payment_captured')\")\n        .bind(evt.user_id)\n        .bind(evt.amount_cents)\n        .execute(&mut *tx)\n        .await?;\n    tx.commit().await?;\n    msg.ack().await?;\n    Ok(())\n}",
+        "csharp": "public async Task HandlePaymentCapturedAsync(QueueMessage msg, CancellationToken ct)\n{\n    // PaymentCaptured(Guid PaymentId, Guid UserId, long AmountCents)\n    var evt = JsonSerializer.Deserialize<PaymentCaptured>(msg.Body)!;\n    await using var conn = await _dataSource.OpenConnectionAsync(ct);\n    await using var tx = await conn.BeginTransactionAsync(ct);\n    await using (var credit = new NpgsqlCommand(\n        \"UPDATE wallets SET balance_cents = balance_cents + @amt WHERE user_id = @uid\", conn, tx)) //!issue:1\n    {\n        credit.Parameters.AddWithValue(\"amt\", evt.AmountCents);\n        credit.Parameters.AddWithValue(\"uid\", evt.UserId);\n        await credit.ExecuteNonQueryAsync(ct);\n    }\n    await using (var ledger = new NpgsqlCommand(\n        \"INSERT INTO wallet_ledger (user_id, amount_cents, reason) VALUES (@uid, @amt, 'payment_captured')\", conn, tx))\n    {\n        ledger.Parameters.AddWithValue(\"amt\", evt.AmountCents);\n        ledger.Parameters.AddWithValue(\"uid\", evt.UserId);\n        await ledger.ExecuteNonQueryAsync(ct);\n    }\n    await tx.CommitAsync(ct);\n    await msg.AckAsync(ct);\n}",
+        "java": "public void handlePaymentCaptured(QueueMessage msg) throws Exception {\n    // record PaymentCaptured(UUID paymentId, UUID userId, long amountCents)\n    PaymentCaptured evt = mapper.readValue(msg.body(), PaymentCaptured.class);\n    try (Connection conn = dataSource.getConnection()) {\n        conn.setAutoCommit(false);\n        try {\n            try (PreparedStatement credit = conn.prepareStatement(\n                    \"UPDATE wallets SET balance_cents = balance_cents + ? WHERE user_id = ?\")) { //!issue:1\n                credit.setLong(1, evt.amountCents());\n                credit.setObject(2, evt.userId());\n                credit.executeUpdate();\n            }\n            try (PreparedStatement ledger = conn.prepareStatement(\n                    \"INSERT INTO wallet_ledger (user_id, amount_cents, reason) VALUES (?, ?, 'payment_captured')\")) {\n                ledger.setObject(1, evt.userId());\n                ledger.setLong(2, evt.amountCents());\n                ledger.executeUpdate();\n            }\n            conn.commit();\n        } catch (SQLException e) {\n            conn.rollback();\n            throw e;\n        }\n    }\n    msg.ack();\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The credit is not idempotent: a redelivered message (crash or deploy after COMMIT but before ack, or an expired visibility timeout) credits the wallet again",
+          "fix": "Record the event's paymentId in the same transaction, for example `INSERT INTO processed_payments (payment_id) VALUES ($1) ON CONFLICT DO NOTHING`, or a unique constraint on wallet_ledger.payment_id, and skip the credit when the insert affects zero rows."
+        }
+      ],
+      "explanation": "Committing before acking is the right order, but it guarantees a window where the database change is done and the broker still thinks the message is pending. A deploy that kills the process in that window, or a handler slower than the visibility timeout, redelivers the message and the relative `balance + amount` update runs twice. The fix is an inbox: store the business key (paymentId) with a unique constraint in the same transaction as the effect, so the second delivery is a no-op. Note the handler never uses `paymentId` at all, which is the tell.\n\nTakeaway: under at-least-once delivery, every consumer with side effects needs a dedupe key written atomically with the effect.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-dual-write-no-outbox-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "outbox-saga",
+        "partial-failure"
+      ],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Orders that fulfilment never hears about",
+      "prompt": "About 0.02% of orders sit in PLACED forever because the fulfilment service never received `orders.placed`. The spikes line up with broker maintenance windows and pod evictions. Find the bug in how orders are placed.",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "export async function placeOrder(db: Pool, producer: Producer, req: PlaceOrderRequest): Promise<Order> {\n  const order = newOrder(req);\n  const client = await db.connect();\n  try {\n    await client.query(\"BEGIN\");\n    await client.query(\n      \"INSERT INTO orders (id, customer_id, total_cents, status) VALUES ($1, $2, $3, 'PLACED')\",\n      [order.id, order.customerId, order.totalCents],\n    );\n    await insertLineItems(client, order);\n    await client.query(\"COMMIT\"); //!issue:1\n  } catch (err) {\n    await client.query(\"ROLLBACK\");\n    throw err;\n  } finally {\n    client.release();\n  }\n  try {\n    await producer.send({ //!issue:1\n      topic: \"orders.placed\",\n      messages: [{ key: order.id, value: JSON.stringify(toEvent(order)) }],\n    });\n  } catch (err) {\n    logger.error({ err, orderId: order.id }, \"failed to publish order placed\");\n  }\n  return order;\n}",
+        "go": "func (s *OrderService) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*Order, error) {\n\torder := NewOrder(req)\n\tpayload, err := json.Marshal(ToEvent(order))\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\ttx, err := s.db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer tx.Rollback()\n\tif _, err := tx.ExecContext(ctx,\n\t\t\"INSERT INTO orders (id, customer_id, total_cents, status) VALUES ($1, $2, $3, 'PLACED')\",\n\t\torder.ID, order.CustomerID, order.TotalCents); err != nil {\n\t\treturn nil, err\n\t}\n\tif err := insertLineItems(ctx, tx, order); err != nil {\n\t\treturn nil, err\n\t}\n\tif err := tx.Commit(); err != nil { //!issue:1\n\t\treturn nil, err\n\t}\n\tif err := s.producer.Publish(ctx, \"orders.placed\", order.ID, payload); err != nil { //!issue:1\n\t\ts.log.Error(\"failed to publish order placed\", \"orderId\", order.ID, \"err\", err)\n\t}\n\treturn order, nil\n}",
+        "rust": "pub async fn place_order(&self, req: PlaceOrderRequest) -> anyhow::Result<Order> {\n    let order = Order::new(req);\n    let payload = serde_json::to_vec(&OrderPlaced::from(&order))?;\n    let mut tx = self.pool.begin().await?;\n    sqlx::query(\"INSERT INTO orders (id, customer_id, total_cents, status) VALUES ($1, $2, $3, 'PLACED')\")\n        .bind(order.id)\n        .bind(order.customer_id)\n        .bind(order.total_cents)\n        .execute(&mut *tx)\n        .await?;\n    insert_line_items(&mut tx, &order).await?;\n    tx.commit().await?; //!issue:1\n    if let Err(err) = self.producer.publish(\"orders.placed\", &order.id.to_string(), &payload).await { //!issue:1\n        tracing::error!(order_id = %order.id, error = %err, \"failed to publish order placed\");\n    }\n    Ok(order)\n}",
+        "csharp": "public async Task<Order> PlaceOrderAsync(PlaceOrderRequest req, CancellationToken ct)\n{\n    var order = Order.Create(req);\n    var payload = JsonSerializer.Serialize(OrderPlaced.From(order));\n    await using (var tx = await _db.Database.BeginTransactionAsync(ct))\n    {\n        _db.Orders.Add(order);\n        await _db.SaveChangesAsync(ct);\n        await tx.CommitAsync(ct); //!issue:1\n    }\n    try\n    {\n        await _producer.ProduceAsync(\"orders.placed\",\n            new Message<string, string> { Key = order.Id.ToString(), Value = payload }, ct); //!issue:1\n    }\n    catch (ProduceException<string, string> ex)\n    {\n        _log.LogError(ex, \"failed to publish order placed {OrderId}\", order.Id);\n    }\n    return order;\n}",
+        "java": "public Order placeOrder(PlaceOrderRequest req) {\n    Order order = Order.create(req);\n    String payload = json.write(OrderPlaced.from(order));\n    transactionTemplate.executeWithoutResult(status -> {\n        orderRepository.save(order);\n        lineItemRepository.saveAll(order.lineItems());\n    }); //!issue:1\n    try {\n        kafkaTemplate.send(\"orders.placed\", order.id().toString(), payload).get(5, TimeUnit.SECONDS); //!issue:1\n    } catch (ExecutionException | TimeoutException e) {\n        log.error(\"failed to publish order placed {}\", order.id(), e);\n    } catch (InterruptedException e) {\n        Thread.currentThread().interrupt();\n    }\n    return order;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Dual write: the order commits to the database and the event is published separately, so a broker error, timeout or process death between the two loses the event while the order stays committed",
+          "fix": "Use a transactional outbox: insert the event into an `outbox` table in the same transaction as the order, and publish from it with a relay or CDC connector (for example Debezium) that retries until the broker acknowledges. Consumers dedupe on the event id."
+        }
+      ],
+      "explanation": "Two systems, two writes, no shared transaction. When the publish fails during broker maintenance, the error is logged and swallowed. When the pod is evicted between COMMIT and send, there is not even a log line. Publishing first does not help either: then a rollback after publish creates phantom orders. Retrying the publish inline narrows the window but cannot close it, because the process can always die between the two writes. The outbox makes the event part of the same local commit and moves delivery to a process that can retry indefinitely.\n\nTakeaway: if a state change and its event must agree, write them in one transaction and publish from the log.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "ds-lease-without-fencing-01",
+      "domain": "distributed_systems",
+      "concepts": [
+        "leader-election",
+        "partial-failure"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 4,
+      "title": "Two compactors write the same partition's manifest",
+      "prompt": "Compaction workers take a 30-second lease per partition from a lock service, and the lock client renews it every 10 seconds in the background. Last week two workers wrote manifests for the same partition 400 ms apart, and the surviving manifest referenced segments the other worker had already deleted. The first worker's host shows a 41-second process stall at that time. Find the bug.",
+      "language": null,
+      "estSeconds": 300,
+      "code": {
+        "ts": "export async function compactPartition(locks: LockClient, store: ObjectStore, partition: string): Promise<void> {\n  const lease = await locks.acquire(`compact/${partition}`, { ttlMs: 30_000 });\n  if (!lease) return; // another worker owns it\n  try {\n    const segments = await store.listSegments(partition);\n    const merged = await mergeSegments(segments); // 20-60 s on large partitions\n    if (!(await lease.isValid())) { //!issue:1\n      throw new Error(`lease lost for ${partition}`);\n    }\n    await store.putManifest(partition, merged.manifest); //!issue:1\n    await store.deleteSegments(partition, segments);\n  } finally {\n    await lease.release();\n  }\n}",
+        "go": "func CompactPartition(ctx context.Context, locks LockClient, store ObjectStore, partition string) error {\n\tlease, err := locks.Acquire(ctx, \"compact/\"+partition, 30*time.Second)\n\tif errors.Is(err, ErrLockHeld) {\n\t\treturn nil // another worker owns it\n\t}\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer lease.Release(context.Background())\n\n\tsegments, err := store.ListSegments(ctx, partition)\n\tif err != nil {\n\t\treturn err\n\t}\n\tmerged, err := MergeSegments(ctx, segments) // 20-60 s on large partitions\n\tif err != nil {\n\t\treturn err\n\t}\n\tif !lease.Valid() { //!issue:1\n\t\treturn fmt.Errorf(\"lease lost for %s\", partition)\n\t}\n\tif err := store.PutManifest(ctx, partition, merged.Manifest); err != nil { //!issue:1\n\t\treturn err\n\t}\n\treturn store.DeleteSegments(ctx, partition, segments)\n}",
+        "rust": "pub async fn compact_partition(locks: &LockClient, store: &ObjectStore, partition: &str) -> anyhow::Result<()> {\n    let Some(lease) = locks.acquire(&format!(\"compact/{partition}\"), Duration::from_secs(30)).await? else {\n        return Ok(()); // another worker owns it\n    };\n    let result: anyhow::Result<()> = async {\n        let segments = store.list_segments(partition).await?;\n        let merged = merge_segments(&segments).await?; // 20-60 s on large partitions\n        if !lease.is_valid().await { //!issue:1\n            anyhow::bail!(\"lease lost for {partition}\");\n        }\n        store.put_manifest(partition, &merged.manifest).await?; //!issue:1\n        store.delete_segments(partition, &segments).await?;\n        Ok(())\n    }\n    .await;\n    lease.release().await?;\n    result\n}",
+        "csharp": "public async Task CompactPartitionAsync(string partition, CancellationToken ct)\n{\n    await using var lease = await _locks.TryAcquireAsync($\"compact/{partition}\", TimeSpan.FromSeconds(30), ct);\n    if (lease is null) return; // another worker owns it\n\n    var segments = await _store.ListSegmentsAsync(partition, ct);\n    var merged = await MergeSegmentsAsync(segments, ct); // 20-60 s on large partitions\n    if (!await lease.IsValidAsync(ct)) //!issue:1\n    {\n        throw new LeaseLostException($\"lease lost for {partition}\");\n    }\n    await _store.PutManifestAsync(partition, merged.Manifest, ct); //!issue:1\n    await _store.DeleteSegmentsAsync(partition, segments, ct);\n}",
+        "java": "public void compactPartition(String partition) throws Exception {\n    Optional<Lease> maybeLease = locks.tryAcquire(\"compact/\" + partition, Duration.ofSeconds(30));\n    if (maybeLease.isEmpty()) {\n        return; // another worker owns it\n    }\n    try (Lease lease = maybeLease.get()) {\n        List<Segment> segments = store.listSegments(partition);\n        MergeResult merged = mergeSegments(segments); // 20-60 s on large partitions\n        if (!lease.isValid()) { //!issue:1\n            throw new LeaseLostException(\"lease lost for \" + partition);\n        }\n        store.putManifest(partition, merged.manifest()); //!issue:1\n        store.deleteSegments(partition, segments);\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Check-then-act on a lease with no fencing token: the process can stall after the validity check, the lease expires, another worker acquires it, and the stale worker's write still lands because storage never checks who holds the lease",
+          "fix": "Take a monotonically increasing fencing token with the lease (for example the etcd revision or ZooKeeper zxid) and pass it to putManifest; make storage reject writes carrying a token lower than the highest it has seen, or use a conditional write (compare-and-swap on the manifest's generation read at the start) so a stale writer fails."
+        }
+      ],
+      "explanation": "A lease is a promise about time, and a paused process cannot keep time. The worker checked validity, then stalled for 41 s. Its renewals stopped, the lease expired, a second worker acquired it and compacted, and when the first worker resumed it wrote its old manifest without re-checking. No amount of checking on the client side closes this window, because the pause can land after any check. The resource being protected has to enforce exclusivity itself, using a fencing token or a conditional write, so the stale writer's request is rejected at the storage layer.\n\nTakeaway: a lock only protects a resource that verifies a fencing token; otherwise it is a performance hint.",
+      "references": [
+        "Kleppmann, How to do distributed locking (martin.kleppmann.com, 2016)",
+        "Burrows, The Chubby lock service for loosely-coupled distributed systems (OSDI 2006)"
+      ],
+      "tags": [
+        "classic",
+        "gotcha"
+      ]
+    }
+  ]
+}

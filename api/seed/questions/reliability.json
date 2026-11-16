@@ -1,0 +1,884 @@
+{
+  "file": "reliability",
+  "questions": [
+    {
+      "id": "rel-burn-rate-paging-01",
+      "domain": "reliability",
+      "concepts": ["alerting"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Noisy error-rate page that missed a four-day slow burn",
+      "prompt": "The search API has a 99.9% availability SLO over 30 days. The current paging rule and last month's history are below. Which alerting setup pages quickly for fast burns, does not wake anyone for burns that leave days of budget, and still catches the slow burn?",
+      "context": "```\n# current rule\nalert: SearchErrorRateHigh\nexpr: sum(rate(http_requests_total{job=\"search\",code=~\"5..\"}[5m]))\n    / sum(rate(http_requests_total{job=\"search\"}[5m])) > 0.01\nfor: 5m\nseverity: page\n\n# last 30 days\npages fired:             23\nauto-resolved < 15 min:  21   (typical shape: 2% errors for ~6 min after a deploy)\nbudget consumed:         64%\nlargest single burn:     0.3% errors for 4 days (index node with a failing disk)\n                         -> 40% of the budget, never paged\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Page when burn rate exceeds 14.4 over both 1 h and 5 min, or 6 over both 6 h and 30 min; open a ticket when it exceeds 1 over both 3 days and 6 h" },
+        { "id": "b", "text": "Keep the 1% rule but lengthen `for` to 15 minutes, and add a second page when the error ratio stays above 0.2% for 1 hour" },
+        { "id": "c", "text": "Page when the remaining 30-day error budget drops below 25%, and demote the existing 1% rule to a low-urgency notification" },
+        { "id": "d", "text": "Page when the 30-day burn rate exceeds 1, since that is exactly the condition under which the SLO will be missed" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Each pair pages on a meaningful slice of budget (2% in 1 h, 5% in 6 h) and the short window makes it resolve quickly once the burn stops. The 4-day burn (rate 3) lands on the 3-day ticket.",
+        "b": "A total outage now takes about 15 minutes to page, and the 0.2% rule wakes people for a burn rate of 2 that would take 15 days to exhaust the budget. Thresholds are not tied to budget at all.",
+        "c": "Fires once, late, and then stays firing for the rest of the window. It says nothing about how fast the budget is going.",
+        "d": "By the time a 30-day burn rate exceeds 1 the SLO is already lost, and the alert cannot recover for weeks."
+      },
+      "explanation": "Burn rate is the error ratio divided by the budget ratio (0.1%). A burn rate of 14.4 sustained for an hour consumes 14.4 x 1 h / 720 h = 2% of the monthly budget, which is worth waking someone for; 6 over 6 hours is 5%. Requiring a short window as well (5 min, 30 min) means the alert clears soon after the burn stops instead of staying red for an hour. The 2% deploy spikes average to a burn of about 2 over an hour, so they no longer page, while the 0.3% four-day burn (rate 3) trips the 3-day ticket. Tightening `for:` or adding fixed thresholds trades one failure for another because none of those numbers is derived from the budget. Takeaway: page on how fast the budget is burning, using a long window for significance and a short one for fast reset.",
+      "references": ["The Site Reliability Workbook, chapter 5: Alerting on SLOs"],
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "rel-histogram-cardinality-01",
+      "domain": "reliability",
+      "concepts": ["observability"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Prometheus falls over after a new latency histogram",
+      "prompt": "A team shipped a new request-latency histogram last week. Prometheus memory has tripled, rule evaluation lags, and the metrics bill has doubled. The team still wants to debug slow requests for specific customers. What is the best fix?",
+      "context": "```\nmetric:   http_request_duration_seconds_bucket\nlabels:   service, pod, method, path, status, customer_id, le\nexample:  path=\"/v2/orders/88127731/items\", customer_id=\"c_19f2a7\"\n\nprometheus_tsdb_head_series:  1.3M -> 38.6M\ndistinct customer_id (7d):    ~41,000\ndistinct path values (7d):    ~2.1M\nhistogram buckets (le):       12\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Replace `path` with the route template, drop `customer_id` from the metric, and carry customer detail on traces and logs linked from the histogram by exemplars" },
+        { "id": "b", "text": "Raise the scrape interval from 15 s to 60 s so each series stores fewer samples and Prometheus memory drops accordingly" },
+        { "id": "c", "text": "Shard Prometheus with `hashmod` across eight instances so each one holds an eighth of the active series" },
+        { "id": "d", "text": "Cut the histogram from 12 buckets to 4 and keep the other labels, since the bucket count multiplies every series" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Removes the two unbounded dimensions, which is where the explosion comes from, and keeps per-customer debugging in signals built for high cardinality.",
+        "b": "Head memory is driven by the number of active series, not the sample rate. 38.6M series at 60 s is still 38.6M series.",
+        "c": "Spreads the same cost over more machines. The bill and the query fan-out stay just as bad.",
+        "d": "A 3x cut on a 30x problem, and series still grow with every new order ID."
+      },
+      "explanation": "The series count is roughly the product of each label's distinct values. Raw paths with embedded IDs and a 41,000-value customer label make that product unbounded, so it grows with traffic rather than with the system's shape. Templating the route and dropping `customer_id` returns the metric to bounded cardinality. Per-customer questions move to traces and structured logs, which index individual requests cheaply, and exemplars let you jump from a slow histogram bucket to a concrete trace. Scrape interval, sharding and bucket count all leave the unbounded labels in place. Takeaway: metrics are for bounded dimensions you aggregate; identifiers belong on traces and logs.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-jvm-oomkilled-01",
+      "domain": "reliability",
+      "concepts": ["kubernetes-ops"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "JVM pod OOMKilled with a heap that never fills",
+      "prompt": "`orders-api` restarts several times a day. The JVM never logs an OutOfMemoryError and heap usage looks healthy. What is the most likely cause and fix?",
+      "context": "```\n$ kubectl describe pod orders-api-7d9f8-x2kq\n    Last State:     Terminated\n      Reason:       OOMKilled\n      Exit Code:    137\n    Restart Count:  14\n    Limits:    cpu: 2    memory: 2Gi\n    Requests:  cpu: 2    memory: 2Gi\n    QoS Class: Guaranteed\n    Environment:\n      JAVA_TOOL_OPTIONS: -Xms2g -Xmx2g -XX:+UseG1GC\n\n# metrics, 24 h before the last kill\njvm_memory_used_bytes{area=\"heap\"} max:   1.41 GB\njvm_threads_live:                        410\ncontainer_memory_working_set_bytes:      2.13 GB (at kill)\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "The heap is sized to the whole container limit, so metaspace, thread stacks, code cache and direct buffers push RSS past 2 Gi; cap the heap at about 75% of the limit" },
+        { "id": "b", "text": "There is a heap leak and the 1.41 GB peak is a sampling artifact; take a heap dump on the next kill and fix the retained objects" },
+        { "id": "c", "text": "The node is evicting the pod under memory pressure because its request is too low; raise the memory request so the scheduler reserves enough" },
+        { "id": "d", "text": "The 2-CPU limit throttles G1's concurrent threads so garbage accumulates faster than it is collected; remove the CPU limit" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "`-Xmx2g` in a 2Gi cgroup leaves nothing for native memory. 410 threads alone can add several hundred MB of stack, and the kernel OOM killer acts on total RSS.",
+        "b": "A heap leak shows up as an OutOfMemoryError and a rising heap baseline, and neither is present. The kill happened above the heap, not inside it.",
+        "c": "Requests already equal limits (Guaranteed QoS), and a node-pressure eviction shows `Reason: Evicted`, not a container `OOMKilled` with exit 137.",
+        "d": "CPU throttling causes latency and GC pauses, not a cgroup memory kill."
+      },
+      "explanation": "Exit 137 with `OOMKilled` means the container's cgroup hit its memory limit and the kernel killed the process. The JVM's footprint is heap plus metaspace, thread stacks, JIT code cache, GC bookkeeping and direct or NIO buffers. With `-Xmx` equal to the limit, any of those growing tips RSS over 2Gi long before the heap is full, which is why the JVM never sees an OutOfMemoryError. Set `-XX:MaxRAMPercentage` to around 70 to 75 (or an explicit `-Xmx` with headroom), watch working set against the limit, and cap direct memory if Netty or similar is in use. Takeaway: a container limit bounds the whole process, so leave headroom for everything that is not heap.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "rel-liveness-dependency-check-01",
+      "domain": "reliability",
+      "concepts": ["kubernetes-ops", "dependency-failure"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "A 25-second Redis failover becomes an 18-minute outage",
+      "prompt": "The cart service uses Redis as a read-through cache in front of Postgres. A routine 25-second Redis failover turned into an 18-minute outage. Which change most directly prevents a repeat?",
+      "context": "```yaml\nlivenessProbe:\n  httpGet: { path: /health, port: 8080 }   # handler pings Postgres and Redis\n  periodSeconds: 10\n  timeoutSeconds: 1\n  failureThreshold: 3\n```\n\n```\n09:14:02  managed Redis primary failover begins (~25 s)\n09:14:31  kubelet: Liveness probe failed, restarting container (x60 pods)\n09:15:10  pods starting; Postgres connections 40 -> 1,900 (max 2,000)\n09:16:00  JIT warm-up, p99 8 s, probes failing again; 22 pods in CrashLoopBackOff\n09:32:40  service recovered\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Make liveness check only in-process health (the server responds and is not wedged), and have the code fall back to Postgres when Redis is unreachable" },
+        { "id": "b", "text": "Move the same Postgres and Redis checks from the liveness probe to the readiness probe, so pods stop taking traffic instead of restarting" },
+        { "id": "c", "text": "Raise `failureThreshold` to 10 so a 25-second blip no longer crosses the threshold for restarting the container" },
+        { "id": "d", "text": "Add a `startupProbe` with a generous budget so restarted pods have time to warm up before the liveness probe applies" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "A restart cannot fix a remote dependency, so liveness must not depend on one. Treating the cache as optional keeps the service serving through the blip.",
+        "b": "Better than restarting, but a shared dependency failing makes every pod unready at once. The Service has no endpoints and a cache blip becomes a total outage.",
+        "c": "Only moves the cliff: a 2-minute Redis incident still restarts the whole fleet.",
+        "d": "Helps the warm-up phase but does nothing about the mass restart that caused it."
+      },
+      "explanation": "Liveness answers one question: would restarting this container help? A Redis failover is not fixed by a restart, so every pod restarting at once only added a connection storm against Postgres and a cold JIT fleet, which kept probes failing and produced CrashLoopBackOff. Liveness should check process-local health, readiness should only fail for conditions specific to that pod, and a cache dependency should degrade (fall back to Postgres, with load shedding if needed) rather than fail. Takeaway: probes that check shared dependencies turn one dependency blip into a correlated, fleet-wide failure.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "rel-pdb-drain-stuck-01",
+      "domain": "reliability",
+      "concepts": ["kubernetes-ops"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Node drain blocked by a disruption budget",
+      "prompt": "A node-pool upgrade has been stuck for two hours. `ledger` is a 3-member Raft cluster that needs 2 members for quorum. What is the right fix?",
+      "context": "```\n$ kubectl drain ip-10-0-3-17 --ignore-daemonsets --delete-emptydir-data\nevicting pod payments/ledger-1\nerror when evicting pods/\"ledger-1\" -n \"payments\" (will retry after 5s):\n  Cannot evict pod as it would violate the pod's disruption budget.\n\n$ kubectl get pdb -n payments\nNAME     MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS\nledger   3               N/A               0\n\n$ kubectl get sts ledger -n payments\nNAME     READY   AGE\nledger   3/3     211d\n```",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        { "id": "a", "text": "Change the PDB to `maxUnavailable: 1` so one member can be evicted at a time while the other two keep quorum" },
+        { "id": "b", "text": "Delete the PDB for the duration of the upgrade window and recreate it once the node pool is done" },
+        { "id": "c", "text": "Rerun the drain with `--disable-eviction` so the pods are deleted directly instead of going through eviction" },
+        { "id": "d", "text": "Raise `terminationGracePeriodSeconds` so the ledger pod has time to hand off Raft leadership before eviction" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Matches the budget to the real invariant: quorum needs 2 of 3, so one voluntary disruption at a time is safe.",
+        "b": "With no PDB, drains on two nodes can evict two members at once and lose quorum.",
+        "c": "Bypasses the budget entirely, with the same risk as deleting it.",
+        "d": "Does not change the allowed-disruptions count of 0, so the drain stays blocked."
+      },
+      "explanation": "`minAvailable: 3` on a 3-replica StatefulSet allows zero voluntary disruptions, so every drain blocks forever. The budget should encode the actual availability requirement: a 3-member quorum tolerates one member down, so `maxUnavailable: 1` (or `minAvailable: 2`) lets drains proceed one pod at a time while protecting quorum. Removing or bypassing the PDB unblocks the upgrade by discarding the protection it exists for. Takeaway: a PDB should state the invariant you need to hold, not the replica count you happen to run.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-retry-amplification-01",
+      "domain": "reliability",
+      "concepts": ["retries-timeouts", "dependency-failure"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "A seven-minute vacuum stall becomes a forty-minute outage",
+      "prompt": "The vacuum stall on the inventory database ended at 14:09, but the database stayed saturated until 14:41, when someone disabled retries in `orders`. What is the most effective structural change?",
+      "context": "```\nmobile app   -> 3 attempts\napi-gateway  -> 3 attempts (per-try timeout 2 s)\norders       -> 3 attempts (per-try timeout 1 s)\ninventory    -> 3 attempts (per-try timeout 500 ms)\npostgres     (inventory DB)\n\nincident 14:02-14:41\ninventory DB p99:                        40 ms -> 900 ms (vacuum stall 14:02-14:09)\ninventory DB queries per user request:   normal 1.0, peak 63\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Retry at only one layer, have the others fail fast and pass a do-not-retry overload signal up, and cap retries with a budget of about 10% of requests" },
+        { "id": "b", "text": "Switch every layer to exponential backoff with full jitter so retries spread out instead of arriving in synchronized waves" },
+        { "id": "c", "text": "Cut every layer from 3 attempts to 2, which brings the worst case down from 81 to 16 database queries per user request" },
+        { "id": "d", "text": "Raise each layer's per-try timeout so fewer calls time out and trigger retries while the database is running slowly" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Removes the multiplication and bounds what is left. The overload stops feeding itself once the stall clears.",
+        "b": "Jitter fixes synchronization, not volume. The database still receives up to 81 queries per user request.",
+        "c": "Still multiplicative. 16x load on a degraded database is enough to keep it saturated.",
+        "d": "Holds threads and connections longer at every layer and keeps load on the database just as high."
+      },
+      "explanation": "Retries compose multiplicatively: four layers of 3 attempts is up to 3^4 = 81 attempts at the bottom for one user action, and the observed peak of 63 is close to that. Once the database was saturated, retry traffic alone kept it saturated after the original cause was gone, which is a metastable failure. The fix is to retry at exactly one layer, propagate an explicit 'overloaded, do not retry' error upward from layers that have given up, and bound total retries with a budget (for example, retries may not exceed 10% of requests) so amplification is capped even when every call fails. Jitter and fewer attempts per layer help at the margins but leave the product in place. Takeaway: retries need to be owned by one layer and budgeted, or a short dependency blip turns into a self-sustaining overload.",
+      "references": ["Site Reliability Engineering, chapter 22: Addressing Cascading Failures"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "rel-incident-commander-focus-01",
+      "domain": "reliability",
+      "concepts": ["incident-response"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "The incident commander is stuck in the logs",
+      "prompt": "Dana declared the incident and is the incident commander. Read the channel. What should she do next?",
+      "context": "```\n#inc-checkout-5xx\n10:02 dana (IC):  declared SEV2, checkout 5xx ~30% in us-east\n10:06 dana:       looking at orders-api logs now, think it's the DB pool\n10:09 vp-eng:     what's the ETA? customers are posting on social\n10:10 raj:        restarting orders pods in us-east to see if it clears\n10:10 mei:        bumped payments pool size to 400\n10:11 sam:        should I roll back yesterday's cart deploy?\n10:12 dana:       one sec, still in the logs\n```",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "Hand the log digging to someone else, name an ops lead who owns every production change, name a comms lead for the VP and status page, and pause the uncoordinated changes" },
+        { "id": "b", "text": "Keep investigating, since she has the most context on the pool theory, and ask the VP to hold off on updates until the cause is confirmed" },
+        { "id": "c", "text": "Let Raj, Mei and Sam carry on in parallel, since trying three independent fixes at once is the fastest way to find the one that works" },
+        { "id": "d", "text": "Raise to SEV1 and page the on-call leads for orders, payments and cart so more experts can join her in the logs" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Restores the structure: one person coordinating, one owning changes, one owning communication.",
+        "b": "An IC heads-down in logs is an incident with no commander. Silence toward leadership produces more interruptions, not fewer.",
+        "c": "Three simultaneous changes make it impossible to tell which one helped or hurt, and the pool bump may make the database worse.",
+        "d": "More people in the channel without roles adds noise. Severity is not the problem here; coordination is."
+      },
+      "explanation": "The incident commander's job is coordination: deciding what is tried, by whom, in what order, and making sure stakeholders hear from one voice on a cadence. Dana is debugging while three engineers make uncoordinated production changes and a VP waits for an update, so nobody is in command. She should delegate the investigation, appoint an operations lead as the single owner of production changes (freeze the rest), appoint a communications lead to post updates every 15 to 30 minutes, and ask the team for the mitigation options (the cart rollback is a strong candidate) so she can pick one. Takeaway: the moment the IC starts doing hands-on work, the incident loses its commander.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-replica-logical-corruption-01",
+      "domain": "reliability",
+      "concepts": ["disaster-recovery"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "A bad UPDATE replicates to every copy within seconds",
+      "prompt": "A migration ran an UPDATE with no WHERE clause. What is the best recovery point actually available, and what does this reveal about the DR setup?",
+      "context": "```\nprimary:       postgres 15, us-east-1, Multi-AZ synchronous standby\ncross-region:  async streaming replica in us-west-2, replay lag p99 6 s\nbackups:       nightly snapshot 02:00 UTC, kept 14 days; WAL archiving: off\ntargets:       RPO 15 min, RTO 1 h\n\n14:20:07 UTC  migration job: UPDATE accounts SET plan_id = NULL;\n14:20:13 UTC  us-west-2 replay position passes 14:20:07\n14:31:40 UTC  incident declared\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "The 02:00 snapshot, so about 12 hours of changes are at risk; replicas protect against losing infrastructure, not bad writes, so the RPO needs WAL archiving for point-in-time recovery" },
+        { "id": "b", "text": "Promote the us-west-2 replica; with only 6 seconds of lag it still holds the pre-migration data and comfortably meets the 15-minute RPO" },
+        { "id": "c", "text": "Fail over to the Multi-AZ synchronous standby, which holds the state from just before the bad statement was committed on the primary" },
+        { "id": "d", "text": "Replay the us-west-2 replica's WAL up to 14:20:06, since a streaming replica keeps the full WAL history needed for point-in-time recovery" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Correct on both counts. The setup meets the RPO for region loss but has a 24-hour RPO for logical corruption, which is the more common disaster.",
+        "b": "The replica applied the UPDATE six seconds after the primary, eleven minutes before anyone noticed.",
+        "c": "A synchronous standby has the bad write by definition: the commit waited for it.",
+        "d": "A replica replays forward and keeps only recent WAL segments. It cannot be rewound to an earlier point."
+      },
+      "explanation": "Replication copies every committed write, good or bad, so every replica received `plan_id = NULL` within seconds. The only copy from before 14:20:07 is the 02:00 snapshot. The practical recovery is to restore that snapshot to a side instance and repair `plan_id` from it, accepting loss of plan changes made since 02:00. The DR plan quietly assumed the disaster would be losing a machine or a region; for bad writes, bugs, and ransomware the real RPO was up to 24 hours. Continuous WAL archiving (point-in-time recovery to 14:20:06) or a deliberately delayed replica closes that gap, and the restore needs a drill to prove the RTO. Takeaway: replication gives you availability, backups give you recovery, and the RPO has to hold for both kinds of loss.",
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "rel-canary-dilution-01",
+      "domain": "reliability",
+      "concepts": ["deploy-safety"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Canary analysis passes a build with 25% errors",
+      "prompt": "The automated canary analysis passed and the build went to 100%, where 25% of checkout requests failed. Why did the analysis pass, and what is the right fix?",
+      "context": "```\nanalysis: checkout-canary\nmetric:   sum(rate(http_requests_total{app=\"checkout\",code=~\"5..\"}[5m]))\n        / sum(rate(http_requests_total{app=\"checkout\"}[5m]))\nfail if:  > 0.01 for 2 consecutive intervals\ncanary weight: 2%    bake: 30 min    result: PASS\n\nafter promotion to 100%:  error ratio 0.1% -> 25.1%\npost-incident, split by version:  canary pods returned 25% 5xx for the whole bake\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "The query measures the whole fleet, so 2% of traffic at 25% errors only moved the ratio to about 0.6%; compare canary pods against a same-size baseline running the old version" },
+        { "id": "b", "text": "The 30-minute bake was too short for errors to accumulate past the threshold; extend the bake to 4 hours before allowing promotion" },
+        { "id": "c", "text": "The 1% threshold was too lax; lower it to 0.5% so the same fleet-wide query fails on a regression of this size" },
+        { "id": "d", "text": "A 2% canary is too small to be statistically meaningful; send 25% of traffic to the canary so its errors show up in the ratio" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "0.98 x 0.1% + 0.02 x 25% = 0.6%, under the 1% threshold. Splitting by version and comparing to a fresh baseline removes the dilution.",
+        "b": "The canary was failing for the full 30 minutes. A longer bake on a diluted metric still passes.",
+        "c": "Catches this build, but a canary at 10% errors (fleet ratio about 0.3%) still passes. The threshold is not the defect.",
+        "d": "Makes the blast radius 12 times larger to compensate for a broken query."
+      },
+      "explanation": "The analysis never looked at the canary: it computed the fleet-wide error ratio, where the canary's 2% share dilutes its errors 50-fold. The fleet ratio during the bake was about 0.98 x 0.1% + 0.02 x 25% = 0.6%, below the 1% gate. Good canary analysis filters by version, compares the canary to a baseline cohort of the same size started at the same time (so both share warm-up and traffic mix), and uses a statistical comparison rather than a fixed absolute threshold. Takeaway: a canary gate that is not scoped to the canary's own traffic is just a fleet health check with extra steps.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "rel-goodput-collapse-shedding-01",
+      "domain": "reliability",
+      "concepts": ["graceful-degradation", "capacity-planning"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Busy at capacity, but almost nothing reaches a client in time",
+      "prompt": "Goodput has collapsed to 640 rps while the service does close to 10,000 rps of work. Which change restores goodput fastest?",
+      "context": "```\nsearch-api, 14:05 (a partner integration is in a retry loop)\noffered load:            14,200 rps   (capacity ~10,000 rps)\nin-process queue:        unbounded FIFO, depth 51,000\np50 server latency:      8.7 s\nclient timeout:          2 s (clients retry once)\nresponses received by a client still waiting:  640 rps\nautoscaler:              +20 pods requested, ~7 min to ready\ndatabase CPU:            93%\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Bound the queue and reject excess at admission with a fast 503 and Retry-After, prioritised by caller, and drop queued requests whose client deadline has passed" },
+        { "id": "b", "text": "Raise the server-side request timeout to 30 s so requests already sitting in the queue complete instead of being thrown away" },
+        { "id": "c", "text": "Let the autoscaler finish, and in parallel move the database to a larger instance so the new pods are not starved" },
+        { "id": "d", "text": "Ask the partner and other clients to raise their timeout to 10 s so fewer requests are abandoned and retried" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Keeps the queue short enough that admitted requests finish within the client's 2 s. Goodput returns to roughly capacity within seconds.",
+        "b": "Requests in the queue are already abandoned by their clients. Finishing them is pure waste.",
+        "c": "The database is at 93%, so more pods add contention, and a resize means a failover in the middle of the incident.",
+        "d": "Offered load still exceeds capacity, so the queue keeps growing and latency passes 10 s too."
+      },
+      "explanation": "With offered load above capacity and an unbounded FIFO, the queue grows until every request waits longer than the client's timeout. The server stays fully busy computing answers for clients that have already left, and those clients retry, adding more load. Rejecting excess work cheaply at admission keeps queueing delay small, so the 10,000 rps the service can do become 10,000 rps of goodput. Prioritising by caller lets you protect interactive traffic over the partner's retry loop, and dropping requests whose deadline has passed (or serving LIFO, or using CoDel-style queue time limits) stops wasted work. Takeaway: under overload, a fast rejection is worth more than a slow success that arrives after the client gave up.",
+      "references": ["Site Reliability Engineering, chapter 21: Handling Overload"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "rel-signals-for-latency-hunt-01",
+      "domain": "reliability",
+      "concepts": ["observability"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Using metrics, traces and logs on a partial latency regression",
+      "prompt": "Checkout p99 latency went from 350 ms to 1.4 s, but only for some requests. Which of these are sound uses of your telemetry while you investigate? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Use the latency histogram, split by route, region and version, to confirm the regression and narrow down where it lives" },
+        { "id": "b", "text": "Pull tail-sampled traces of slow checkout requests to see which span accounts for the added time" },
+        { "id": "c", "text": "Add `request_id` as a label on the latency histogram so a dashboard can list the individual slow requests" },
+        { "id": "d", "text": "Search structured logs by the trace IDs of slow traces to see the parameters and errors of those exact requests" },
+        { "id": "e", "text": "Compute the fleet p99 by averaging the per-pod p99 gauges that every instance already exports" }
+      ],
+      "answer": ["a", "b", "d"],
+      "optionNotes": {
+        "a": "Metrics are cheap and complete: the right tool to detect and scope the change across bounded dimensions.",
+        "b": "Traces show where time goes inside one request. Tail-based sampling keeps the slow ones you care about.",
+        "c": "One series per request. This destroys the metrics backend and is what traces exist for.",
+        "d": "Logs carry the high-detail context (inputs, error text) for specific requests once traces have found them.",
+        "e": "Percentiles do not average. The fleet p99 has to come from merged histograms."
+      },
+      "explanation": "Each signal answers a different question. Metrics answer 'is it happening, and where?' across bounded dimensions such as route, region and version. Traces answer 'where does the time go in this request?', and tail-based sampling keeps the slow or failed ones. Logs answer 'what exactly happened in this request?' when joined on trace ID. Putting request IDs on a metric turns a bounded time series into an unbounded one, and averaging per-pod p99s produces a number with no statistical meaning: a pod with few slow requests pulls it down as much as a busy pod pulls it up. Takeaway: scope with metrics, localize with traces, explain with logs, and aggregate percentiles only from histograms.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-alert-fatigue-triage-01",
+      "domain": "reliability",
+      "concepts": ["alerting", "on-call", "runbooks"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Cutting 412 pages a month without going blind",
+      "prompt": "You are asked to make the payments on-call rotation sustainable. Which changes would cut pages substantially without losing detection of real user impact? Select all that apply.",
+      "context": "```\npayments on-call, last 28 days: 412 pages (5-person weekly rotation)\nauto-resolved < 5 min:   68%\nacked, no action taken:  17%\n\nalert                         pages   led to action\nNodeCPUHigh (> 80% for 2m)      148         3\nPodRestarted                     71         5\nDiskUsage > 70%                  64         9\nQueueDepth > 1000                52        11\nCheckout5xx > 1% (5m)            38        29\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Replace the NodeCPUHigh and PodRestarted pages with SLO burn-rate pages on checkout availability and latency, keeping CPU and restarts on dashboards" },
+        { "id": "b", "text": "Make the disk alert a business-hours ticket at 80%, and page only when the fill-rate forecast reaches 100% within 4 hours" },
+        { "id": "c", "text": "Raise every alert threshold by 50% across the board, since most of the pages auto-resolve well below today's levels" },
+        { "id": "d", "text": "Give every paging alert an owner and a runbook link, review pages weekly, and delete or demote alerts that rarely lead to action" },
+        { "id": "e", "text": "Have the pager auto-acknowledge alerts that clear within 5 minutes, so those pages stop counting against the rotation" }
+      ],
+      "answer": ["a", "b", "d"],
+      "optionNotes": {
+        "a": "Cause-based alerts with almost no action rate are replaced by symptom-based ones that fire when users are hurt, whatever the cause.",
+        "b": "Disk at 70% is not urgent. Disk that will be full before morning is, and the forecast pages exactly then.",
+        "c": "Blunt. It mutes the one alert that is reliably actionable (Checkout5xx, 29 of 38) while keeping noise that is noisy for reasons unrelated to the threshold.",
+        "d": "The ongoing process that keeps the noise from coming back, and runbooks make the remaining pages fast to act on.",
+        "e": "The page still fires and still wakes someone up. Hiding it from the count makes the dashboard better, not the rotation."
+      },
+      "explanation": "Most of these pages are causes (CPU, restarts) that only sometimes affect users, so they have tiny action rates. Paging on symptoms, meaning SLO burn rate on what users experience, catches real impact regardless of cause and removes most of the noise. Slow-moving resources like disk should page on time-to-exhaustion, not a static percentage. A standing review, with an owner and runbook required for every page, stops new noise from creeping back. Across-the-board threshold changes and auto-acknowledge treat the count instead of the cause, and the first one hides the alert that works best. Takeaway: every page should be urgent, actionable and about user impact, and anything else becomes a ticket or a dashboard.",
+      "references": ["Site Reliability Engineering, chapter 6: Monitoring Distributed Systems"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-breaker-design-choices-01",
+      "domain": "reliability",
+      "concepts": ["circuit-breakers", "graceful-degradation"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Circuit breakers for an optional and a required dependency",
+      "prompt": "You are adding circuit breakers to checkout's calls to `recommendations` (optional on the page) and to the card-payments provider (required to place an order). Which design choices are sound? Select all that apply.",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "Count timeouts, connection failures and 5xx responses as breaker failures, but not client errors such as 400 validation failures or 404s" },
+        { "id": "b", "text": "When the breaker half-opens, allow a small number of probe requests through and reopen it straight away if they fail" },
+        { "id": "c", "text": "When the recommendations breaker is open, render the page with a cached or empty recommendations module instead of failing" },
+        { "id": "d", "text": "When the payments breaker is open, hold payment requests in an in-memory queue and replay them automatically once it closes" },
+        { "id": "e", "text": "Trip after 3 consecutive failures with no minimum request volume, so the breaker reacts as fast as possible at any traffic level" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "A breaker measures dependency health. A client sending bad input should not cut everyone off. (429s are a judgment call: they signal overload and usually count.)",
+        "b": "Limited probes test recovery without sending a full wave of traffic at a dependency that may still be fragile.",
+        "c": "The point of the breaker on an optional dependency is to keep the page up without it.",
+        "d": "The user is waiting on the order, the queue is lost on restart, and a replay without idempotency keys can double-charge. Fail fast and say so.",
+        "e": "At 5,000 requests per second, a background 1% error rate produces three failures in a row every few minutes, so the breaker flaps. Use a failure rate over a window with a minimum volume."
+      },
+      "explanation": "A circuit breaker protects the caller and the dependency by failing fast once the dependency looks unhealthy, then carefully testing recovery. It should count failures that indicate dependency trouble, trip on a failure rate over a window with a minimum request volume so it neither flaps nor ignores low traffic, and half-open with a few probes. What happens when it is open depends on the dependency: an optional one degrades to cached or empty content, a required one fails fast with a clear, retryable error to the user. Hidden in-memory queues for money movement are a durability and duplication bug. Takeaway: the breaker's open-state behavior is a product decision per dependency, and the trip logic must be statistically sane at your traffic level.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-first-game-day-01",
+      "domain": "reliability",
+      "concepts": ["chaos-engineering"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Planning a team's first chaos experiment in production",
+      "prompt": "A team that has never run fault injection wants its first experiment to be killing one availability zone's cache nodes for the session service. Which practices should the plan include? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Define steady state as a user-facing metric, such as successful logins per minute, and state the hypothesis that it holds during the fault" },
+        { "id": "b", "text": "Agree abort conditions and a one-command rollback in advance, with someone watching the steady-state metric throughout" },
+        { "id": "c", "text": "Start with the smallest blast radius that could disprove the hypothesis, and widen only after a clean result" },
+        { "id": "d", "text": "Run it unannounced at peak traffic, so the result reflects real conditions and real on-call response" },
+        { "id": "e", "text": "Count the experiment as successful only if nothing degrades, since a degradation means the experiment was designed badly" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Steady state on a business metric, not CPU, is what makes the result meaningful.",
+        "b": "Abort criteria and a tested stop button are what make it an experiment rather than an incident.",
+        "c": "Minimizing blast radius is a core principle, especially for a first run.",
+        "d": "Surprise game days at peak are for mature programs, if ever. A first experiment needs stakeholders informed and a quiet period.",
+        "e": "Finding a weakness before customers do is the best possible outcome of an experiment."
+      },
+      "explanation": "Chaos engineering is the scientific method applied to production resilience. You measure a steady state that reflects user experience, form a hypothesis that it survives a realistic fault, limit the blast radius, agree how you will stop, then run it and compare. A first experiment should be announced, run off-peak with the owning team present, and kept as small as possible while still able to disprove the hypothesis. A hypothesis that fails is a success: it found a weakness cheaply. Takeaway: the goal of a chaos experiment is learning with a bounded cost, so design the stop condition before you design the fault.",
+      "references": ["Principles of Chaos Engineering (principlesofchaos.org)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-blameless-review-pushback-01",
+      "domain": "reliability",
+      "concepts": ["postmortems"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "A VP wants the engineer who pushed the config off prod access",
+      "prompt": "You are facilitating the postmortem review for the outage below. Ten minutes in, the VP of Engineering says: \"Who pushed this? I want them off production access, and a write-up of why they were careless.\" The engineer who pushed the change is in the room. How do you respond in the moment, and what should the postmortem focus on and contain?",
+      "context": "```\nimpact:    payments API 100% errors in all 4 regions for 47 min, ~$380k in failed orders\ntrigger:   config push set db.pool.max_connections = 0 (intended: 40, value field left blank)\npath:      config UI -> global config store -> every region within 90 s\ndetection: first page at +11 min (alert on 5xx > 5% for 10m)\nmitigation: rollback took 36 min; the previous value had to be found in an old Slack thread\n```",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Responds in the room calmly and without arguing personally: moves the discussion from who to how the system let a blank value reach every region, and states that punishing the pusher makes people hide mistakes",
+          "Treats the push as a reasonable action in context (blank field accepted, no preview, no diff) and reconstructs the timeline from system logs, not blame",
+          "Names concrete systemic contributing factors from the data: no validation or range check on the field, global push with no staged regional rollout, slow detection (10-minute alert window), and no one-click rollback or version history",
+          "Proposes owned, dated action items ranked by leverage (prevent: schema validation and staged rollout; detect: faster SLO burn alert; mitigate: versioned config with instant revert), not 'be more careful' or retraining",
+          "Follows up privately with the VP to explain blamelessness in business terms (faster reporting, shorter time to recover) and gives accountability a real form: owners and deadlines on the action items"
+        ],
+        "redFlags": [
+          "Agrees to remove the engineer's access or lists 'human error' as the root cause",
+          "Action items such as 'be more careful', 'add a second reviewer for every push' with no tooling change, or training only",
+          "Publicly rebukes the VP in a way that turns the review into a status fight",
+          "Lets the review end without addressing the 36-minute rollback"
+        ],
+        "exemplar": "In the room I would say: \"Let's hold the who for now. Anyone on this team could have typed that value, because the tool accepted a blank field and sent it to four regions in 90 seconds. If we make this about one person, the next person who notices a bad push will hesitate before saying so. I want to spend this hour on why the system allowed it.\" Then I steer the timeline to the gaps. The config UI had no type or range validation, so 0 was accepted. Changes go global at once, with no canary region. The 10-minute alert window cost 11 minutes of detection. And there was no version history, so rollback took 36 minutes of searching Slack.\n\nThe action items, ranked: schema validation that rejects 0 and blanks (owner, two weeks); staged config rollout by region with automatic halt on burn rate; versioned config with one-click revert; a 1-hour and 5-minute burn-rate page instead of 5xx > 5% for 10 minutes. Afterwards I meet the VP one to one: blameless reviews are how we get people to report near misses, and accountability lives in owned, dated actions that I will report back on in 30 days."
+      },
+      "explanation": "The trigger was a human action, but the outage was a system property: a blank field accepted, propagated globally in 90 seconds, detected late and rolled back slowly. A blameless review is not leniency. It gets accurate information out of the people closest to the failure, and it puts the effort into controls that work whoever is at the keyboard. The facilitator has to redirect the room without humiliating the VP, then win the argument privately in terms the VP cares about. Takeaway: if the fix for an outage is 'that person should be more careful', the review has not found the cause yet.",
+      "references": ["Site Reliability Engineering, chapter 15: Postmortem Culture: Learning from Failure"],
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "rel-checkout-slo-design-01",
+      "domain": "reliability",
+      "concepts": ["slos-error-budgets"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "SLIs and SLOs for a checkout API with a 99.5% payment dependency",
+      "prompt": "You are defining SLOs for a new checkout API (peak 3,000 rps). It calls a card-payments provider whose contract promises 99.5% monthly availability. Card declines come back as HTTP 200 with `status: declined`. The product lead asks for \"five nines\". Propose the SLIs, how and where you measure them, the SLO targets, and how you handle the payment provider and the five-nines request.",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Defines request-based SLIs as good events over valid events: availability counts 5xx and timeouts as bad and excludes or counts as good client errors and card declines; latency is the fraction of checkout submissions under a stated threshold (for example 99% under 1 s)",
+          "Measures at the load balancer or edge (or with client telemetry), not from the service's own metrics, so failures before the service and timeouts are counted",
+          "Recognizes that a synchronous hard dependency at 99.5% caps achievable availability near 99.5% unless mitigated, and names a mitigation such as a second provider, or accepting the order and authorizing asynchronously with a reconciliation path",
+          "Answers the five-nines request with numbers (about 26 seconds of downtime per 30 days versus about 3.6 hours at 99.5%) and ties the target to user and business need and cost",
+          "Specifies the window (for example 28 or 30 days rolling), the error budget it implies, and burn-rate alerting tied to the SLO"
+        ],
+        "redFlags": [
+          "Sets 99.99% or 99.999% while still calling a 99.5% provider synchronously with no mitigation",
+          "Counts card declines as errors, or uses CPU or pod health as an SLI",
+          "Picks a separate SLO for every internal microservice instead of the user journey",
+          "Measures only from the service's own success counter"
+        ],
+        "exemplar": "SLIs, measured at the edge load balancer for POST /checkout: availability is non-5xx, non-timeout responses over all valid requests. 4xx validation errors and card declines are correct answers, so they count as good. Latency is the share of submissions answered within 1 s.\n\nThe provider sets the ceiling. Called synchronously at 99.5%, it caps checkout at about 99.5% even if our code is perfect. So the first SLO is 99.5% availability and 99% under 1 s over a 30-day rolling window, which is about 3.6 hours of budget. In parallel I would make the case for raising it: a second provider with failover, or accepting the order and authorizing asynchronously, with a 'payment pending' state and reconciliation, which decouples our availability from theirs. With that in place, 99.9% is realistic.\n\nTo the product lead: five nines is 26 seconds of downtime a month, less than one bad deploy, and stricter than what our payment provider gives us. I would ask what users actually need. Then I would set burn-rate alerts (fast: 14.4x over 1 h; slow: 6x over 6 h) and an error budget policy that both teams sign."
+      },
+      "explanation": "Good SLIs measure what users experience at the boundary they see, and they treat a correct answer (a decline) as success. The target has to be achievable: serial hard dependencies multiply, so a 99.5% provider bounds checkout unless the architecture removes it from the critical path. Converting nines into minutes is the fastest way to have a productive conversation about targets. Takeaway: an SLO is a promise you can keep, set by user need and bounded by your dependencies, not an aspiration.",
+      "references": ["Site Reliability Engineering, chapter 4: Service Level Objectives"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-budget-exhausted-launch-01",
+      "domain": "reliability",
+      "concepts": ["slos-error-budgets", "deploy-safety"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Error budget gone on day 12, launch due next Tuesday",
+      "prompt": "Your team's 30-day error budget ran out on day 12. Both burns came from bad deploys that took over 40 minutes to roll back. The error budget policy, signed by engineering and product last quarter, says feature releases freeze until the budget recovers, except for P0 fixes. The VP of Product wants to ship a partner launch next Tuesday, with a date written into the partner contract. As the staff engineer for the area, how do you handle it?",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Treats the policy as an agreement to honor, not a weapon: brings data on what consumed the budget and the user impact, and frames it as a joint decision, not a flat no",
+          "Separates the launch's risk from the cause of the burn: the burns came from deploy safety, so proposes making this release safer (feature flag or dark launch, canary, rehearsed fast rollback, deploy outside peak)",
+          "Insists that any exception is explicit, written down, made by the people who own the tradeoff (for example the VPs of product and engineering), and carries conditions such as a canary gate and an abort criterion",
+          "Points the freeze capacity at the actual causes: automated canary analysis and rollback that bring the 40-minute rollback time down",
+          "Acknowledges the contract date as legitimate business input and weighs it against concrete user impact, without changing the SLO quietly to make the freeze go away"
+        ],
+        "redFlags": [
+          "Refuses outright, citing the policy, with no options offered",
+          "Lets the launch ship quietly with no recorded exception",
+          "Proposes lowering the SLO or resetting the budget so the freeze disappears",
+          "Treats reliability as absolute and ignores the contractual stakes"
+        ],
+        "exemplar": "I would get ahead of it and meet the VP of Product with data, not a policy citation: two deploy incidents, roughly 90 minutes of checkout errors, and both made worse by 40-minute rollbacks. The policy is ours as much as theirs, so the question is how to honor it while meeting a contractual date.\n\nThe budget burned because deploys are risky, not because the partner feature is. So I would propose shipping it under conditions. The code goes out dark behind a flag this week, which is effectively a no-op deploy. On Tuesday we enable it for the partner only, with a pre-agreed abort metric, and turning it off is one flag flip, not a 40-minute rollback. If that is acceptable, the exception gets written down and approved by the VPs of Engineering and Product, with those conditions attached.\n\nMeanwhile the rest of the freeze goes to the real cause: automated canary analysis and one-command rollback, with a target of under 5 minutes to revert. I would not touch the SLO to make the freeze go away. That breaks the trust the policy depends on."
+      },
+      "explanation": "An error budget policy turns reliability arguments into a pre-agreed decision rule, and it only works if exceptions are rare, explicit and owned. The strongest move here is to notice that the burn came from deploy mechanics, which is fixable, and that a flag-gated release can make this specific launch nearly risk-free. That respects both the contract and the policy. Quietly bending the SLO or flatly refusing both erode the policy's credibility. Takeaway: use the error budget to steer engineering effort toward the cause, and make any exception a documented decision by the people who own the tradeoff.",
+      "references": ["The Site Reliability Workbook, chapter 2: Implementing SLOs"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-on-call-burnout-plan-01",
+      "domain": "reliability",
+      "concepts": ["on-call", "runbooks"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Six-week plan for a rotation that is burning people out",
+      "prompt": "A five-person team runs a weekly on-call rotation that averages 35 pages a week, 9 of them overnight. Two engineers have told their manager they are considering leaving because of it. The manager asks you, the staff engineer, for a six-week plan. What do you do?",
+      "language": null,
+      "estSeconds": 420,
+      "rubric": {
+        "keyPoints": [
+          "Measures first: categorizes the last 4 to 8 weeks of pages by alert, actionability, time of day and root cause, and sets an explicit target (for example at most 2 actionable incidents per shift, near-zero non-actionable overnight pages)",
+          "Removes noise quickly: deletes or demotes alerts that rarely lead to action, replaces cause-based pages with symptom-based SLO burn-rate pages, groups and deduplicates, and moves non-urgent alerts to business-hours tickets",
+          "Fixes the top recurring causes with explicitly reserved capacity (the on-call engineer works on toil, not features, and leadership protects that time)",
+          "Makes the rotation humane: a secondary or backup, time off after overnight pages, a handoff review each week, and a runbook link on every paging alert",
+          "Tracks the metrics weekly and reports progress to the manager and the team, with a fallback lever (merging with a sibling team's rotation, or follow-the-sun) if the numbers do not move"
+        ],
+        "redFlags": [
+          "Only adds more people to the rotation so each person is on call less often",
+          "Raises thresholds blindly with no review of what they detect",
+          "Treats it as a resilience or attitude problem for the two engineers",
+          "Plans a large rewrite as the only fix"
+        ],
+        "exemplar": "Week 1: data. I would pull 8 weeks of pages and tag each one: which alert, whether it was actionable, the hour, and the underlying cause. Usually a handful of alerts produce most of the volume. The targets I would publish: at most two actionable incidents per shift, and no overnight page that does not need a human within the hour.\n\nWeeks 1 to 2: cut noise. Delete alerts with no action in a month, convert CPU and restart pages into SLO burn-rate pages, group duplicates, and move anything non-urgent to a ticket queue for business hours. Every remaining page gets an owner and a runbook link.\n\nWeeks 2 to 6: fix causes. The on-call engineer works only on the top recurring causes and toil, and I get the manager to commit to that publicly. Each week's handoff review picks the next item.\n\nThroughout: a secondary on call, a comp day after any night with more than one page, and a weekly chart of pages per shift shared with the team and the manager. If week 6 is not under target, I would propose merging rotations with the sister team. And I would tell the two engineers directly what is changing and when."
+      },
+      "explanation": "On-call pain is almost always a system problem in disguise: noisy alerts, recurring unfixed causes and no protected time to fix them. The strong answer starts with data, removes noise first because that is fast and visible, then funds the fixes by protecting capacity, and makes the human side sustainable. More people on the rotation dilutes the pain without reducing it. Takeaway: treat page load as a reliability metric with a target, an owner and a weekly review, or it will only grow.",
+      "references": ["Site Reliability Engineering, chapter 11: Being On-Call"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-deadline-propagation-chain-01",
+      "domain": "reliability",
+      "concepts": ["retries-timeouts"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Timeouts that grow down the call chain",
+      "prompt": "During a slowdown in `pricing`, every service in the chain below ran out of worker threads, and they kept computing answers long after the mobile client had given up. Design the timeout, deadline and retry policy for this chain, and explain what each service does with it.",
+      "context": "```\nmobile client   timeout 3 s, retries 1\n  -> gateway    timeout to orders 10 s\n  -> orders     timeout to inventory 10 s\n  -> inventory  timeout to pricing 5 s, 3 attempts\n  -> pricing    p50 40 ms, p99 180 ms normally; no timeout on its DB queries\n```",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Propagates a deadline from the edge (for example a gRPC deadline or a remaining-time header) and has each hop compute its remaining budget minus local overhead, never letting a downstream timeout exceed what the caller has left",
+          "Sets per-hop timeouts from measured latency (for example a multiple of p99) so they shrink toward the leaves, and checks that each caller's timeout covers its callees' timeouts times attempts",
+          "Retries at one layer only, only for retryable errors, only when the remaining budget allows another attempt, with jittered backoff and a retry budget",
+          "Cancels downstream work when the deadline passes or the caller disconnects (context cancellation through to DB statement timeouts), and drops requests whose deadline has already expired before starting work",
+          "Handles clock skew by passing relative remaining time between hosts rather than trusting absolute timestamps, or subtracts a skew margin"
+        ],
+        "redFlags": [
+          "Sets every timeout to the same value, or simply lowers all of them to 1 s with no reasoning",
+          "Adds retries at more layers to compensate for timeouts",
+          "Fixes it by raising thread pool sizes",
+          "Ignores cancellation, so work continues after the caller has gone"
+        ],
+        "exemplar": "Today the timeouts grow as you go deeper: the client waits 3 s, but orders will wait 10 s and inventory up to 15 s across three attempts, so a pricing slowdown keeps every hop's threads busy for work nobody is waiting for.\n\nPolicy: the gateway sets the request deadline at 2.5 s (the client's 3 s minus a margin) and propagates the remaining time, as a relative duration such as `grpc-timeout`, so clock skew does not matter. Each service subtracts its own overhead, passes the rest down, and its client libraries take the minimum of the configured timeout and the remaining deadline. Configured per-hop ceilings come from latency data: pricing about 300 ms (well above its p99), inventory 600 ms, orders 1.2 s.\n\nRetries happen in inventory only, at most one extra attempt, only on timeouts and 503s, only if at least 2x pricing's p99 is left, with jitter, and with a retry budget of 10% of requests. Everyone else fails fast with an 'overloaded, don't retry' code.\n\nCancellation: when the deadline expires or the caller disconnects, the context is cancelled through to pricing's DB driver, and statement timeouts are set. Services check the deadline before dequeuing, so expired work is dropped instead of run."
+      },
+      "explanation": "Static timeouts that grow down the chain guarantee wasted work during a slowdown: inner services keep working after outer ones have given up, holding threads until everything saturates. Deadline propagation makes the whole chain share one budget, cancellation frees resources the moment the budget is gone, and single-layer budgeted retries stop amplification. Passing relative remaining time sidesteps clock skew between hosts. Takeaway: a request should carry its deadline, and no server should do work for a caller that has already given up.",
+      "references": ["Site Reliability Engineering, chapter 22: Addressing Cascading Failures"],
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "rel-on-sale-capacity-plan-01",
+      "domain": "reliability",
+      "concepts": ["capacity-planning", "graceful-degradation"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Capacity plan for an 8x on-sale spike in five weeks",
+      "prompt": "A ticketing platform has a major on-sale event in five weeks. Marketing expects 8x the normal peak in the first 10 minutes. Using the facts below, describe your capacity plan: what you model, what you change, what you test, and how you protect the system if demand exceeds the plan.",
+      "context": "```\nnormal peak:         5,000 rps (85% browse/search, 12% seat holds, 3% checkout)\npostgres primary:    55% CPU at normal peak; seat holds and orders are writes\nread path:           cache hit ratio 71%\npayment provider:    hard limit 1,500 TPS per merchant account\nautoscaling:         app pods ready in ~4 min after scale-out triggers\nlast big event:      bot traffic was 3x human traffic on the hold endpoint\n```",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Builds a per-stage demand model (browse, hold, checkout) from past events, including bot traffic, and identifies the binding constraints: write throughput on the Postgres primary and the 1,500 TPS payment cap, which no amount of app scaling changes",
+          "Shows the database cannot take 8x writes from 55% CPU and plans for it: move reads off the primary (cache, replicas), make seat holds cheaper or partition inventory, pool connections, and shield the database with admission control",
+          "Introduces a virtual waiting room or token admission that meters users into hold and checkout at a rate the database and payment cap can sustain, plus bot mitigation on the hold endpoint",
+          "Pre-scales and warms ahead of the on-sale (autoscaling at 4 minutes is too slow for a 10-minute spike), and freezes deploys and risky changes for the event",
+          "Load tests the full flow with production-like data at about 1.5x the forecast to find the real breaking point, and prepares degradation levers (kill switches for non-critical features, a static fallback page) with a runbook and owners"
+        ],
+        "redFlags": [
+          "Relies on autoscaling for the spike",
+          "Scales the stateless app tier only and assumes the database and payment provider follow",
+          "Skips load testing or tests only the browse path",
+          "No plan for demand above the forecast"
+        ],
+        "exemplar": "First, model by stage, not total rps. 8x of 5,000 is 40,000 rps, but what matters is about 4,800 rps of seat holds (writes) and checkout attempts against a 1,500 TPS payment cap, plus 3x bots on holds unless we block them. The binding constraints are the Postgres primary, already at 55% at 1x, and the payment cap. Adding app pods does nothing for either.\n\nChanges: push browse reads to cache and replicas (target a hit ratio above 95%, pre-warmed with the event's inventory); make holds cheap (row-level or partitioned seat inventory, short transactions, a pooler); add bot defenses on the hold endpoint. Then a virtual waiting room meters users into the hold stage at a rate the load test proves safe, and into checkout below about 1,300 TPS, leaving headroom under the payment cap. Ask the provider about a temporary increase in parallel.\n\nPre-scale everything an hour ahead and warm caches. Freeze deploys for 48 hours.\n\nTest: two full-flow load tests at 1.5x forecast with production-shaped data, find the breaking point, and fix what breaks. Degradation levers, with owners in a runbook: turn off recommendations and seat maps, show a static queue page, and lower the waiting room admission rate."
+      },
+      "explanation": "Capacity planning for a spike is about finding the binding constraint for each stage and controlling admission to it, not about multiplying instance counts. Here the write path on a single primary and a third-party payment cap set the ceiling, autoscaling is too slow for a 10-minute peak, and bots inflate the most expensive endpoint. A waiting room turns unbounded demand into a controlled rate, load tests make the plan evidence-based, and degradation levers cover the case where the forecast is wrong. Takeaway: plan capacity by constraint, protect each constraint with admission control, and rehearse the case where demand beats the forecast.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-first-thirty-minutes-01",
+      "domain": "reliability",
+      "concepts": ["incident-response", "postmortems"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 1,
+      "title": "The first thirty minutes after a page",
+      "prompt": "You are paged for elevated checkout errors and are the first responder. Put these steps in the order you should do them.",
+      "language": null,
+      "estSeconds": 75,
+      "items": [
+        { "id": "1", "text": "Acknowledge the page and confirm on the SLI dashboard that users are actually affected" },
+        { "id": "2", "text": "Declare an incident, set the severity and name an incident commander" },
+        { "id": "3", "text": "Open the incident channel and post a first status update with the known impact" },
+        { "id": "4", "text": "Mitigate: roll back the suspected change or shift traffic away, before root-causing" },
+        { "id": "5", "text": "Confirm recovery on the SLI and watch for recurrence" },
+        { "id": "6", "text": "Stand down, hand off follow-ups and schedule the postmortem" }
+      ],
+      "explanation": "Confirm impact first so you do not mobilize people for a broken alert, then establish command and a single channel so everyone knows who decides and where updates go. Mitigation comes before root cause: rolling back the likely change stops user pain even if you are not yet sure why it broke. Recovery is confirmed on the same user-facing SLI that showed the problem, and only then do you stand down and schedule the learning. The common mistake is spending the first 20 minutes debugging alone before declaring anything. Takeaway: stop the bleeding first and understand it later, and get command and comms in place before both.",
+      "tags": ["classic"]
+    },
+    {
+      "id": "rel-config-progressive-rollout-01",
+      "domain": "reliability",
+      "concepts": ["deploy-safety"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Rolling out a global rate-limit config change safely",
+      "prompt": "You need to roll out a new set of rate-limit rules that every API gateway in every region reads from the same config store. Put the rollout steps in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        { "id": "1", "text": "Validate the rules against the schema and dry-run them against a sample of recorded production traffic" },
+        { "id": "2", "text": "Apply to staging and run the gateway integration and smoke tests" },
+        { "id": "3", "text": "Apply to one canary cell in one region and compare its 429 and error rates with a baseline cell" },
+        { "id": "4", "text": "Bake for a fixed period with automatic revert if the canary breaches its gates" },
+        { "id": "5", "text": "Widen in stages (one region, then 50%, then all), with a bake and health gate at each stage" },
+        { "id": "6", "text": "Keep the previous config version pinned for one-step revert until the change has run a full traffic cycle" }
+      ],
+      "explanation": "Config is code that skips most of the pipeline unless you deliberately give it one, and global config is a classic source of all-region outages. Static validation and a replay against real traffic catch the cheap mistakes, staging catches integration breaks, and a single canary cell compared against a matching baseline limits the blast radius of anything that only shows up with real users. Staged widening with bake times and automatic revert means a bad change is caught while it affects a small fraction of traffic, and a pinned previous version makes revert instant. Takeaway: give configuration the same progressive, gated rollout as binaries, because it can break things just as badly.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-chaos-experiment-steps-01",
+      "domain": "reliability",
+      "concepts": ["chaos-engineering"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Running a chaos experiment from hypothesis to fix",
+      "prompt": "Put the steps of a well-run chaos experiment, terminating one availability zone's cache nodes, in order.",
+      "language": null,
+      "estSeconds": 75,
+      "items": [
+        { "id": "1", "text": "Define steady state as a user-facing metric and record its normal range" },
+        { "id": "2", "text": "Write the hypothesis: steady state holds when one zone's cache nodes are terminated" },
+        { "id": "3", "text": "Set the blast radius, abort conditions and rollback, and notify the affected teams" },
+        { "id": "4", "text": "Inject the fault" },
+        { "id": "5", "text": "Observe the steady-state metric and supporting signals against the hypothesis" },
+        { "id": "6", "text": "End the fault, confirm recovery, and file and prioritize fixes for any weakness found" }
+      ],
+      "explanation": "Without a measured baseline, you cannot tell whether the fault changed anything, so steady state comes first, then a falsifiable hypothesis about it. Safety (blast radius, abort criteria, a tested stop, informed stakeholders) must be in place before injection, not improvised during it. After the fault you compare against the hypothesis, end the experiment cleanly and turn findings into prioritized work; an experiment whose findings are not fixed is just an outage you scheduled. Takeaway: a chaos experiment is a controlled test of a written hypothesis, and the fixes it produces are the deliverable.",
+      "references": ["Principles of Chaos Engineering (principlesofchaos.org)"]
+    },
+    {
+      "id": "rel-regional-db-failover-01",
+      "domain": "reliability",
+      "concepts": ["disaster-recovery", "incident-response"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 4,
+      "title": "Failing a primary database over to another region",
+      "prompt": "us-east-1 is badly impaired and its Postgres primary is unreachable from most of the fleet. A streaming replica runs in us-west-2. Put the failover steps in order.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        { "id": "1", "text": "Confirm the impairment is regional and not recovering, and have the incident commander make the failover call" },
+        { "id": "2", "text": "Fence the old primary: stop its writers and revoke its ability to accept writes" },
+        { "id": "3", "text": "Record the replica's last replayed position to bound the data-loss window, then promote it" },
+        { "id": "4", "text": "Point writers at the new primary and scale us-west-2 services for full traffic" },
+        { "id": "5", "text": "Shift user traffic to us-west-2 and verify SLIs and data integrity checks" },
+        { "id": "6", "text": "When us-east-1 recovers, rebuild it as a replica of the new primary before any failback" }
+      ],
+      "explanation": "Failover is expensive and lossy with async replication, so the decision comes first and is explicit. Fencing the old primary before promotion prevents split brain: if us-east-1 comes back and keeps accepting writes, you have two divergent primaries, which is far worse than downtime. Recording the replay position before promotion gives you the exact window of possibly lost transactions to reconcile later. Writers and capacity have to be ready before user traffic moves, and the old primary must be rebuilt from the new one, never simply restarted, because it may hold writes the new primary never saw. Takeaway: fence before you promote, and never let a former primary rejoin without being rebuilt.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-error-budget-remaining-01",
+      "domain": "reliability",
+      "concepts": ["slos-error-budgets"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 1,
+      "title": "Minutes left in a 99.95% monthly budget",
+      "prompt": "A service has a 99.95% time-based availability SLO over a 30-day window. Two incidents this window caused 9 minutes of full downtime in total. How many minutes of downtime remain in the error budget?",
+      "language": null,
+      "estSeconds": 60,
+      "numeric": { "answer": 12.6, "unit": "minutes", "fullCreditRatio": 1.1, "zeroCreditRatio": 2 },
+      "explanation": "30 days = 43,200 minutes. The budget is 0.05% of that: 43,200 x 0.0005 = 21.6 minutes. After 9 minutes, 21.6 - 9 = 12.6 minutes remain. It helps to know a few anchors by heart: per 30 days, 99.9% is about 43 minutes, 99.95% about 22 minutes, and 99.99% about 4.3 minutes. Takeaway: converting nines into minutes is the quickest way to make an SLO concrete for everyone in the room."
+    },
+    {
+      "id": "rel-composite-availability-01",
+      "domain": "reliability",
+      "concepts": ["dependency-failure"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Expected monthly downtime from serial and redundant dependencies",
+      "prompt": "Checkout's own code and infrastructure are 99.95% available. Every request synchronously needs `auth` (99.99%) and `cart` (99.9%). It also needs `pricing`, which runs as two independent regional deployments at 99.0% each; checkout fails over between them instantly, so it needs only one. `recommendations` (99.5%) is optional and has a fallback. Assuming independent failures, how many minutes of checkout unavailability should you expect in a 30-day month?",
+      "language": null,
+      "estSeconds": 150,
+      "numeric": { "answer": 73.4, "unit": "minutes per 30 days", "fullCreditRatio": 1.2, "zeroCreditRatio": 3 },
+      "explanation": "Pricing in parallel: unavailable only if both regions are down, 0.01 x 0.01 = 0.0001, so 99.99%. Recommendations has a fallback, so it does not count. Serial chain: 0.9995 x 0.9999 x 0.999 x 0.9999 = 0.99830. Unavailability is 0.00170, and 0.00170 x 43,200 minutes is about 73.4 minutes. (Summing the unavailabilities, 0.05% + 0.01% + 0.1% + 0.01% = 0.17%, gives the same answer when they are small.) Including recommendations would add about 216 minutes, and treating pricing as a single 99% dependency would add about 430. Takeaway: serial hard dependencies multiply, so you remove a dependency from the critical path or make it redundant rather than demanding more nines from it.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-burn-rate-time-to-exhaust-01",
+      "domain": "reliability",
+      "concepts": ["slos-error-budgets", "alerting"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Hours until the error budget runs out at the current burn",
+      "prompt": "An API has a 99.9% request-based availability SLO over a 30-day calendar window. 40% of this window's budget is already spent. Since this morning, a bad cache node has held the error ratio steady at 0.72%. Traffic is constant and no old errors age out within the horizon you care about. At this rate, how many hours until the budget is fully exhausted?",
+      "language": null,
+      "estSeconds": 120,
+      "numeric": { "answer": 60, "unit": "hours", "fullCreditRatio": 1.2, "zeroCreditRatio": 3 },
+      "explanation": "Burn rate = error ratio / budget ratio = 0.72% / 0.1% = 7.2. At burn rate 1, the full budget lasts the whole window, 720 hours. At 7.2, the full budget would last 720 / 7.2 = 100 hours. Only 60% remains, so 0.6 x 100 = 60 hours. Two and a half days is a ticket-or-business-hours problem, not necessarily a 3 a.m. page, which is exactly the judgment burn-rate alerting encodes. A common slip is forgetting the 40% already spent and answering 100. Takeaway: burn rate converts any error ratio into time-to-exhaustion, which is what urgency should be based on.",
+      "references": ["The Site Reliability Workbook, chapter 5: Alerting on SLOs"]
+    },
+    {
+      "id": "rel-product-page-degradation-01",
+      "domain": "reliability",
+      "concepts": ["graceful-degradation", "circuit-breakers"],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 4,
+      "title": "A product page that survives its optional dependencies",
+      "prompt": "A product detail page serves 20,000 rps and calls six services: catalog and pricing (needed to sell), inventory (important), and reviews, recommendations and personalization (nice to have). Last month a recommendations slowdown took the whole page down because the page service waited on every call. Sketch an architecture that degrades gracefully, and explain the timeout budgets, fallbacks and controls.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Classifies dependencies by criticality and defines the fallback for each: stale cached catalog data, pricing from a short-TTL cache or the page withholding buy until a fresh price is available, inventory shown as 'check availability', and optional modules omitted",
+          "Fans out in parallel within an overall page deadline (for example 300 ms), with a per-dependency timeout budget, and renders whatever has returned when the budget ends instead of waiting for all calls",
+          "Isolates dependencies with bulkheads (separate connection pools or concurrency limits) and circuit breakers so one slow service cannot exhaust shared threads",
+          "Provides kill switches through a config or flag store to turn off modules quickly, plus load shedding at the edge that protects the critical path",
+          "Instruments degraded responses (fallback rate per module) and alerts on them, so degradation is visible rather than silent"
+        ],
+        "redFlags": [
+          "Sequential calls, or waiting for every dependency before rendering",
+          "One shared thread or connection pool for all dependencies",
+          "Serving stale prices with no bound or check at checkout",
+          "Degradation that is invisible in monitoring"
+        ],
+        "exemplar": "Edge (CDN plus gateway) sends requests to the page service. The page service fans out in parallel to all six, inside a 300 ms page deadline. Each dependency has its own budget (catalog and pricing 150 ms, inventory 100 ms, optional modules 80 ms), its own bulkhead (a concurrency limit and connection pool) and a circuit breaker.\n\nFallbacks: catalog falls back to a regional cache that is allowed to be minutes stale. Pricing reads a cache with a 60 s TTL, and the price is always re-checked at checkout. If no fresh price exists, the page shows the product with a 'see price in cart' state. Inventory falls back to 'check availability'. Reviews, recommendations and personalization are simply left off when their budget expires or their breaker is open.\n\nA flag store holds per-module kill switches that on-call can flip without a deploy. The edge sheds low-priority traffic (bots, prefetch) first when the page service nears capacity. Every response records which modules were served degraded, and dashboards plus alerts track the fallback rate per module, so 'the page is up' never hides 'recommendations has been off for six hours'.",
+        "requiredComponents": ["cdn|api_gateway|load_balancer", "service", "cache", "config_store", "observability"]
+      },
+      "explanation": "Graceful degradation is a design decision per dependency: what users see when it is slow or gone. The mechanics are parallel calls under one deadline, per-dependency budgets, bulkheads and breakers so slowness cannot spread, and fallbacks that are safe for the data (stale catalog is fine; stale prices need a guard). Kill switches and edge shedding give operators control, and fallback metrics keep degradation from becoming a silent permanent state. Takeaway: an optional dependency is only optional if the code has a deadline, an isolated pool and a rendered fallback for it.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-ledger-two-region-dr-01",
+      "domain": "reliability",
+      "concepts": ["disaster-recovery"],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 5,
+      "title": "Disaster recovery for a payments ledger with a one-minute RPO",
+      "prompt": "Design disaster recovery for a payments ledger that takes 2,000 writes per second. Requirements: zero loss of committed transactions if an availability zone fails; RPO of at most 1 minute and RTO of at most 15 minutes if a whole region fails; and recovery from logical corruption (a bad migration or a buggy job) to any point in the last 14 days. Sketch the components across two regions and explain replication, backups, failover and how you prove the targets.",
+      "language": null,
+      "estSeconds": 1500,
+      "rubric": {
+        "keyPoints": [
+          "Uses synchronous replication across availability zones within the primary region for zero committed-transaction loss on a zone failure",
+          "Uses asynchronous cross-region replication with replication lag monitored and alerted well below 60 s (for example at 15 s), and states that the RPO is the lag at the moment of loss",
+          "Archives WAL continuously to object storage in the other region, with immutable retention and periodic base backups, for point-in-time recovery over 14 days, and notes that replicas do not protect against logical corruption",
+          "Describes an orchestrated failover runbook: decide, fence the old primary, promote, redirect traffic through DNS or a global load balancer, with a warm standby able to take full load within 15 minutes",
+          "Plans reconciliation for transactions lost in the lag window, using idempotency keys and upstream or provider records, and rebuilds the old region from the new primary",
+          "Proves the targets with regular failover and restore drills that measure actual RPO and RTO"
+        ],
+        "redFlags": [
+          "Claims synchronous cross-region replication with no discussion of the write latency cost",
+          "Treats the cross-region replica as the backup for logical corruption",
+          "No fencing, so a returning old primary can cause split brain",
+          "Targets that have never been tested with a drill"
+        ],
+        "exemplar": "Region A has the primary plus a synchronous standby in a second zone, so a zone loss loses no committed transaction. Region B runs an async streaming replica on warm standby hardware, sized for full load, with the ledger service deployed and scaled down. Lag is a first-class SLI: page at 15 s, and treat anything over 60 s as an RPO breach in progress.\n\nFor logical corruption, WAL streams continuously to object storage in region B under an object lock, with a nightly base backup and 14 days of retention. That gives point-in-time restore to just before a bad statement. A replica would just copy the bad write.\n\nRegion failover is a scripted runbook. The IC makes the call, then the script fences region A (revokes credentials and stops writers), records the replica's last replayed position, promotes B, flips the global load balancer or DNS (low TTL) and scales B's services. The target is under 15 minutes. Transactions after the recorded position are reconciled using idempotency keys against the payment provider's records. Region A comes back only as a replica rebuilt from B.\n\nQuarterly drills fail over for real and restore a PITR copy to a scratch cluster, and record the measured RPO and RTO against the targets.",
+        "requiredComponents": ["dns|load_balancer", "service", "database", "read_replica", "object_storage", "observability"]
+      },
+      "explanation": "Each requirement maps to a different mechanism: synchronous replication within a region for zone failures, asynchronous cross-region replication with lag monitoring for region failures, and archived WAL with immutable retention for logical corruption, which replicas cannot help with. Failover needs fencing to prevent split brain, warm capacity to meet the RTO, and reconciliation for the async loss window. Targets nobody has measured in a drill are guesses. Takeaway: design DR per failure class (zone, region, bad write) and prove each RPO and RTO with drills, because untested recovery is not recovery.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "rel-cr-reservation-retry-client-01",
+      "domain": "reliability",
+      "concepts": ["retries-timeouts"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review a retrying client for stock reservations",
+      "prompt": "Checkout calls this client to reserve stock before taking payment. The checkout API has a 2 s budget, and the caller passes its deadline (or cancellation) in. During last week's inventory slowdown, checkout threads piled up and some carts ended up with duplicate reservations. Review the code and identify the issues.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "export async function reserveStock(req: ReserveRequest, deadline: number): Promise<Reservation> {\n  const maxAttempts = 4;\n  for (let attempt = 0; ; attempt++) {\n    const ctrl = new AbortController();\n    const timer = setTimeout(() => ctrl.abort(), 5_000); //!issue:2\n    try {\n      const res = await fetch(`${INVENTORY_URL}/reservations`, {\n        method: \"POST\",\n        headers: { \"content-type\": \"application/json\" },\n        body: JSON.stringify(req), //!issue:4\n        signal: ctrl.signal,\n      });\n      if (res.ok) return (await res.json()) as Reservation;\n      if (attempt + 1 >= maxAttempts) throw new HttpError(res.status); //!issue:1\n    } catch (err) {\n      if (attempt + 1 >= maxAttempts) throw err;\n    } finally {\n      clearTimeout(timer);\n    }\n    await sleep(100 * 2 ** attempt); //!issue:3\n  }\n}",
+        "go": "func ReserveStock(ctx context.Context, req ReserveRequest) (*Reservation, error) {\n\tbody, err := json.Marshal(req)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar lastErr error\n\tfor attempt := 0; attempt < 4; attempt++ {\n\t\tattemptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //!issue:2\n\t\thttpReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, inventoryURL+\"/reservations\", bytes.NewReader(body)) //!issue:4\n\t\tif err != nil {\n\t\t\tcancel()\n\t\t\treturn nil, err\n\t\t}\n\t\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n\t\tresp, err := client.Do(httpReq)\n\t\tif err == nil {\n\t\t\tif resp.StatusCode < 300 {\n\t\t\t\tvar out Reservation\n\t\t\t\terr = json.NewDecoder(resp.Body).Decode(&out)\n\t\t\t\tresp.Body.Close()\n\t\t\t\tcancel()\n\t\t\t\treturn &out, err\n\t\t\t}\n\t\t\tresp.Body.Close()\n\t\t\terr = fmt.Errorf(\"inventory: status %d\", resp.StatusCode) //!issue:1\n\t\t}\n\t\tcancel()\n\t\tlastErr = err\n\t\ttime.Sleep(time.Duration(100<<attempt) * time.Millisecond) //!issue:3\n\t}\n\treturn nil, lastErr\n}",
+        "rust": "pub async fn reserve_stock(\n    client: &reqwest::Client,\n    req: &ReserveRequest,\n    deadline: Instant,\n) -> Result<Reservation, InventoryError> {\n    let mut last_err = None;\n    for attempt in 0..4u32 {\n        let result = client\n            .post(format!(\"{INVENTORY_URL}/reservations\"))\n            .json(req) //!issue:4\n            .timeout(Duration::from_secs(5)) //!issue:2\n            .send()\n            .await;\n        match result {\n            Ok(resp) if resp.status().is_success() => return Ok(resp.json().await?),\n            Ok(resp) => last_err = Some(InventoryError::Status(resp.status())), //!issue:1\n            Err(e) => last_err = Some(InventoryError::Transport(e)),\n        }\n        tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt))).await; //!issue:3\n    }\n    Err(last_err.expect(\"loop runs at least once\"))\n}",
+        "csharp": "public async Task<Reservation> ReserveStockAsync(ReserveRequest req, CancellationToken ct)\n{\n    Exception? last = null;\n    for (var attempt = 0; attempt < 4; attempt++)\n    {\n        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); //!issue:2\n        try\n        {\n            using var resp = await _http.PostAsJsonAsync(\"/reservations\", req, cts.Token); //!issue:4\n            if (resp.IsSuccessStatusCode)\n                return (await resp.Content.ReadFromJsonAsync<Reservation>(cancellationToken: cts.Token))!;\n            last = new HttpRequestException($\"inventory: status {(int)resp.StatusCode}\"); //!issue:1\n        }\n        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)\n        {\n            last = ex;\n        }\n        await Task.Delay(TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt))); //!issue:3\n    }\n    throw last!;\n}",
+        "java": "public Reservation reserveStock(ReserveRequest req, Instant deadline) throws Exception {\n    String json = mapper.writeValueAsString(req);\n    Exception last = null;\n    for (int attempt = 0; attempt < 4; attempt++) {\n        HttpRequest httpReq = HttpRequest.newBuilder(URI.create(inventoryUrl + \"/reservations\"))\n            .timeout(Duration.ofSeconds(5)) //!issue:2\n            .header(\"Content-Type\", \"application/json\")\n            .POST(HttpRequest.BodyPublishers.ofString(json)) //!issue:4\n            .build();\n        try {\n            HttpResponse<String> resp = client.send(httpReq, HttpResponse.BodyHandlers.ofString());\n            if (resp.statusCode() / 100 == 2) {\n                return mapper.readValue(resp.body(), Reservation.class);\n            }\n            last = new IOException(\"inventory: status \" + resp.statusCode()); //!issue:1\n        } catch (IOException e) {\n            last = e;\n        }\n        Thread.sleep(100L << attempt); //!issue:3\n    }\n    throw last;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Every non-2xx response is retried, including 400, 409 and 422, which will never succeed, and 429 or 503 retries ignore Retry-After",
+          "fix": "Classify responses: retry only timeouts, connection errors, 502, 503 and 504 (and 429 honoring Retry-After); return other 4xx to the caller immediately."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "Each attempt gets a fixed 5 s timeout that ignores the caller's deadline or cancellation, so one call can keep working for more than 20 s after a caller that gave up at 2 s",
+          "fix": "Derive each attempt's timeout from the remaining deadline (link the caller's context or token), cap it from inventory's latency profile, and stop retrying when not enough budget is left for another attempt."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Deterministic exponential backoff with no jitter, no cap and no retry budget synchronizes retries from every checkout instance, and the sleep ignores cancellation",
+          "fix": "Use capped exponential backoff with full jitter, make the sleep cancellable by the deadline, and enforce a process-wide retry budget (for example retries at most 10% of calls)."
+        },
+        {
+          "id": "4",
+          "severity": "critical",
+          "summary": "A non-idempotent POST is retried without an idempotency key, so a timeout after the server committed creates a duplicate reservation",
+          "fix": "Generate an idempotency key once per logical reservation (outside the loop), send it as a header on every attempt, and have inventory deduplicate on it."
+        }
+      ],
+      "explanation": "Two issues explain the incident. The fixed 5 s per-attempt timeout ignores the caller's 2 s budget, so during a slowdown each checkout request held a thread for up to four 5 s attempts plus backoff, more than 20 s, after its own caller had given up, which is how the threads piled up. And retrying a POST whose first attempt timed out, possibly after inventory committed it, produced the duplicate reservations: a timeout does not mean the operation failed. Retrying permanent 4xx errors and lockstep backoff without jitter make overload worse. Takeaway: a safe retry needs a retryable error, an idempotent operation, a deadline-aware timeout and jittered, budgeted backoff, and missing any one of them turns resilience code into an outage amplifier.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "rel-cr-circuit-breaker-01",
+      "domain": "reliability",
+      "concepts": ["circuit-breakers"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review a hand-rolled circuit breaker",
+      "prompt": "This breaker guards calls from the pricing service to an external tax-rate API. One instance is shared by every request in the process. In production it has two complaints against it: it opened on a quiet Sunday with almost no errors, and during a real tax-API hang it never opened at all. Review it and identify the issues.",
+      "language": null,
+      "estSeconds": 480,
+      "code": {
+        "ts": "type State = \"closed\" | \"open\" | \"half-open\";\n\nexport class CircuitBreaker {\n  private state: State = \"closed\";\n  private failures = 0;\n  private openedAt = 0;\n\n  constructor(private readonly threshold = 5, private readonly cooldownMs = 30_000) {}\n\n  async call<T>(fn: () => Promise<T>): Promise<T> {\n    if (this.state === \"open\") {\n      if (Date.now() - this.openedAt < this.cooldownMs) {\n        throw new CircuitOpenError();\n      }\n      this.state = \"half-open\"; //!issue:2\n    }\n    try {\n      const result = await fn(); //!issue:4\n      this.state = \"closed\"; //!issue:1\n      return result;\n    } catch (err) {\n      this.failures++; //!issue:3\n      if (this.failures >= this.threshold) {\n        this.state = \"open\";\n        this.openedAt = Date.now();\n      }\n      throw err;\n    }\n  }\n}",
+        "go": "type Breaker struct {\n\tmu        sync.Mutex\n\tstate     State\n\tfailures  int\n\topenedAt  time.Time\n\tthreshold int\n\tcooldown  time.Duration\n}\n\nfunc (b *Breaker) Call(fn func() error) error {\n\tb.mu.Lock()\n\tif b.state == Open {\n\t\tif time.Since(b.openedAt) < b.cooldown {\n\t\t\tb.mu.Unlock()\n\t\t\treturn ErrOpen\n\t\t}\n\t\tb.state = HalfOpen //!issue:2\n\t}\n\tb.mu.Unlock()\n\n\terr := fn() //!issue:4\n\n\tb.mu.Lock()\n\tdefer b.mu.Unlock()\n\tif err == nil {\n\t\tb.state = Closed //!issue:1\n\t\treturn nil\n\t}\n\tb.failures++ //!issue:3\n\tif b.failures >= b.threshold {\n\t\tb.state = Open\n\t\tb.openedAt = time.Now()\n\t}\n\treturn err\n}",
+        "rust": "pub struct Breaker {\n    inner: Mutex<Inner>,\n    threshold: u32,\n    cooldown: Duration,\n}\n\nstruct Inner {\n    state: State,\n    failures: u32,\n    opened_at: Instant,\n}\n\nimpl Breaker {\n    pub async fn call<T, E, F, Fut>(&self, f: F) -> Result<T, BreakerError<E>>\n    where\n        F: FnOnce() -> Fut,\n        Fut: Future<Output = Result<T, E>>,\n    {\n        {\n            let mut s = self.inner.lock().unwrap();\n            if s.state == State::Open {\n                if s.opened_at.elapsed() < self.cooldown {\n                    return Err(BreakerError::Open);\n                }\n                s.state = State::HalfOpen; //!issue:2\n            }\n        }\n        let result = f().await; //!issue:4\n        let mut s = self.inner.lock().unwrap();\n        match result {\n            Ok(v) => {\n                s.state = State::Closed; //!issue:1\n                Ok(v)\n            }\n            Err(e) => {\n                s.failures += 1; //!issue:3\n                if s.failures >= self.threshold {\n                    s.state = State::Open;\n                    s.opened_at = Instant::now();\n                }\n                Err(BreakerError::Inner(e))\n            }\n        }\n    }\n}",
+        "csharp": "public sealed class CircuitBreaker\n{\n    private readonly object _gate = new();\n    private readonly int _threshold;\n    private readonly TimeSpan _cooldown;\n    private State _state = State.Closed;\n    private int _failures;\n    private DateTime _openedAt;\n\n    public CircuitBreaker(int threshold, TimeSpan cooldown) => (_threshold, _cooldown) = (threshold, cooldown);\n\n    public async Task<T> CallAsync<T>(Func<Task<T>> fn)\n    {\n        lock (_gate)\n        {\n            if (_state == State.Open)\n            {\n                if (DateTime.UtcNow - _openedAt < _cooldown)\n                    throw new CircuitOpenException();\n                _state = State.HalfOpen; //!issue:2\n            }\n        }\n        try\n        {\n            var result = await fn(); //!issue:4\n            lock (_gate) { _state = State.Closed; } //!issue:1\n            return result;\n        }\n        catch (Exception)\n        {\n            lock (_gate)\n            {\n                _failures++; //!issue:3\n                if (_failures >= _threshold)\n                {\n                    _state = State.Open;\n                    _openedAt = DateTime.UtcNow;\n                }\n            }\n            throw;\n        }\n    }\n}",
+        "java": "public final class CircuitBreaker {\n    private enum State { CLOSED, OPEN, HALF_OPEN }\n\n    private final int threshold;\n    private final Duration cooldown;\n    private State state = State.CLOSED;\n    private int failures;\n    private Instant openedAt = Instant.EPOCH;\n\n    public CircuitBreaker(int threshold, Duration cooldown) {\n        this.threshold = threshold;\n        this.cooldown = cooldown;\n    }\n\n    public <T> T call(Callable<T> fn) throws Exception {\n        synchronized (this) {\n            if (state == State.OPEN) {\n                if (Duration.between(openedAt, Instant.now()).compareTo(cooldown) < 0) {\n                    throw new CircuitOpenException();\n                }\n                state = State.HALF_OPEN; //!issue:2\n            }\n        }\n        try {\n            T result = fn.call(); //!issue:4\n            synchronized (this) { state = State.CLOSED; } //!issue:1\n            return result;\n        } catch (Exception e) {\n            synchronized (this) {\n                failures++; //!issue:3\n                if (failures >= threshold) {\n                    state = State.OPEN;\n                    openedAt = Instant.now();\n                }\n            }\n            throw e;\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The failure count is never reset or windowed, so the breaker opens after 5 failures accumulated over the whole process lifetime, and once that count is reached any single later failure reopens it",
+          "fix": "Track failures over a rolling time window (or reset on success for a consecutive-failure policy), and trip on a failure rate with a minimum request volume."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "After the cooldown, half-open admits every concurrent request instead of a limited probe, sending a full burst at a dependency that may still be failing",
+          "fix": "In half-open, allow one (or a small fixed number of) trial requests and reject the rest with the open error; close after N successes and reopen immediately on a trial failure."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Every exception counts as a dependency failure, including validation errors, 404s and caller cancellations, so bad input or impatient callers can open the breaker for everyone",
+          "fix": "Count only failures that indicate dependency health problems (timeouts, connection errors, 5xx, 429) via a classification predicate."
+        },
+        {
+          "id": "4",
+          "severity": "critical",
+          "summary": "The guarded call has no timeout, so a hanging dependency never produces a failure: the breaker stays closed while every request waits and resources pile up",
+          "fix": "Enforce a deadline on the call inside the breaker (AbortSignal, context, CancellationToken or future timeout) and count timeouts as failures."
+        }
+      ],
+      "explanation": "The two production complaints map directly to the code. The Sunday trip is issue 1: with no window or reset, five failures spread over days are enough, and validation errors counted as failures (issue 3) make it worse. The missed hang is issue 4: a breaker only reacts to failures it sees, and a call with no timeout never fails, it just waits, so the dependency's most dangerous failure mode is invisible. Issue 2 means recovery is a thundering herd rather than a probe. Mature libraries (resilience4j, Polly, gobreaker) solve these with sliding windows, minimum call counts, failure predicates, timeouts and a limited half-open state. Takeaway: a breaker is only as good as its failure signal, so it needs a timeout to see hangs, a window to see rates and a classifier to ignore the caller's own mistakes.",
+      "tags": ["on-the-job"]
+    }
+  ]
+}

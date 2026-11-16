@@ -1,0 +1,654 @@
+{
+  "file": "code_review",
+  "questions": [
+    {
+      "id": "cr-bulk-invite-01",
+      "domain": "code_quality",
+      "concepts": [
+        "review-practice",
+        "api-ergonomics"
+      ],
+      "skill": "apply",
+      "type": "code_review",
+      "difficulty": 2,
+      "title": "Bulk invite endpoint that emails from inside a transaction",
+      "prompt": "**PR: Add bulk invite endpoint**\n\n> Admins asked to invite a whole team at once. This adds `POST /orgs/:orgId/invites`, which takes a list of emails and a role, creates all the invites in one transaction so a failure leaves nothing behind, and emails each invitee.\n\nReview the change as you would on the real PR. Flag each issue on its line and say how you would fix it.",
+      "context": "- Roles are `member`, `admin` and `owner`. The route middleware only checks that the caller belongs to the org (any role).\n- `invites` has a unique index on `(org_id, lower(email))` for pending invites.\n- The mailer is a third-party HTTP API, p50 about 300 ms.",
+      "language": null,
+      "estSeconds": 300,
+      "code": {
+        "ts": "type Role = \"member\" | \"admin\" | \"owner\";\n\n// POST /orgs/:orgId/invites  body: { emails: string[], role: Role }\n// requireOrgMember guarantees the caller belongs to the org.\nrouter.post(\"/orgs/:orgId/invites\", requireOrgMember, async (req, res) => {\n  const { emails, role } = req.body as { emails: string[]; role: Role };\n  const orgId = req.params.orgId;\n\n  await db.transaction(async (tx) => {\n    for (const email of emails) { //!issue:1,4\n      const invite = await tx.invites.insert({\n        orgId,\n        email, //!issue:4\n        role, //!issue:2\n        invitedBy: req.user.id,\n        token: randomToken(),\n        expiresAt: addDays(new Date(), 7),\n      });\n      await mailer.send(email, inviteTemplate(invite)); //!issue:3\n    }\n  });\n\n  res.status(201).json({ invited: emails.length });\n});",
+        "go": "// POST /orgs/{orgID}/invites  body: {\"emails\": [...], \"role\": \"member|admin|owner\"}\n// Middleware guarantees the caller belongs to the org.\nfunc (h *Handler) CreateInvites(w http.ResponseWriter, r *http.Request) {\n\tvar req struct {\n\t\tEmails []string `json:\"emails\"`\n\t\tRole   string   `json:\"role\"`\n\t}\n\tif err := json.NewDecoder(r.Body).Decode(&req); err != nil {\n\t\thttp.Error(w, \"bad request\", http.StatusBadRequest)\n\t\treturn\n\t}\n\torgID := chi.URLParam(r, \"orgID\")\n\tcaller := auth.UserFrom(r.Context())\n\n\terr := h.db.InTx(r.Context(), func(tx *store.Tx) error {\n\t\tfor _, email := range req.Emails { //!issue:1,4\n\t\t\tinv, err := tx.InsertInvite(store.Invite{\n\t\t\t\tOrgID: orgID, Email: email, Role: req.Role, //!issue:2,4\n\t\t\t\tInvitedBy: caller.ID, Token: randomToken(), ExpiresAt: time.Now().Add(7 * 24 * time.Hour),\n\t\t\t})\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif err := h.mailer.Send(r.Context(), email, inviteTemplate(inv)); err != nil { //!issue:3\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t\treturn nil\n\t})\n\tif err != nil {\n\t\thttp.Error(w, \"could not create invites\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tw.WriteHeader(http.StatusCreated)\n\tjson.NewEncoder(w).Encode(map[string]int{\"invited\": len(req.Emails)})\n}",
+        "rust": "#[derive(Deserialize)]\npub struct InviteRequest {\n    emails: Vec<String>,\n    role: String,\n}\n\n// POST /orgs/:org_id/invites  (the OrgMember extractor guarantees membership)\npub async fn create_invites(\n    State(app): State<AppState>,\n    Path(org_id): Path<Uuid>,\n    member: OrgMember,\n    Json(req): Json<InviteRequest>,\n) -> Result<(StatusCode, Json<Value>), ApiError> {\n    let mut tx = app.db.begin().await?;\n    for email in &req.emails { //!issue:1,4\n        let invite = queries::insert_invite(&mut tx, NewInvite {\n            org_id,\n            email: email.clone(), //!issue:4\n            role: req.role.clone(), //!issue:2\n            invited_by: member.user_id,\n            token: random_token(),\n            expires_at: Utc::now() + Duration::days(7),\n        })\n        .await?;\n        app.mailer.send(email, invite_template(&invite)).await?; //!issue:3\n    }\n    tx.commit().await?;\n    Ok((StatusCode::CREATED, Json(json!({ \"invited\": req.emails.len() }))))\n}",
+        "csharp": "public record InviteRequest(List<string> Emails, string Role);\n\n// POST /orgs/{orgId}/invites  (the OrgMember policy guarantees membership)\n[HttpPost(\"orgs/{orgId:guid}/invites\")]\n[Authorize(Policy = \"OrgMember\")]\npublic async Task<IActionResult> CreateInvites(Guid orgId, [FromBody] InviteRequest req)\n{\n    await using var tx = await _db.Database.BeginTransactionAsync();\n    foreach (var email in req.Emails) //!issue:1,4\n    {\n        var invite = new Invite\n        {\n            OrgId = orgId,\n            Email = email, //!issue:4\n            Role = Enum.Parse<Role>(req.Role, ignoreCase: true), //!issue:2\n            InvitedBy = User.GetUserId(),\n            Token = Tokens.Random(),\n            ExpiresAt = DateTime.UtcNow.AddDays(7),\n        };\n        _db.Invites.Add(invite);\n        await _db.SaveChangesAsync();\n        await _mailer.SendAsync(email, Templates.Invite(invite)); //!issue:3\n    }\n    await tx.CommitAsync();\n    return StatusCode(201, new { invited = req.Emails.Count });\n}",
+        "java": "public record InviteRequest(List<String> emails, String role) {}\n\n// POST /orgs/{orgId}/invites  (the @PreAuthorize check guarantees membership)\n@PostMapping(\"/orgs/{orgId}/invites\")\n@PreAuthorize(\"@orgs.isMember(#orgId, authentication)\")\n@Transactional\npublic ResponseEntity<Map<String, Integer>> createInvites(\n        @PathVariable UUID orgId,\n        @RequestBody InviteRequest req,\n        @AuthenticationPrincipal AppUser caller) {\n    for (String email : req.emails()) { //!issue:1,4\n        Invite invite = new Invite();\n        invite.setOrgId(orgId);\n        invite.setEmail(email); //!issue:4\n        invite.setRole(Role.valueOf(req.role().toUpperCase())); //!issue:2\n        invite.setInvitedBy(caller.getId());\n        invite.setToken(Tokens.random());\n        invite.setExpiresAt(Instant.now().plus(7, ChronoUnit.DAYS));\n        inviteRepository.saveAndFlush(invite);\n        mailer.send(email, Templates.invite(invite)); //!issue:3\n    }\n    return ResponseEntity.status(201).body(Map.of(\"invited\", req.emails().size()));\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Unbounded email list processed serially inside one request and one transaction",
+          "fix": "Cap the batch (for example 100 addresses, 400 with a clear message above that) and validate every address before touching the database. At 300 ms per send, a 1,000-address request holds a transaction open for about 5 minutes and outlives every gateway timeout; large imports should be accepted and processed by a background job."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "Role is taken straight from the request body, so any member can create owner invites",
+          "fix": "Validate `role` against the enum and require the caller's own role to be at least the role granted (only owners invite owners, admins invite admins or members). Enforce it in the service layer, not just the route, since membership is all the middleware proves."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Emails are sent inside the DB transaction: a later failure rolls back invites whose emails already went out",
+          "fix": "Insert all invites in one statement, commit, and only then send, via an outbox or job queue keyed by invite id so sends retry independently. Rows roll back; delivered emails do not, and holding a transaction across network calls also pins locks and a pool connection."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "No normalization or dedupe, so one duplicate or already-invited address aborts the whole batch",
+          "fix": "Trim and lowercase addresses, dedupe the list, insert with `ON CONFLICT DO NOTHING` (or skip existing pending invites), and return per-address results (`created`, `already_invited`, `invalid`) instead of a bare count."
+        }
+      ],
+      "explanation": "The PR's stated safety property, 'a failure leaves nothing behind', is false. The transaction can roll back the rows but not the emails already delivered, so when address 37 hits the unique index (a duplicate in the list, or someone already invited), 36 people hold invite links whose tokens no longer exist, and the client's retry emails them again. That failure is common precisely because nothing normalizes or dedupes the input.\n\nThe critical finding is authorization: the middleware proves membership, not privilege, so a `member` can post `role: owner` for an address they control and take over the org. Bounding the batch matters beyond abuse: serial 300 ms sends turn a few hundred addresses into a multi-minute transaction.\n\nThe tempting review stops at 'add a limit'. The deeper fix separates the durable write (one transaction, idempotent on `(org, email)`) from side effects (emails after commit, through an outbox).\n\n**Takeaway:** transactions roll back rows, not side effects; anything that leaves the process belongs after the commit.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "cr-ctor-io-01",
+      "domain": "code_quality",
+      "concepts": [
+        "coupling-cohesion",
+        "design-patterns",
+        "testing-strategy"
+      ],
+      "skill": "design",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Pricing service that fetches FX rates from its constructor",
+      "prompt": "**PR: Add PricingService for multi-currency quotes**\n\n> Quotes catalog prices in the shopper's currency using FX rates from the treasury service. Rates refresh every 5 minutes.\n\nThe service is registered as a singleton in the DI container and is also constructed directly in about 40 unit tests. Review the change.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "export class PricingService {\n  private readonly http: HttpClient;\n  private rates: Record<string, number> = {};\n\n  constructor(private readonly db: PriceStore) {\n    this.http = new HttpClient({ baseUrl: \"https://treasury.internal/fx\", timeoutMs: 5000 }); //!issue:1\n    void this.refresh(); //!issue:1\n    setInterval(() => void this.refresh(), 5 * 60_000); //!issue:3\n  }\n\n  private async refresh(): Promise<void> {\n    try {\n      const res = await this.http.get<Record<string, number>>(\"/latest?base=USD\");\n      this.rates = res.body;\n    } catch { //!issue:4\n      // keep the previous rates\n    }\n  }\n\n  async quote(sku: string, currency: string): Promise<Money> {\n    const usd = await this.db.priceFor(sku);\n    const rate = this.rates[currency] ?? 1; //!issue:2\n    return Money.convert(usd, currency, rate);\n  }\n}",
+        "go": "type PricingService struct {\n\tdb    PriceStore\n\thttp  *http.Client\n\trates atomic.Pointer[map[string]float64]\n}\n\nfunc NewPricingService(db PriceStore) *PricingService {\n\ts := &PricingService{db: db, http: &http.Client{Timeout: 5 * time.Second}} //!issue:1\n\ts.rates.Store(&map[string]float64{})\n\tgo func() { //!issue:1,3\n\t\tfor {\n\t\t\ts.refresh()\n\t\t\ttime.Sleep(5 * time.Minute)\n\t\t}\n\t}()\n\treturn s\n}\n\nfunc (s *PricingService) refresh() {\n\tresp, err := s.http.Get(\"https://treasury.internal/fx/latest?base=USD\")\n\tif err != nil {\n\t\treturn //!issue:4\n\t}\n\tdefer resp.Body.Close()\n\tvar latest map[string]float64\n\tif err := json.NewDecoder(resp.Body).Decode(&latest); err != nil {\n\t\treturn //!issue:4\n\t}\n\ts.rates.Store(&latest)\n}\n\nfunc (s *PricingService) Quote(ctx context.Context, sku, currency string) (Money, error) {\n\tusd, err := s.db.PriceFor(ctx, sku)\n\tif err != nil {\n\t\treturn Money{}, err\n\t}\n\trate, ok := (*s.rates.Load())[currency]\n\tif !ok {\n\t\trate = 1 //!issue:2\n\t}\n\treturn usd.Convert(currency, rate), nil\n}",
+        "rust": "pub struct PricingService {\n    db: Arc<dyn PriceStore>,\n    rates: Arc<RwLock<HashMap<String, f64>>>,\n}\n\nimpl PricingService {\n    pub fn new(db: Arc<dyn PriceStore>) -> Self {\n        let rates = Arc::new(RwLock::new(HashMap::new()));\n        let client = reqwest::Client::new(); //!issue:1\n        let shared = Arc::clone(&rates);\n        tokio::spawn(async move { //!issue:1,3\n            let mut tick = tokio::time::interval(Duration::from_secs(300));\n            loop {\n                tick.tick().await;\n                let fetched = match client.get(\"https://treasury.internal/fx/latest?base=USD\").send().await {\n                    Ok(resp) => resp.json::<HashMap<String, f64>>().await,\n                    Err(e) => Err(e),\n                };\n                if let Ok(latest) = fetched { //!issue:4\n                    *shared.write().unwrap() = latest;\n                }\n            }\n        });\n        Self { db, rates }\n    }\n\n    pub async fn quote(&self, sku: &str, currency: &str) -> Result<Money, PricingError> {\n        let usd = self.db.price_for(sku).await?;\n        let rate = self.rates.read().unwrap().get(currency).copied().unwrap_or(1.0); //!issue:2\n        Ok(usd.convert(currency, rate))\n    }\n}",
+        "csharp": "public sealed class PricingService\n{\n    private readonly IPriceStore _db;\n    private readonly HttpClient _http = new() { BaseAddress = new Uri(\"https://treasury.internal/fx/\") }; //!issue:1\n    private readonly Timer _timer;\n    private volatile Dictionary<string, decimal> _rates = new();\n\n    public PricingService(IPriceStore db)\n    {\n        _db = db;\n        _timer = new Timer(_ => _ = RefreshAsync(), null, TimeSpan.Zero, TimeSpan.FromMinutes(5)); //!issue:1,3\n    }\n\n    private async Task RefreshAsync()\n    {\n        try\n        {\n            _rates = await _http.GetFromJsonAsync<Dictionary<string, decimal>>(\"latest?base=USD\") ?? _rates;\n        }\n        catch (Exception) //!issue:4\n        {\n            // keep the previous rates\n        }\n    }\n\n    public async Task<Money> QuoteAsync(string sku, string currency)\n    {\n        var usd = await _db.PriceForAsync(sku);\n        var rate = _rates.TryGetValue(currency, out var r) ? r : 1m; //!issue:2\n        return Money.Convert(usd, currency, rate);\n    }\n}",
+        "java": "@Service\npublic class PricingService {\n    private final PriceStore db;\n    private final HttpClient http = HttpClient.newHttpClient(); //!issue:1\n    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(); //!issue:3\n    private volatile Map<String, BigDecimal> rates = Map.of();\n\n    public PricingService(PriceStore db) {\n        this.db = db;\n        scheduler.scheduleAtFixedRate(this::refresh, 0, 5, TimeUnit.MINUTES); //!issue:1,3\n    }\n\n    private void refresh() {\n        try {\n            HttpRequest req = HttpRequest.newBuilder(URI.create(\"https://treasury.internal/fx/latest?base=USD\")).build();\n            String body = http.send(req, HttpResponse.BodyHandlers.ofString()).body();\n            rates = Json.parseRates(body);\n        } catch (Exception e) { //!issue:4\n            // keep the previous rates\n        }\n    }\n\n    public Money quote(String sku, String currency) {\n        Money usd = db.priceFor(sku);\n        BigDecimal rate = rates.getOrDefault(currency, BigDecimal.ONE); //!issue:2\n        return Money.convert(usd, currency, rate);\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Constructor creates its own HTTP client and starts network I/O, so construction cannot fail cleanly and tests cannot substitute rates",
+          "fix": "Inject a `RatesSource` interface (the real one wraps the HTTP client) and keep the constructor to field assignment. Do the first load in an explicit `start()` or an async factory that the composition root awaits before marking the pod ready; tests pass a fake source with fixed rates. (The Rust variant even panics when constructed outside a Tokio runtime.)"
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "Missing rate silently falls back to 1.0, so before the first refresh or for an unquoted currency a USD 100 item is quoted as 100 JPY",
+          "fix": "Treat a missing rate as an error: return or throw `UnsupportedCurrency` / `RatesUnavailable`, refuse quotes until the first successful load, and keep the rates' fetch timestamp so callers can reject stale data."
+        },
+        {
+          "id": "3",
+          "severity": "minor",
+          "summary": "Background refresh loop started in the constructor has no owner and no way to stop",
+          "fix": "Give the service a lifecycle (`stop()`, `Dispose`, `AutoCloseable`, a cancellation token or context) or move scheduling to the composition root. Today every test instance leaks a timer or thread, Jest reports open handles, and a second instance doubles the treasury traffic."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "Refresh failures are swallowed with no log, metric or staleness bound",
+          "fix": "Log and count refresh failures, record `lastSuccessAt`, alert when rates are older than an agreed bound (for example 30 minutes), and stop quoting (or flag quotes) past a hard limit so a treasury outage does not silently serve day-old rates."
+        }
+      ],
+      "explanation": "The critical bug is the `1.0` default. In every variant the first load runs in the background, so for the first few hundred milliseconds after start (and forever for any currency treasury does not quote, or after a failed first load) prices are 'converted' at parity: a USD 100 item is offered for 100 JPY. A missing FX rate is an error, never a default.\n\nThe design problem underneath is a constructor that does work: it news up its own client, starts I/O and schedules a timer. That is why the 40 unit tests either hit the network or race it, why construction cannot report failure, and why there is no seam to inject fixed rates. Swallowed refresh errors then turn a treasury outage into hours of stale rates with no signal.\n\nTempting but secondary comments: the hard-coded URL or the 5-minute interval. They are symptoms of the same missing seam.\n\n**Takeaway:** constructors should only assign dependencies; put I/O in an explicit start or factory step that can fail loudly and that tests can replace.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "cr-bool-flags-01",
+      "domain": "code_quality",
+      "concepts": [
+        "api-ergonomics",
+        "refactoring",
+        "readability"
+      ],
+      "skill": "design",
+      "type": "code_review",
+      "difficulty": 2,
+      "title": "Export function with four positional booleans and two callers",
+      "prompt": "**PR: Share one export path between the partner feed and the admin download**\n\n> Folds our two export implementations into `exportOrders` so they stop drifting. The nightly job and the admin button now call the same function.\n\nReview the change.",
+      "context": "- The partner's SFTP sync picks up every object in `partnerBucket` within about a minute. The partner contract forbids customer PII.\n- Support staff use the admin button to pull an org's export while working a ticket.",
+      "language": null,
+      "estSeconds": 300,
+      "code": {
+        "ts": "export async function exportOrders(\n  orgId: string,\n  includeDeleted: boolean,\n  includePii: boolean,\n  gzip: boolean,\n  dryRun: boolean, //!issue:1\n): Promise<string> {\n  const rows = await db.orders.list(orgId, { includeDeleted });\n  const out = includePii ? rows : rows.map(redactPii);\n  let body: Buffer = Buffer.from(toCsv(out));\n  if (gzip) body = gzipSync(body);\n  const key = `exports/${orgId}/${Date.now()}.csv`; //!issue:3\n  await partnerBucket.put(key, body); //!issue:2\n  if (!dryRun) {\n    await db.orders.markExported(rows.map((r) => r.id));\n  }\n  return key;\n}\n\n// nightly partner feed\nawait exportOrders(org.id, false, false, true, false); //!issue:1\n\n// admin \"download export\" button (staff only)\nrouter.get(\"/admin/orgs/:orgId/export\", requireStaff, async (req, res) => {\n  const key = await exportOrders(req.params.orgId, req.query.deleted === \"1\", true, false, req.query.dryRun === \"1\"); //!issue:1,4\n  res.redirect(await partnerBucket.signedUrl(key));\n});",
+        "go": "func ExportOrders(ctx context.Context, orgID string, includeDeleted, includePII, gzipped, dryRun bool) (string, error) { //!issue:1\n\trows, err := db.ListOrders(ctx, orgID, includeDeleted)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tout := rows\n\tif !includePII {\n\t\tout = redactPII(rows)\n\t}\n\tbody := toCSV(out)\n\tif gzipped {\n\t\tbody = gzipBytes(body)\n\t}\n\tkey := fmt.Sprintf(\"exports/%s/%d.csv\", orgID, time.Now().UnixMilli()) //!issue:3\n\tif err := partnerBucket.Put(ctx, key, body); err != nil { //!issue:2\n\t\treturn \"\", err\n\t}\n\tif !dryRun {\n\t\tif err := db.MarkExported(ctx, orderIDs(rows)); err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\t}\n\treturn key, nil\n}\n\n// nightly partner feed\nkey, err := ExportOrders(ctx, org.ID, false, false, true, false) //!issue:1\n\n// admin \"download export\" button (staff only)\nfunc (h *AdminHandler) Export(w http.ResponseWriter, r *http.Request) {\n\tq := r.URL.Query()\n\tkey, err := ExportOrders(r.Context(), chi.URLParam(r, \"orgID\"), q.Get(\"deleted\") == \"1\", true, false, q.Get(\"dryRun\") == \"1\") //!issue:1,4\n\tif err != nil {\n\t\thttp.Error(w, \"export failed\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\thttp.Redirect(w, r, partnerBucket.SignedURL(key), http.StatusFound)\n}",
+        "rust": "pub async fn export_orders(\n    org_id: &str,\n    include_deleted: bool,\n    include_pii: bool,\n    gzip: bool,\n    dry_run: bool, //!issue:1\n) -> anyhow::Result<String> {\n    let mut rows = db::list_orders(org_id, include_deleted).await?;\n    if !include_pii {\n        rows.iter_mut().for_each(redact_pii);\n    }\n    let mut body = to_csv(&rows)?;\n    if gzip {\n        body = gzip_bytes(&body)?;\n    }\n    let key = format!(\"exports/{}/{}.csv\", org_id, Utc::now().timestamp_millis()); //!issue:3\n    PARTNER_BUCKET.put(&key, body).await?; //!issue:2\n    if !dry_run {\n        db::mark_exported(rows.iter().map(|r| r.id)).await?;\n    }\n    Ok(key)\n}\n\n// nightly partner feed\nlet key = export_orders(&org.id, false, false, true, false).await?; //!issue:1\n\n// admin \"download export\" button (staff only)\npub async fn admin_export(_staff: Staff, Path(org_id): Path<String>, Query(q): Query<ExportQuery>) -> Result<Redirect, ApiError> {\n    let key = export_orders(&org_id, q.deleted, true, false, q.dry_run).await?; //!issue:1,4\n    Ok(Redirect::to(&PARTNER_BUCKET.signed_url(&key)))\n}",
+        "csharp": "public async Task<string> ExportOrdersAsync(\n    string orgId, bool includeDeleted, bool includePii, bool gzip, bool dryRun) //!issue:1\n{\n    var rows = await _db.ListOrdersAsync(orgId, includeDeleted);\n    var output = includePii ? rows : rows.Select(Redaction.RedactPii).ToList();\n    byte[] body = Csv.Write(output);\n    if (gzip) body = Compression.Gzip(body);\n    var key = $\"exports/{orgId}/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.csv\"; //!issue:3\n    await _partnerBucket.PutAsync(key, body); //!issue:2\n    if (!dryRun)\n    {\n        await _db.MarkExportedAsync(rows.Select(r => r.Id));\n    }\n    return key;\n}\n\n// nightly partner feed\nvar key = await _exporter.ExportOrdersAsync(org.Id, false, false, true, false); //!issue:1\n\n// admin \"download export\" button (staff only)\n[HttpGet(\"admin/orgs/{orgId}/export\")]\n[Authorize(Roles = \"Staff\")]\npublic async Task<IActionResult> Export(string orgId, bool deleted = false, bool dryRun = false)\n{\n    var key = await _exporter.ExportOrdersAsync(orgId, deleted, true, false, dryRun); //!issue:1,4\n    return Redirect(_partnerBucket.SignedUrl(key));\n}",
+        "java": "public String exportOrders(String orgId, boolean includeDeleted, boolean includePii, boolean gzip, boolean dryRun) throws IOException { //!issue:1\n    List<Order> rows = orders.list(orgId, includeDeleted);\n    List<Order> out = includePii ? rows : rows.stream().map(Redaction::redactPii).toList();\n    byte[] body = Csv.write(out);\n    if (gzip) {\n        body = Compression.gzip(body);\n    }\n    String key = \"exports/%s/%d.csv\".formatted(orgId, System.currentTimeMillis()); //!issue:3\n    partnerBucket.put(key, body); //!issue:2\n    if (!dryRun) {\n        orders.markExported(rows.stream().map(Order::id).toList());\n    }\n    return key;\n}\n\n// nightly partner feed\nString key = exporter.exportOrders(org.id(), false, false, true, false); //!issue:1\n\n// admin \"download export\" button (staff only)\n@GetMapping(\"/admin/orgs/{orgId}/export\")\n@PreAuthorize(\"hasRole('STAFF')\")\npublic ResponseEntity<Void> export(@PathVariable String orgId,\n        @RequestParam(defaultValue = \"false\") boolean deleted,\n        @RequestParam(defaultValue = \"false\") boolean dryRun) throws IOException {\n    String key = exporter.exportOrders(orgId, deleted, true, false, dryRun); //!issue:1,4\n    return ResponseEntity.status(HttpStatus.FOUND).location(partnerBucket.signedUrl(key)).build();\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Four positional booleans make call sites unreadable and transposed arguments invisible to the compiler",
+          "fix": "Replace the flags with an options object or enums (`{ deleted: 'include', pii: 'redact', compression: 'gzip' }`) and split the function: `buildExport(orgId, spec)` returns bytes, while `publishToPartner(bytes)` and `stageForDownload(bytes)` own the side effects. Each call site then states what it does, and a dry run is simply build without publish."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "`dryRun` still uploads the file to the partner bucket; it only skips `markExported`",
+          "fix": "A dry run must have no external side effects: skip the upload (or write to a scratch prefix the partner never syncs) and return the bytes or a preview. Add a test asserting that no storage write happens in dry-run mode."
+        },
+        {
+          "id": "3",
+          "severity": "minor",
+          "summary": "Object key always ends in `.csv`, even when the body is gzipped",
+          "fix": "Derive the extension and Content-Type from the format (`.csv.gz`, `application/gzip`) so the partner's parser and anyone downloading the file handle it correctly; use a run id rather than a millisecond timestamp for uniqueness."
+        },
+        {
+          "id": "4",
+          "severity": "critical",
+          "summary": "Admin download writes an unredacted, PII-bearing export into the bucket the partner syncs",
+          "fix": "Never route admin exports through the partner bucket: write them to an internal bucket with short-lived signed URLs, and decide PII inclusion from an explicit, audited permission (for example a `pii:export` grant) instead of hard-coding `true` for all staff."
+        }
+      ],
+      "explanation": "Unifying two callers that sit on different trust boundaries is how this refactor leaks. The admin path inherits the partner path's destination, so every support export, with `includePii = true`, is in the partner's hands a minute later. That is the critical finding, and it is hard to see because `true, false` at a call site reads as noise.\n\nThe dry-run flag shows the same smell from another angle: a control flag inside a function with several side effects tends to guard some of them and not others. The `.csv` key on gzipped bytes is a small, real bug of the same kind (the flags interact and nobody checked the combination).\n\nThe tempting review is only 'use an options object'. That fixes readability but keeps the coupling. The real fix separates building the export (pure) from publishing it (side effect), so each caller chooses its destination explicitly.\n\n**Takeaway:** when a refactor merges code paths, check that the callers share the same trust boundary and side effects, not just the same steps.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "cr-profile-patch-01",
+      "domain": "code_quality",
+      "concepts": [
+        "type-design",
+        "review-practice"
+      ],
+      "skill": "apply",
+      "type": "code_review",
+      "difficulty": 1,
+      "title": "Profile PATCH handler that binds the request onto the entity",
+      "prompt": "**PR: Let users edit their profile**\n\n> Adds `PATCH /users/:id` so users can change their display name, avatar and timezone. Admins can edit anyone in their org.\n\nThis is a multi-tenant SaaS: every user belongs to exactly one org, and `admin` means org admin. Review the change.",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "@Entity(\"users\")\nexport class User {\n  @PrimaryColumn(\"uuid\") id!: string;\n  @Column(\"uuid\") orgId!: string;\n  @Column() email!: string;\n  @Column({ default: false }) emailVerified!: boolean;\n  @Column() displayName!: string;\n  @Column({ nullable: true }) avatarUrl?: string;\n  @Column({ default: \"UTC\" }) timezone!: string;\n  @Column({ default: \"member\" }) role!: \"member\" | \"admin\";\n  @Column() passwordHash!: string; //!issue:2\n  @Column({ nullable: true }) mfaSecret?: string;\n}\n\n// PATCH /users/:id: lets users edit their own profile (display name, avatar, timezone)\nrouter.patch(\"/users/:id\", requireAuth, async (req, res) => {\n  const user = await users.findOneBy({ id: req.params.id });\n  if (!user) return res.sendStatus(404);\n  if (req.user.id !== user.id && req.user.role !== \"admin\") return res.sendStatus(403); //!issue:3\n\n  Object.assign(user, req.body); //!issue:1,4\n  await users.save(user);\n  res.json(user); //!issue:2\n});",
+        "go": "type User struct {\n\tID            string  `json:\"id\" gorm:\"primaryKey\"`\n\tOrgID         string  `json:\"orgId\"`\n\tEmail         string  `json:\"email\"`\n\tEmailVerified bool    `json:\"emailVerified\"`\n\tDisplayName   string  `json:\"displayName\"`\n\tAvatarURL     *string `json:\"avatarUrl\"`\n\tTimezone      string  `json:\"timezone\"`\n\tRole          string  `json:\"role\"`\n\tPasswordHash  string  `json:\"passwordHash\"` //!issue:2\n\tMFASecret     *string `json:\"mfaSecret\"`\n}\n\n// PATCH /users/{id}: lets users edit their own profile (display name, avatar, timezone)\nfunc (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {\n\tcaller := auth.UserFrom(r.Context())\n\tvar user User\n\tif err := h.db.First(&user, \"id = ?\", chi.URLParam(r, \"id\")).Error; err != nil {\n\t\thttp.Error(w, \"not found\", http.StatusNotFound)\n\t\treturn\n\t}\n\tif caller.ID != user.ID && caller.Role != \"admin\" { //!issue:3\n\t\thttp.Error(w, \"forbidden\", http.StatusForbidden)\n\t\treturn\n\t}\n\tif err := json.NewDecoder(r.Body).Decode(&user); err != nil { //!issue:1,4\n\t\thttp.Error(w, \"bad request\", http.StatusBadRequest)\n\t\treturn\n\t}\n\tif err := h.db.Save(&user).Error; err != nil {\n\t\thttp.Error(w, \"save failed\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tjson.NewEncoder(w).Encode(user) //!issue:2\n}",
+        "rust": "#[derive(Serialize, Deserialize, sqlx::FromRow)]\n#[serde(rename_all = \"camelCase\")]\npub struct User {\n    pub id: Uuid,\n    pub org_id: Uuid,\n    pub email: String,\n    pub email_verified: bool,\n    pub display_name: String,\n    pub avatar_url: Option<String>,\n    pub timezone: String,\n    pub role: String,\n    pub password_hash: String, //!issue:2\n    pub mfa_secret: Option<String>,\n}\n\n// PATCH /users/:id: lets users edit their own profile (display name, avatar, timezone)\npub async fn patch_user(\n    State(app): State<AppState>,\n    caller: AuthUser,\n    Path(id): Path<Uuid>,\n    Json(patch): Json<serde_json::Value>,\n) -> Result<Json<User>, ApiError> {\n    let user = users::find(&app.db, id).await?.ok_or(ApiError::NotFound)?;\n    if caller.id != user.id && caller.role != \"admin\" { //!issue:3\n        return Err(ApiError::Forbidden);\n    }\n    let mut doc = serde_json::to_value(&user)?;\n    json_patch::merge(&mut doc, &patch); //!issue:1,4\n    let updated: User = serde_json::from_value(doc)?;\n    users::save(&app.db, &updated).await?;\n    Ok(Json(updated)) //!issue:2\n}",
+        "csharp": "public class AppUser\n{\n    public Guid Id { get; set; }\n    public Guid OrgId { get; set; }\n    public string Email { get; set; } = \"\";\n    public bool EmailVerified { get; set; }\n    public string DisplayName { get; set; } = \"\";\n    public string? AvatarUrl { get; set; }\n    public string TimeZone { get; set; } = \"UTC\";\n    public string Role { get; set; } = \"member\";\n    public string PasswordHash { get; set; } = \"\"; //!issue:2\n    public string? MfaSecret { get; set; }\n}\n\n// PATCH /users/{id}: lets users edit their own profile (display name, avatar, timezone)\n[HttpPatch(\"users/{id:guid}\")]\npublic async Task<ActionResult<AppUser>> PatchUser(Guid id, [FromBody] JsonPatchDocument<AppUser> patch)\n{\n    var user = await _db.Users.FindAsync(id);\n    if (user is null) return NotFound();\n    if (User.GetUserId() != user.Id && !User.IsInRole(\"admin\")) return Forbid(); //!issue:3\n\n    patch.ApplyTo(user); //!issue:1,4\n    await _db.SaveChangesAsync();\n    return Ok(user); //!issue:2\n}",
+        "java": "@Entity\n@Table(name = \"users\")\npublic class User {\n    @Id private UUID id;\n    private UUID orgId;\n    private String email;\n    private boolean emailVerified;\n    private String displayName;\n    private String avatarUrl;\n    private String timezone;\n    private String role;\n    private String passwordHash; //!issue:2\n    private String mfaSecret;\n    // getters and setters omitted\n}\n\n// PATCH /users/{id}: lets users edit their own profile (display name, avatar, timezone)\n@PatchMapping(\"/users/{id}\")\n@Transactional\npublic User patchUser(@PathVariable UUID id, @RequestBody String body,\n                      @AuthenticationPrincipal AppUser caller) throws IOException {\n    User user = users.findById(id).orElseThrow(NotFoundException::new);\n    if (!caller.getId().equals(user.getId()) && !caller.hasRole(\"ADMIN\")) { //!issue:3\n        throw new AccessDeniedException(\"forbidden\");\n    }\n    objectMapper.readerForUpdating(user).readValue(body); //!issue:1,4\n    return users.save(user); //!issue:2\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Mass assignment: the request body is applied directly to the persistence entity",
+          "fix": "Bind to a dedicated `UpdateProfileRequest` containing only `displayName`, `avatarUrl` and `timezone`, and copy those fields explicitly. As written a user can send `role: admin`, `emailVerified: true`, a different `orgId`, or even a different `id`, which makes the ORM write over another user's row."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Response serializes the whole entity, including `passwordHash` and `mfaSecret`",
+          "fix": "Return a `ProfileResponse` built from an allowlist of fields; never serialize persistence entities directly. As defense in depth, mark secret fields as never-serialized (`json:\"-\"`, `#[serde(skip)]`, `[JsonIgnore]`, `@JsonIgnore`)."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Admin check is global, not org-scoped, so any org's admin can edit users in every other org",
+          "fix": "For the admin path also require `caller.orgId == user.orgId`, ideally by loading the user through an org-scoped query so cross-tenant ids return 404 instead of revealing that the user exists."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "No validation of the editable fields",
+          "fix": "Validate the request type: `timezone` must be a known IANA zone, `displayName` trimmed and length-capped, `avatarUrl` an https URL on the allowed image host; reject unknown fields with a 400 that names them."
+        }
+      ],
+      "explanation": "Binding untrusted input onto an entity is the textbook mass-assignment hole. The endpoint's intent is three fields, but the code accepts every column, so a self-service profile edit becomes privilege escalation (`role`), verification bypass (`emailVerified`) or, with a changed `id`, an overwrite of someone else's row. The response leaks credential material for the mirror-image reason: the entity has become the API contract in both directions.\n\nThe tenancy bug is the one reviewers miss, because the authorization check looks complete. `admin` is an org-scoped role being checked as if it were global.\n\n**Takeaway:** give each endpoint its own request and response types, separate from the entity, so the contract is an allowlist a reviewer can read.",
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "cr-trial-clock-01",
+      "domain": "code_quality",
+      "concepts": [
+        "testing-strategy",
+        "test-design"
+      ],
+      "skill": "apply",
+      "type": "code_review",
+      "difficulty": 2,
+      "title": "Trial countdown that reads the wall clock, with a time-bomb test",
+      "prompt": "**PR: Add trial countdown banner and paywall**\n\n> Shows a warning during the last 3 days of the 14-day trial and a paywall once it ends. Tests included.\n\nSales occasionally extends a trial by a week for prospects stuck in procurement. The PR was opened on 2026-11-15 and CI was green. Review the change.",
+      "language": null,
+      "estSeconds": 300,
+      "code": {
+        "ts": "const DAY_MS = 86_400_000;\nconst TRIAL_DAYS = 14; //!issue:4\n\nexport function trialDaysLeft(account: Account): number {\n  const endsAt = account.trialStartedAt.getTime() + TRIAL_DAYS * DAY_MS; //!issue:4\n  return Math.floor((endsAt - Date.now()) / DAY_MS); //!issue:1,2\n}\n\nexport function trialBanner(account: Account): Banner | null {\n  const left = trialDaysLeft(account);\n  if (left <= 0) return { kind: \"paywall\" }; //!issue:2\n  if (left <= 3) return { kind: \"warning\", text: `${left} days left in your trial` };\n  return null;\n}\n\n// trial.test.ts\ndescribe(\"trialBanner\", () => {\n  it(\"warns in the last three days\", () => {\n    const account = { trialStartedAt: new Date(\"2026-11-04T00:00:00Z\") } as Account; //!issue:3\n    expect(trialBanner(account)).toEqual({ kind: \"warning\", text: \"2 days left in your trial\" }); //!issue:3\n  });\n\n  it(\"shows the paywall after the trial\", () => {\n    const account = { trialStartedAt: new Date(Date.now() - 15 * DAY_MS) } as Account;\n    expect(trialBanner(account)?.kind).toBe(\"paywall\");\n  });\n});",
+        "go": "const trialDays = 14 //!issue:4\n\nfunc TrialDaysLeft(a Account) int {\n\tendsAt := a.TrialStartedAt.AddDate(0, 0, trialDays) //!issue:4\n\treturn int(time.Until(endsAt).Hours() / 24) //!issue:1,2\n}\n\nfunc TrialBanner(a Account) *Banner {\n\tleft := TrialDaysLeft(a)\n\tif left <= 0 { //!issue:2\n\t\treturn &Banner{Kind: \"paywall\"}\n\t}\n\tif left <= 3 {\n\t\treturn &Banner{Kind: \"warning\", Text: fmt.Sprintf(\"%d days left in your trial\", left)}\n\t}\n\treturn nil\n}\n\n// trial_test.go\nfunc TestTrialBannerWarnsInLastThreeDays(t *testing.T) {\n\ta := Account{TrialStartedAt: time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)} //!issue:3\n\tgot := TrialBanner(a)\n\tif got == nil || got.Text != \"2 days left in your trial\" { //!issue:3\n\t\tt.Fatalf(\"got %+v\", got)\n\t}\n}\n\nfunc TestTrialBannerPaywallAfterTrial(t *testing.T) {\n\ta := Account{TrialStartedAt: time.Now().AddDate(0, 0, -15)}\n\tif got := TrialBanner(a); got == nil || got.Kind != \"paywall\" {\n\t\tt.Fatalf(\"got %+v\", got)\n\t}\n}",
+        "rust": "const TRIAL_DAYS: i64 = 14; //!issue:4\n\npub fn trial_days_left(account: &Account) -> i64 {\n    let ends_at = account.trial_started_at + Duration::days(TRIAL_DAYS); //!issue:4\n    (ends_at - Utc::now()).num_days() //!issue:1,2\n}\n\npub fn trial_banner(account: &Account) -> Option<Banner> {\n    let left = trial_days_left(account);\n    if left <= 0 { //!issue:2\n        return Some(Banner::Paywall);\n    }\n    if left <= 3 {\n        return Some(Banner::Warning(format!(\"{left} days left in your trial\")));\n    }\n    None\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn warns_in_last_three_days() {\n        let account = Account { trial_started_at: Utc.with_ymd_and_hms(2026, 11, 4, 0, 0, 0).unwrap() }; //!issue:3\n        assert_eq!(trial_banner(&account), Some(Banner::Warning(\"2 days left in your trial\".into()))); //!issue:3\n    }\n\n    #[test]\n    fn paywall_after_trial() {\n        let account = Account { trial_started_at: Utc::now() - Duration::days(15) };\n        assert_eq!(trial_banner(&account), Some(Banner::Paywall));\n    }\n}",
+        "csharp": "public static class Trial\n{\n    private const int TrialDays = 14; //!issue:4\n\n    public static int DaysLeft(Account account)\n    {\n        var endsAt = account.TrialStartedAt.AddDays(TrialDays); //!issue:4\n        return (int)(endsAt - DateTime.UtcNow).TotalDays; //!issue:1,2\n    }\n\n    public static Banner? BannerFor(Account account)\n    {\n        var left = DaysLeft(account);\n        if (left <= 0) return Banner.Paywall(); //!issue:2\n        if (left <= 3) return Banner.Warning($\"{left} days left in your trial\");\n        return null;\n    }\n}\n\npublic class TrialTests\n{\n    [Fact]\n    public void WarnsInLastThreeDays()\n    {\n        var account = new Account { TrialStartedAt = new DateTime(2026, 11, 4, 0, 0, 0, DateTimeKind.Utc) }; //!issue:3\n        Assert.Equal(Banner.Warning(\"2 days left in your trial\"), Trial.BannerFor(account)); //!issue:3\n    }\n\n    [Fact]\n    public void ShowsPaywallAfterTrial()\n    {\n        var account = new Account { TrialStartedAt = DateTime.UtcNow.AddDays(-15) };\n        Assert.Equal(Banner.Paywall(), Trial.BannerFor(account));\n    }\n}",
+        "java": "public final class Trial {\n    private static final int TRIAL_DAYS = 14; //!issue:4\n\n    public static long daysLeft(Account account) {\n        Instant endsAt = account.trialStartedAt().plus(TRIAL_DAYS, ChronoUnit.DAYS); //!issue:4\n        return Duration.between(Instant.now(), endsAt).toDays(); //!issue:1,2\n    }\n\n    public static Optional<Banner> bannerFor(Account account) {\n        long left = daysLeft(account);\n        if (left <= 0) return Optional.of(Banner.paywall()); //!issue:2\n        if (left <= 3) return Optional.of(Banner.warning(left + \" days left in your trial\"));\n        return Optional.empty();\n    }\n}\n\nclass TrialTest {\n    @Test\n    void warnsInLastThreeDays() {\n        Account account = new Account(Instant.parse(\"2026-11-04T00:00:00Z\")); //!issue:3\n        assertEquals(Optional.of(Banner.warning(\"2 days left in your trial\")), Trial.bannerFor(account)); //!issue:3\n    }\n\n    @Test\n    void showsPaywallAfterTrial() {\n        Account account = new Account(Instant.now().minus(15, ChronoUnit.DAYS));\n        assertEquals(Optional.of(Banner.paywall()), Trial.bannerFor(account));\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Business logic reads the system clock directly, so it cannot be tested at a chosen instant",
+          "fix": "Pass `now` in (or inject a `Clock`) and read the real clock once, at the edge in the handler. `trialBanner(account, now)` becomes a pure function you can test at 72 h, 1 h and 0 s before expiry."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Truncating to whole days shows the paywall while up to 23 h 59 m of trial remain",
+          "fix": "Decide expiry by comparing instants (`now >= trialEndsAt`) and use day counts only for display, rounded up, so the last day reads '1 day left' instead of locking the user out."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Test pins a calendar date while the code reads the real clock, so it passed only on 2026-11-15 and fails from then on",
+          "fix": "With an injected clock, fix both the trial start and `now` in the test (for example start 2026-11-04T00:00Z, now 2026-11-15T12:00Z) and add boundary cases; never mix absolute fixtures with the real clock."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Trial length is a code constant, so extensions are impossible and changing it silently rewrites every live trial",
+          "fix": "Store `trialEndsAt` on the account at signup and let Sales move it; derive the banner from that field instead of `trialStartedAt + TRIAL_DAYS`."
+        }
+      ],
+      "explanation": "The test is the giveaway. It fixes a start date and expects '2 days left', which is true for exactly one calendar day of real time (2026-11-15 UTC) because the function consults the wall clock. It was green when the PR was opened and goes red the next morning with no code change, which is how teams learn to ignore failing tests.\n\nThe boundary bug comes from deciding with a truncated day count: a user with 20 hours left has `daysLeft = 0` and hits the paywall a day early. Comparing instants for the decision and rounding only for display fixes it, and both cases become trivial to test once `now` is a parameter.\n\nThe hard-coded 14 is a modeling gap: the business already extends trials, and a derived end date cannot represent that.\n\n**Takeaway:** time is an input; pass `now` into business logic and test the boundaries explicitly.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "cr-retry-ledger-01",
+      "domain": "code_quality",
+      "concepts": [
+        "error-handling",
+        "api-ergonomics"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Ledger retry helper that both loses and duplicates money",
+      "prompt": "**PR: Make ledger writes resilient to timeouts**\n\n> The ledger service occasionally times out under load. This adds a generic `retry` helper and wraps the ledger append in `chargeCustomer`. The ledger dedupes appends that share an `idempotencyKey`, so retries are safe.\n\nReview the change.",
+      "context": "Ledger latency during last week's peak: p50 180 ms, p99 2.1 s. The client timeout for `ledger.append` is 1 s.",
+      "language": null,
+      "estSeconds": 480,
+      "code": {
+        "ts": "export async function retry<T>(fn: () => Promise<T>, attempts = 3): Promise<T | undefined> {\n  for (let i = 0; i < attempts; i++) { //!issue:4\n    try {\n      return await fn();\n    } catch { //!issue:3\n      // transient, try again\n    }\n  }\n  return undefined; //!issue:2\n}\n\nexport async function chargeCustomer(accountId: string, amountCents: number): Promise<ChargeResult> {\n  const payment = await psp.capture(accountId, amountCents);\n  const entry = await retry(() =>\n    ledger.append({\n      accountId,\n      amountCents,\n      paymentId: payment.id,\n      idempotencyKey: crypto.randomUUID(), //!issue:1\n    }),\n  );\n  if (!entry) {\n    log.warn(\"ledger append skipped\", { accountId }); //!issue:2\n  }\n  return { ok: true, paymentId: payment.id }; //!issue:2\n}",
+        "go": "func Retry[T any](attempts int, fn func() (T, error)) (T, bool) { //!issue:2\n\tvar zero T\n\tfor i := 0; i < attempts; i++ { //!issue:4\n\t\tif v, err := fn(); err == nil { //!issue:3\n\t\t\treturn v, true\n\t\t}\n\t}\n\treturn zero, false //!issue:2\n}\n\nfunc (s *Service) ChargeCustomer(ctx context.Context, accountID string, amountCents int64) (ChargeResult, error) {\n\tpayment, err := s.psp.Capture(ctx, accountID, amountCents)\n\tif err != nil {\n\t\treturn ChargeResult{}, err\n\t}\n\t_, ok := Retry(3, func() (LedgerEntry, error) {\n\t\treturn s.ledger.Append(ctx, AppendRequest{\n\t\t\tAccountID:      accountID,\n\t\t\tAmountCents:    amountCents,\n\t\t\tPaymentID:      payment.ID,\n\t\t\tIdempotencyKey: uuid.NewString(), //!issue:1\n\t\t})\n\t})\n\tif !ok {\n\t\ts.log.Warn(\"ledger append skipped\", \"account_id\", accountID) //!issue:2\n\t}\n\treturn ChargeResult{OK: true, PaymentID: payment.ID}, nil //!issue:2\n}",
+        "rust": "pub async fn retry<T, E, F, Fut>(attempts: u32, mut f: F) -> Option<T> //!issue:2\nwhere\n    F: FnMut() -> Fut,\n    Fut: Future<Output = Result<T, E>>,\n{\n    for _ in 0..attempts { //!issue:4\n        if let Ok(v) = f().await { //!issue:3\n            return Some(v);\n        }\n    }\n    None\n}\n\npub async fn charge_customer(&self, account_id: &str, amount_cents: i64) -> Result<ChargeResult, ChargeError> {\n    let payment = self.psp.capture(account_id, amount_cents).await?;\n    let entry = retry(3, || {\n        self.ledger.append(AppendRequest {\n            account_id: account_id.to_string(),\n            amount_cents,\n            payment_id: payment.id.clone(),\n            idempotency_key: Uuid::new_v4().to_string(), //!issue:1\n        })\n    })\n    .await;\n    if entry.is_none() {\n        tracing::warn!(account_id, \"ledger append skipped\"); //!issue:2\n    }\n    Ok(ChargeResult { ok: true, payment_id: payment.id }) //!issue:2\n}",
+        "csharp": "public static async Task<T?> RetryAsync<T>(Func<Task<T>> fn, int attempts = 3) //!issue:2\n{\n    for (var i = 0; i < attempts; i++) //!issue:4\n    {\n        try\n        {\n            return await fn();\n        }\n        catch (Exception) //!issue:3\n        {\n            // transient, try again\n        }\n    }\n    return default; //!issue:2\n}\n\npublic async Task<ChargeResult> ChargeCustomerAsync(string accountId, long amountCents)\n{\n    var payment = await _psp.CaptureAsync(accountId, amountCents);\n    var entry = await Retry.RetryAsync(() => _ledger.AppendAsync(new AppendRequest(\n        AccountId: accountId,\n        AmountCents: amountCents,\n        PaymentId: payment.Id,\n        IdempotencyKey: Guid.NewGuid().ToString()))); //!issue:1\n    if (entry is null)\n    {\n        _log.LogWarning(\"Ledger append skipped for {AccountId}\", accountId); //!issue:2\n    }\n    return new ChargeResult(Ok: true, PaymentId: payment.Id); //!issue:2\n}",
+        "java": "public static <T> Optional<T> retry(int attempts, Callable<T> fn) { //!issue:2\n    for (int i = 0; i < attempts; i++) { //!issue:4\n        try {\n            return Optional.ofNullable(fn.call());\n        } catch (Exception e) { //!issue:3\n            // transient, try again\n        }\n    }\n    return Optional.empty(); //!issue:2\n}\n\npublic ChargeResult chargeCustomer(String accountId, long amountCents) {\n    Payment payment = psp.capture(accountId, amountCents);\n    Optional<LedgerEntry> entry = Retry.retry(3, () -> ledger.append(new AppendRequest(\n            accountId,\n            amountCents,\n            payment.id(),\n            UUID.randomUUID().toString()))); //!issue:1\n    if (entry.isEmpty()) {\n        log.warn(\"ledger append skipped for {}\", accountId); //!issue:2\n    }\n    return new ChargeResult(true, payment.id()); //!issue:2\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "A new idempotency key is generated on every attempt, so a retry after a timeout posts a second entry",
+          "fix": "Derive the key once, outside the retried closure, from the business operation (for example `ledger:charge:<payment.id>`), so every attempt and any later replay dedupes. With a 1 s client timeout against a 2.1 s p99, 'timed out but committed' is the common failure, not an edge case."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "Exhausted retries return an empty value and the caller reports success: a captured payment with no ledger entry",
+          "fix": "Make the helper throw the last error (wrapped with the attempt count) and have `chargeCustomer` fail or hand off to a durable retry (outbox or queue) that guarantees the entry is eventually posted. A warn log is not a recovery mechanism; add a reconciliation alert for payments without ledger entries."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Every error is retried and discarded without logging, including non-retryable ones",
+          "fix": "Take an `isRetryable(err)` predicate (timeouts, connection resets, 429 and 503), fail fast on validation, auth and programming errors, and log each failed attempt with its error and attempt number. In Java, restore the interrupt flag rather than swallowing `InterruptedException`."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Immediate retries with no backoff, jitter or overall deadline",
+          "fix": "Back off exponentially with full jitter (for example 100 ms base, 1 s cap) and bound total retry time by the request's deadline, so retries do not pile onto a ledger that is already slow under load."
+        }
+      ],
+      "explanation": "The helper turns one failure mode into two worse ones.\n\nBecause the key is minted inside the closure, the ledger's dedupe never fires. An attempt that times out after the ledger committed (likely here: the 1 s client timeout sits below the 2.1 s p99) is followed by an append with a fresh key, and the customer is debited twice. The PR description's claim that 'retries are safe' depends on a key that is stable across attempts, and the code breaks exactly that.\n\nWhen every attempt fails, the helper converts an error into 'no value' and the caller returns `ok: true` for a payment the ledger has never seen. Money moved at the PSP, the books do not show it, and the only trace is a warn line.\n\nThe tempting review is 'add exponential backoff'. That is a real improvement, but minor next to correctness: backoff on a non-idempotent operation just spaces out the duplicates.\n\n**Takeaway:** a retry is only safe when the operation is idempotent across attempts, and a retry helper must surface exhaustion as an error, never as an empty value.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "cr-config-defaults-01",
+      "domain": "code_quality",
+      "concepts": [
+        "error-handling",
+        "maintainability"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Env config loader with silent defaults and lenient parsing",
+      "prompt": "**PR: Move service config to environment variables**\n\n> Replaces the hard-coded settings with env vars, with sensible defaults so local dev works with zero setup. Adds the production values file.\n\nReview the loader together with the values file in the context.",
+      "context": "```yaml\n# deploy/values-prod.yaml (added in this PR)\nenv:\n  PORT: \"8080\"\n  REQUEST_TIMEOUT_MS: \"30s\"\n  DB_MAX_CONNECTIONS: \"40\"\n  NEW_CHECKOUT: \"true\"\n  # DATABASE_URL and PAYMENTS_API_KEY are injected by the external-secrets operator\n```",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "export interface Config {\n  port: number;\n  databaseUrl: string;\n  paymentsApiKey: string;\n  requestTimeoutMs: number;\n  dbMaxConnections: number;\n  newCheckout: boolean;\n  exposeErrorDetails: boolean;\n}\n\nexport function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {\n  const appEnv = env.APP_ENV || \"development\"; //!issue:3\n  return {\n    port: parseInt(env.PORT || \"8080\", 10),\n    databaseUrl: env.DATABASE_URL || \"postgres://localhost:5432/app\", //!issue:1\n    paymentsApiKey: env.PAYMENTS_API_KEY || \"\", //!issue:1\n    requestTimeoutMs: parseInt(env.REQUEST_TIMEOUT_MS || \"30000\", 10), //!issue:2\n    dbMaxConnections: Number(env.DB_MAX_CONNECTIONS) || 10, //!issue:2\n    newCheckout: env.NEW_CHECKOUT === \"1\", //!issue:4\n    exposeErrorDetails: appEnv !== \"production\", //!issue:3\n  };\n}\n\n// server.ts\nconst config = loadConfig();\napp.use(errorHandler({ showStack: config.exposeErrorDetails }));",
+        "go": "type Config struct {\n\tPort               int\n\tDatabaseURL        string\n\tPaymentsAPIKey     string\n\tRequestTimeout     time.Duration\n\tDBMaxConnections   int\n\tNewCheckout        bool\n\tExposeErrorDetails bool\n}\n\nfunc getenv(key, def string) string {\n\tif v := os.Getenv(key); v != \"\" {\n\t\treturn v\n\t}\n\treturn def\n}\n\nfunc LoadConfig() Config {\n\tappEnv := getenv(\"APP_ENV\", \"development\") //!issue:3\n\tport, _ := strconv.Atoi(getenv(\"PORT\", \"8080\"))\n\ttimeoutMs, _ := strconv.Atoi(getenv(\"REQUEST_TIMEOUT_MS\", \"30000\")) //!issue:2\n\tmaxConns, err := strconv.Atoi(getenv(\"DB_MAX_CONNECTIONS\", \"10\"))\n\tif err != nil {\n\t\tmaxConns = 10 //!issue:2\n\t}\n\treturn Config{\n\t\tPort:               port,\n\t\tDatabaseURL:        getenv(\"DATABASE_URL\", \"postgres://localhost:5432/app?sslmode=disable\"), //!issue:1\n\t\tPaymentsAPIKey:     getenv(\"PAYMENTS_API_KEY\", \"\"), //!issue:1\n\t\tRequestTimeout:     time.Duration(timeoutMs) * time.Millisecond,\n\t\tDBMaxConnections:   maxConns,\n\t\tNewCheckout:        os.Getenv(\"NEW_CHECKOUT\") == \"1\", //!issue:4\n\t\tExposeErrorDetails: appEnv != \"production\", //!issue:3\n\t}\n}",
+        "rust": "pub struct Config {\n    pub port: u16,\n    pub database_url: String,\n    pub payments_api_key: String,\n    pub request_timeout: Duration,\n    pub db_max_connections: u32,\n    pub new_checkout: bool,\n    pub expose_error_details: bool,\n}\n\nfn var_or(key: &str, default: &str) -> String {\n    std::env::var(key).unwrap_or_else(|_| default.to_string())\n}\n\nimpl Config {\n    pub fn from_env() -> Config {\n        let app_env = var_or(\"APP_ENV\", \"development\"); //!issue:3\n        Config {\n            port: var_or(\"PORT\", \"8080\").parse().unwrap_or(8080),\n            database_url: var_or(\"DATABASE_URL\", \"postgres://localhost:5432/app\"), //!issue:1\n            payments_api_key: var_or(\"PAYMENTS_API_KEY\", \"\"), //!issue:1\n            request_timeout: Duration::from_millis(var_or(\"REQUEST_TIMEOUT_MS\", \"30000\").parse().unwrap_or(30_000)), //!issue:2\n            db_max_connections: var_or(\"DB_MAX_CONNECTIONS\", \"10\").parse().unwrap_or(10), //!issue:2\n            new_checkout: var_or(\"NEW_CHECKOUT\", \"0\") == \"1\", //!issue:4\n            expose_error_details: app_env != \"production\", //!issue:3\n        }\n    }\n}",
+        "csharp": "public sealed record AppConfig(\n    int Port,\n    string DatabaseUrl,\n    string PaymentsApiKey,\n    TimeSpan RequestTimeout,\n    int DbMaxConnections,\n    bool NewCheckout,\n    bool ExposeErrorDetails);\n\npublic static class ConfigLoader\n{\n    private static string Get(string key, string fallback) =>\n        Environment.GetEnvironmentVariable(key) is { Length: > 0 } v ? v : fallback;\n\n    public static AppConfig Load()\n    {\n        var appEnv = Get(\"APP_ENV\", \"development\"); //!issue:3\n        return new AppConfig(\n            Port: int.TryParse(Get(\"PORT\", \"8080\"), out var port) ? port : 8080,\n            DatabaseUrl: Get(\"DATABASE_URL\", \"Host=localhost;Database=app\"), //!issue:1\n            PaymentsApiKey: Get(\"PAYMENTS_API_KEY\", \"\"), //!issue:1\n            RequestTimeout: TimeSpan.FromMilliseconds(int.TryParse(Get(\"REQUEST_TIMEOUT_MS\", \"30000\"), out var t) ? t : 30000), //!issue:2\n            DbMaxConnections: int.TryParse(Get(\"DB_MAX_CONNECTIONS\", \"10\"), out var n) ? n : 10, //!issue:2\n            NewCheckout: Get(\"NEW_CHECKOUT\", \"0\") == \"1\", //!issue:4\n            ExposeErrorDetails: appEnv != \"production\"); //!issue:3\n    }\n}",
+        "java": "public record AppConfig(int port, String databaseUrl, String paymentsApiKey, Duration requestTimeout,\n                        int dbMaxConnections, boolean newCheckout, boolean exposeErrorDetails) {\n\n    private static String get(String key, String fallback) {\n        String v = System.getenv(key);\n        return v == null || v.isEmpty() ? fallback : v;\n    }\n\n    private static int intOr(String key, int fallback) {\n        try {\n            return Integer.parseInt(get(key, String.valueOf(fallback)));\n        } catch (NumberFormatException e) {\n            return fallback; //!issue:2\n        }\n    }\n\n    public static AppConfig fromEnv() {\n        String appEnv = get(\"APP_ENV\", \"development\"); //!issue:3\n        return new AppConfig(\n            intOr(\"PORT\", 8080),\n            get(\"DATABASE_URL\", \"jdbc:postgresql://localhost:5432/app\"), //!issue:1\n            get(\"PAYMENTS_API_KEY\", \"\"), //!issue:1\n            Duration.ofMillis(intOr(\"REQUEST_TIMEOUT_MS\", 30_000)), //!issue:2\n            intOr(\"DB_MAX_CONNECTIONS\", 10),\n            \"1\".equals(System.getenv(\"NEW_CHECKOUT\")), //!issue:4\n            !\"production\".equals(appEnv)); //!issue:3\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Required secrets default silently, so a pod missing DATABASE_URL or PAYMENTS_API_KEY boots against localhost or with an empty key",
+          "fix": "Treat both as required outside local dev: collect every missing or invalid key and exit at startup with one error listing them, so a broken secret sync fails the rollout at readiness rather than at the first checkout. Keep dev defaults in a `.env.example` or an explicit local profile, not in the production code path."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Malformed numbers are coerced or replaced instead of rejected: REQUEST_TIMEOUT_MS=30s becomes 30 ms in TS, no timeout at all in Go, and 30000 elsewhere",
+          "fix": "Parse strictly (the whole string, digits only, or a duration parser that accepts `30s` on purpose), validate ranges (for example timeout 100 ms to 120 s, pool 1 to 200), and fail startup on invalid input. The loader should return an error, not a `Config` that cannot fail."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Unsafe default direction: a missing APP_ENV turns on error details (stack traces) in production",
+          "fix": "Fail closed: enable details only when APP_ENV is explicitly `development` (or require APP_ENV everywhere). Security-relevant switches should default to the safe value."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Boolean parsing accepts only \"1\", so the values file's \"true\" silently leaves the new checkout off",
+          "fix": "Parse booleans from an explicit set (`true`, `false`, `1`, `0`, case-insensitive) and reject anything else at startup."
+        }
+      ],
+      "explanation": "Every issue is the same anti-pattern: the loader prefers starting with a guess over failing with a message.\n\nDefaults for required secrets mean a secret-sync outage produces healthy-looking pods pointed at localhost, discovered only when checkout fails. Lenient parsing is worse than it looks and differs by language: TypeScript's `parseInt('30s', 10)` returns 30, so the production timeout becomes 30 ms; Go's ignored `Atoi` error yields 0, which as an `http.Client` timeout means no timeout at all; the Rust, C# and Java variants quietly use 30000 and hide the operator's mistake until someone changes the value and nothing happens. The values file also sets `NEW_CHECKOUT: \"true\"`, which this loader reads as false, and it never sets APP_ENV, so production serves stack traces.\n\nThe tempting position is to bless the defaults because they help local dev. They do, but that convenience belongs in a local profile, not in the code path production runs.\n\n**Takeaway:** parse config strictly and validate it once at startup, failing fast with every problem listed.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "cr-pagination-01",
+      "domain": "code_quality",
+      "concepts": [
+        "review-practice",
+        "maintainability"
+      ],
+      "skill": "apply",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Offset pagination helper for a live audit log",
+      "prompt": "**PR: Add a reusable pagination helper and use it for the audit log**\n\n> Introduces `PageRequest` and `toPage`, and paginates `GET /orgs/:orgId/audit-events`, newest first. Other list endpoints will adopt the helper next.\n\nReview the change.",
+      "context": "- `audit_events` holds 40 M rows; the largest org has 6 M.\n- Bulk operations write hundreds of events with the same `created_at` millisecond.\n- Events keep arriving while admins page through the log.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "export interface PageRequest {\n  page: number;\n  pageSize: number;\n}\n\n// Reads ?page=1&pageSize=50; the UI's first page is page=1.\nexport function parsePageRequest(q: Record<string, unknown>): PageRequest {\n  return { page: Number(q.page ?? 1), pageSize: Number(q.pageSize ?? 50) }; //!issue:3\n}\n\nexport const offsetOf = (p: PageRequest): number => p.page * p.pageSize; //!issue:1\n\nexport function toPage<T>(items: T[], p: PageRequest, total: number): Page<T> {\n  return { items, page: p.page, total, nextPage: items.length === p.pageSize ? p.page + 1 : null }; //!issue:4\n}\n\n// audit-events.repo.ts\nexport async function listAuditEvents(orgId: string, p: PageRequest): Promise<Page<AuditEvent>> {\n  const { rows: items } = await pool.query<AuditEvent>(\n    \"SELECT * FROM audit_events WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3\", //!issue:2\n    [orgId, p.pageSize, offsetOf(p)],\n  );\n  const { rows } = await pool.query(\"SELECT count(*)::int AS total FROM audit_events WHERE org_id = $1\", [orgId]); //!issue:4\n  return toPage(items, p, rows[0].total);\n}\n\nrouter.get(\"/orgs/:orgId/audit-events\", requireOrgAdmin, async (req, res) => {\n  res.json(await listAuditEvents(req.params.orgId, parsePageRequest(req.query)));\n});",
+        "go": "type PageRequest struct {\n\tPage     int\n\tPageSize int\n}\n\n// ParsePageRequest reads ?page=1&pageSize=50; the UI's first page is page=1.\nfunc ParsePageRequest(q url.Values) PageRequest {\n\treturn PageRequest{Page: atoiOr(q.Get(\"page\"), 1), PageSize: atoiOr(q.Get(\"pageSize\"), 50)} //!issue:3\n}\n\nfunc (p PageRequest) Offset() int { return p.Page * p.PageSize } //!issue:1\n\nfunc ToPage[T any](items []T, p PageRequest, total int) Page[T] {\n\tout := Page[T]{Items: items, Page: p.Page, Total: total}\n\tif len(items) == p.PageSize { //!issue:4\n\t\tnext := p.Page + 1\n\t\tout.NextPage = &next\n\t}\n\treturn out\n}\n\nfunc (r *AuditRepo) List(ctx context.Context, orgID string, p PageRequest) (Page[AuditEvent], error) {\n\tvar items []AuditEvent\n\terr := r.db.SelectContext(ctx, &items,\n\t\t\"SELECT * FROM audit_events WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3\", //!issue:2\n\t\torgID, p.PageSize, p.Offset())\n\tif err != nil {\n\t\treturn Page[AuditEvent]{}, err\n\t}\n\tvar total int\n\tif err := r.db.GetContext(ctx, &total, \"SELECT count(*) FROM audit_events WHERE org_id = $1\", orgID); err != nil { //!issue:4\n\t\treturn Page[AuditEvent]{}, err\n\t}\n\treturn ToPage(items, p, total), nil\n}",
+        "rust": "// Reads ?page=1&pageSize=50; the UI's first page is page=1.\n#[derive(Deserialize)]\n#[serde(rename_all = \"camelCase\")]\npub struct PageRequest {\n    #[serde(default = \"first_page\")]\n    pub page: i64, //!issue:3\n    #[serde(default = \"default_page_size\")]\n    pub page_size: i64, //!issue:3\n}\n\nfn first_page() -> i64 { 1 }\nfn default_page_size() -> i64 { 50 }\n\nimpl PageRequest {\n    pub fn offset(&self) -> i64 {\n        self.page * self.page_size //!issue:1\n    }\n}\n\npub fn to_page<T>(items: Vec<T>, p: &PageRequest, total: i64) -> Page<T> {\n    let next_page = (items.len() as i64 == p.page_size).then(|| p.page + 1); //!issue:4\n    Page { items, page: p.page, total, next_page }\n}\n\npub async fn list_audit_events(db: &PgPool, org_id: Uuid, p: &PageRequest) -> sqlx::Result<Page<AuditEvent>> {\n    let items = sqlx::query_as::<_, AuditEvent>(\n        \"SELECT * FROM audit_events WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3\", //!issue:2\n    )\n    .bind(org_id)\n    .bind(p.page_size)\n    .bind(p.offset())\n    .fetch_all(db)\n    .await?;\n    let total: i64 = sqlx::query_scalar(\"SELECT count(*) FROM audit_events WHERE org_id = $1\") //!issue:4\n        .bind(org_id)\n        .fetch_one(db)\n        .await?;\n    Ok(to_page(items, p, total))\n}",
+        "csharp": "// Bound from ?page=1&pageSize=50; the UI's first page is page=1.\npublic sealed record PageRequest(int Page = 1, int PageSize = 50) //!issue:3\n{\n    public int Offset => Page * PageSize; //!issue:1\n}\n\npublic static class Paging\n{\n    public static Page<T> ToPage<T>(IReadOnlyList<T> items, PageRequest p, int total) =>\n        new(items, p.Page, total, items.Count == p.PageSize ? p.Page + 1 : null); //!issue:4\n}\n\npublic class AuditEventRepository\n{\n    private readonly AppDbContext _db;\n    public AuditEventRepository(AppDbContext db) => _db = db;\n\n    public async Task<Page<AuditEvent>> ListAsync(Guid orgId, PageRequest p)\n    {\n        var query = _db.AuditEvents.Where(e => e.OrgId == orgId);\n        var items = await query\n            .OrderByDescending(e => e.CreatedAt) //!issue:2\n            .Skip(p.Offset)\n            .Take(p.PageSize)\n            .ToListAsync();\n        var total = await query.CountAsync(); //!issue:4\n        return Paging.ToPage(items, p, total);\n    }\n}\n\n[HttpGet(\"orgs/{orgId:guid}/audit-events\")]\npublic Task<Page<AuditEvent>> List(Guid orgId, [FromQuery] PageRequest p) => _repo.ListAsync(orgId, p);",
+        "java": "// Built from ?page=1&pageSize=50; the UI's first page is page=1.\npublic record PageRequest(int page, int pageSize) {\n    public static PageRequest from(Integer page, Integer pageSize) {\n        return new PageRequest(page == null ? 1 : page, pageSize == null ? 50 : pageSize); //!issue:3\n    }\n\n    public int offset() {\n        return page * pageSize; //!issue:1\n    }\n}\n\npublic static <T> Page<T> toPage(List<T> items, PageRequest p, long total) {\n    return new Page<>(items, p.page(), total, items.size() == p.pageSize() ? p.page() + 1 : null); //!issue:4\n}\n\npublic Page<AuditEvent> listAuditEvents(UUID orgId, PageRequest p) {\n    List<AuditEvent> items = jdbc.query(\n        \"SELECT * FROM audit_events WHERE org_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?\", //!issue:2\n        AUDIT_EVENT_MAPPER, orgId, p.pageSize(), p.offset());\n    Long total = jdbc.queryForObject(\n        \"SELECT count(*) FROM audit_events WHERE org_id = ?\", Long.class, orgId); //!issue:4\n    return toPage(items, p, total);\n}\n\n@GetMapping(\"/orgs/{orgId}/audit-events\")\npublic Page<AuditEvent> list(@PathVariable UUID orgId,\n                             @RequestParam(required = false) Integer page,\n                             @RequestParam(required = false) Integer pageSize) {\n    return audit.listAuditEvents(orgId, PageRequest.from(page, pageSize));\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Offset treats the 1-based page as 0-based, so page 1 skips the newest page of events",
+          "fix": "Compute `(page - 1) * pageSize` and validate `page >= 1`, or drop page numbers for an opaque cursor. Add a test asserting page 1 returns the newest row."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Ordering by a non-unique timestamp with OFFSET makes pages overlap and skip rows",
+          "fix": "Add a unique tie-breaker (`ORDER BY created_at DESC, id DESC`) and, for a live append-heavy table, switch to keyset pagination (`WHERE (created_at, id) < ($ts, $id)`), which stays stable while new events arrive and does not scan the skipped rows."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "No bounds on page or pageSize",
+          "fix": "Clamp `pageSize` to 1..100 and reject non-positive or non-numeric `page` with 400. Guard the multiplication: Rust panics on overflow in debug builds, and Java and C# wrap to a negative offset."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Exact COUNT(*) on every request, and a next-page heuristic that yields a phantom empty last page",
+          "fix": "Fetch `pageSize + 1` rows to know exactly whether a next page exists, and drop `total` or make it opt-in, cached or estimated: an exact count over 6 M rows on every page view is expensive."
+        }
+      ],
+      "explanation": "The headline bug is plain off-by-one: the API and UI are 1-based (the default is 1), the offset math is 0-based, so the most recent 50 events, the ones an admin opens the audit log to see, never appear. It is critical here because an audit log that silently hides recent activity fails its one job.\n\nThe subtler problem is ordering. With hundreds of rows sharing a timestamp, `ORDER BY created_at` gives the database freedom to return ties in any order, so successive pages can repeat and drop rows. Concurrent inserts make OFFSET shift underneath the reader as well. A unique tie-breaker fixes determinism; keyset pagination fixes both, and its cost does not grow with page depth.\n\nBecause this is a reusable helper, every endpoint that adopts it inherits these bugs, which is why the review should block now rather than after the second caller.\n\n**Takeaway:** for large, live tables use keyset cursors over a unique sort key; offset pagination is only correct for small, static result sets.",
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "cr-leaderboard-events-01",
+      "domain": "code_quality",
+      "concepts": [
+        "concurrency",
+        "coupling-cohesion"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "In-memory leaderboard mutated by concurrent event handlers",
+      "prompt": "**PR: Live leaderboard from score events**\n\n> Keeps per-player totals and a top 10 in memory, updated from `score.awarded` events, and serves `topTen()` to the scoreboard API.\n\nThe consumer runs up to 8 handlers concurrently per pod, the broker delivers at least once, and every event carries a unique `eventId`. Review the change.",
+      "language": null,
+      "estSeconds": 480,
+      "code": {
+        "ts": "interface Entry {\n  playerId: string;\n  name: string;\n  score: number;\n}\n\nexport class Leaderboard {\n  private readonly totals = new Map<string, number>();\n  private top: Entry[] = [];\n\n  constructor(private readonly profiles: ProfileClient) {}\n\n  // Registered with consumer.subscribe(\"score.awarded\", lb.onScore, { concurrency: 8 })\n  onScore = async (evt: ScoreAwarded): Promise<void> => {\n    const prev = this.totals.get(evt.playerId) ?? 0; //!issue:1\n    const profile = await this.profiles.get(evt.playerId); //!issue:1,5\n    const total = prev + evt.points; //!issue:2\n    this.totals.set(evt.playerId, total); //!issue:1\n    this.top.push({ playerId: evt.playerId, name: profile.displayName, score: total }); //!issue:3\n    this.top.sort((a, b) => b.score - a.score);\n    this.top.length = Math.min(this.top.length, 10);\n  };\n\n  topTen(): Entry[] {\n    return this.top; //!issue:4\n  }\n}",
+        "go": "type Leaderboard struct {\n\tprofiles ProfileClient\n\ttotals   map[string]int64\n\tmu       sync.Mutex\n\ttop      []Entry\n}\n\n// Registered with consumer.Subscribe(\"score.awarded\", lb.OnScore, WithConcurrency(8))\nfunc (l *Leaderboard) OnScore(ctx context.Context, evt ScoreAwarded) error {\n\tprev := l.totals[evt.PlayerID] //!issue:1\n\tprofile, err := l.profiles.Get(ctx, evt.PlayerID) //!issue:5\n\tif err != nil {\n\t\treturn err\n\t}\n\ttotal := prev + evt.Points //!issue:2\n\tl.totals[evt.PlayerID] = total //!issue:1\n\tl.mu.Lock()\n\tl.top = append(l.top, Entry{PlayerID: evt.PlayerID, Name: profile.DisplayName, Score: total}) //!issue:3\n\tsort.Slice(l.top, func(i, j int) bool { return l.top[i].Score > l.top[j].Score })\n\tif len(l.top) > 10 {\n\t\tl.top = l.top[:10]\n\t}\n\tl.mu.Unlock()\n\treturn nil\n}\n\nfunc (l *Leaderboard) TopTen() []Entry {\n\tl.mu.Lock()\n\tdefer l.mu.Unlock()\n\treturn l.top //!issue:4\n}",
+        "rust": "pub struct Leaderboard {\n    profiles: ProfileClient,\n    totals: Mutex<HashMap<String, i64>>,\n    top: Arc<Mutex<Vec<Entry>>>,\n}\n\nimpl Leaderboard {\n    // Registered with consumer.subscribe(\"score.awarded\", Arc::clone(&lb), 8 /* concurrency */)\n    pub async fn on_score(&self, evt: ScoreAwarded) -> anyhow::Result<()> {\n        let prev = self.totals.lock().unwrap().get(&evt.player_id).copied().unwrap_or(0); //!issue:1\n        let profile = self.profiles.get(&evt.player_id).await?; //!issue:1,5\n        let total = prev + evt.points; //!issue:2\n        self.totals.lock().unwrap().insert(evt.player_id.clone(), total); //!issue:1\n        let mut top = self.top.lock().unwrap();\n        top.push(Entry { player_id: evt.player_id, name: profile.display_name, score: total }); //!issue:3\n        top.sort_by(|a, b| b.score.cmp(&a.score));\n        top.truncate(10);\n        Ok(())\n    }\n\n    pub fn top_ten(&self) -> Arc<Mutex<Vec<Entry>>> {\n        Arc::clone(&self.top) //!issue:4\n    }\n}",
+        "csharp": "public sealed class Leaderboard\n{\n    private readonly IProfileClient _profiles;\n    private readonly ConcurrentDictionary<string, long> _totals = new();\n    private readonly List<Entry> _top = new();\n\n    public Leaderboard(IProfileClient profiles) => _profiles = profiles;\n\n    // Registered with consumer.Subscribe(\"score.awarded\", OnScoreAsync, maxConcurrency: 8)\n    public async Task OnScoreAsync(ScoreAwarded evt)\n    {\n        var prev = _totals.TryGetValue(evt.PlayerId, out var p) ? p : 0; //!issue:1\n        var profile = await _profiles.GetAsync(evt.PlayerId); //!issue:1,5\n        var total = prev + evt.Points; //!issue:2\n        _totals[evt.PlayerId] = total; //!issue:1\n        lock (_top)\n        {\n            _top.Add(new Entry(evt.PlayerId, profile.DisplayName, total)); //!issue:3\n            _top.Sort((a, b) => b.Score.CompareTo(a.Score));\n            if (_top.Count > 10) _top.RemoveRange(10, _top.Count - 10);\n        }\n    }\n\n    public IList<Entry> TopTen() => _top; //!issue:4\n}",
+        "java": "public final class Leaderboard {\n    private final ProfileClient profiles;\n    private final ConcurrentHashMap<String, Long> totals = new ConcurrentHashMap<>();\n    private final List<Entry> top = new ArrayList<>();\n\n    public Leaderboard(ProfileClient profiles) {\n        this.profiles = profiles;\n    }\n\n    // Registered with consumer.subscribe(\"score.awarded\", this::onScore, 8 /* concurrency */)\n    public void onScore(ScoreAwarded evt) {\n        long prev = totals.getOrDefault(evt.playerId(), 0L); //!issue:1\n        Profile profile = profiles.get(evt.playerId()); //!issue:1,5\n        long total = prev + evt.points(); //!issue:2\n        totals.put(evt.playerId(), total); //!issue:1\n        synchronized (top) {\n            top.add(new Entry(evt.playerId(), profile.displayName(), total)); //!issue:3\n            top.sort(Comparator.comparingLong(Entry::score).reversed());\n            if (top.size() > 10) {\n                top.subList(10, top.size()).clear();\n            }\n        }\n    }\n\n    public List<Entry> topTen() {\n        return top; //!issue:4\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Read-modify-write of the total is not atomic across concurrent handlers, and the profile call sits between the read and the write",
+          "fix": "Make the increment atomic and adjacent to the read (`totals.merge(id, points, Long::sum)`, `AddOrUpdate`, or one lock held across read and write) and never await between them. In Go the map is not guarded at all, so concurrent writes crash the process with 'concurrent map writes'."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Not idempotent: at-least-once redelivery double-counts points",
+          "fix": "Dedupe on `eventId` before applying (a bounded seen-set covering the redelivery window, or persist processed ids with the totals), or change the event to carry the player's new absolute total so applying it twice is harmless."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Top 10 appends an entry per event, so one active player fills several slots with stale scores",
+          "fix": "Rebuild the top list from `totals` or maintain a structure keyed by player (a sorted set or a map plus heap) so each player appears once, with their current total."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "`topTen` hands out the live internal collection that handlers mutate",
+          "fix": "Return an immutable snapshot: copy under the lock, or build a new immutable list on each update and publish it atomically. Today readers race the writers (Java can throw `ConcurrentModificationException`, Go readers race the in-place sort) and callers can corrupt the board."
+        },
+        {
+          "id": "5",
+          "severity": "minor",
+          "summary": "A profile-service call on every event couples ingestion throughput to another service",
+          "fix": "Keep only ids and points on the write path and resolve display names for the ten winners at read time, with a small cache; a slow profile service should not back up the score consumer."
+        }
+      ],
+      "explanation": "Two handlers for the same player both read 100, both await the profile service, then write 100 + their own points; one award vanishes. Concurrent maps do not help: each call is atomic, the sequence is not. In TypeScript the race is just as real because `await` yields between the read and the write, and in Go the unguarded map is a crash, not just a lost update.\n\nLocking fixes atomicity but not duplicates: at-least-once delivery means the same `eventId` will arrive twice after a consumer restart, and an additive handler counts it twice. The top list has its own logic bug, inserting one row per event rather than one per player, and exposing the live list makes every reader a participant in the race.\n\nThe tempting single comment is 'add a mutex'. It is necessary, but it leaves the double counting, the duplicate rows and the leaked collection.\n\n**Takeaway:** shared state touched by concurrent, at-least-once handlers needs atomic updates, idempotency and snapshot reads; a lock alone provides only the first.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "cr-repo-orm-leak-01",
+      "domain": "code_quality",
+      "concepts": [
+        "abstraction",
+        "coupling-cohesion"
+      ],
+      "skill": "design",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Repository that hands ORM entities and queries to the HTTP layer",
+      "prompt": "**PR: Add OrderRepository and the customer order-history endpoint**\n\n> Introduces a repository for orders so handlers stop touching the ORM directly, and wires `GET /me/orders` for the customer app.\n\nOrder rows also carry internal columns used by finance and the fraud team. Review the change.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "@Entity(\"orders\")\nexport class OrderEntity {\n  @PrimaryGeneratedColumn(\"uuid\") id!: string;\n  @Column(\"uuid\") customerId!: string;\n  @Column() status!: string;\n  @Column(\"int\") totalCents!: number;\n  @Column(\"int\") costCents!: number;\n  @Column({ type: \"float\", nullable: true }) fraudScore?: number;\n  @Column({ nullable: true }) internalNotes?: string;\n  @OneToMany(() => OrderItemEntity, (i) => i.order) items!: OrderItemEntity[];\n}\n\nexport class OrderRepository {\n  constructor(private readonly repo: Repository<OrderEntity>) {}\n\n  find(options: FindManyOptions<OrderEntity>): Promise<OrderEntity[]> { //!issue:1\n    return this.repo.find(options);\n  }\n}\n\n// GET /me/orders (customer app)\nrouter.get(\"/me/orders\", requireCustomer, async (req, res) => {\n  const orders = await orderRepo.find({ where: { customerId: req.user.customerId } }); //!issue:1,4\n  for (const order of orders) {\n    order.items = await itemRepo.find({ where: { order: { id: order.id } } }); //!issue:3\n  }\n  res.json(orders); //!issue:2\n});",
+        "go": "type OrderModel struct {\n\tID            string `gorm:\"primaryKey\"`\n\tCustomerID    string\n\tStatus        string\n\tTotalCents    int64\n\tCostCents     int64\n\tFraudScore    *float64\n\tInternalNotes *string\n\tItems         []OrderItemModel `gorm:\"foreignKey:OrderID\"`\n}\n\ntype OrderRepository struct{ db *gorm.DB }\n\n// Query returns a query on orders so callers can add their own filters.\nfunc (r *OrderRepository) Query(ctx context.Context) *gorm.DB { //!issue:1\n\treturn r.db.WithContext(ctx).Model(&OrderModel{})\n}\n\n// GET /me/orders (customer app)\nfunc (h *Handler) MyOrders(w http.ResponseWriter, r *http.Request) {\n\tcaller := auth.CustomerFrom(r.Context())\n\tvar orders []OrderModel\n\tif err := h.orders.Query(r.Context()).Where(\"customer_id = ?\", caller.ID).Find(&orders).Error; err != nil { //!issue:1,4\n\t\thttp.Error(w, \"failed to load orders\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tfor i := range orders {\n\t\th.orders.Query(r.Context()).Model(&orders[i]).Association(\"Items\").Find(&orders[i].Items) //!issue:3\n\t}\n\tjson.NewEncoder(w).Encode(orders) //!issue:2\n}",
+        "rust": "#[derive(Clone, Debug, DeriveEntityModel, Serialize)]\n#[sea_orm(table_name = \"orders\")]\npub struct Model {\n    #[sea_orm(primary_key)]\n    pub id: Uuid,\n    pub customer_id: Uuid,\n    pub status: String,\n    pub total_cents: i64,\n    pub cost_cents: i64,\n    pub fraud_score: Option<f64>,\n    pub internal_notes: Option<String>,\n}\n\nimpl OrderRepository {\n    // Returns the entity query so callers can add their own filters.\n    pub fn query(&self) -> Select<order::Entity> { //!issue:1\n        order::Entity::find()\n    }\n    pub fn conn(&self) -> &DatabaseConnection {\n        &self.db\n    }\n}\n\n// GET /me/orders (customer app)\npub async fn my_orders(State(app): State<AppState>, caller: Customer) -> Result<Json<Vec<OrderWithItems>>, ApiError> {\n    let orders = app.orders.query()\n        .filter(order::Column::CustomerId.eq(caller.id))\n        .all(app.orders.conn()).await?; //!issue:1,4\n    let mut out = Vec::with_capacity(orders.len());\n    for o in orders {\n        let items = o.find_related(order_item::Entity).all(app.orders.conn()).await?; //!issue:3\n        out.push(OrderWithItems { order: o, items }); // #[serde(flatten)] order\n    }\n    Ok(Json(out)) //!issue:2\n}",
+        "csharp": "public class Order\n{\n    public Guid Id { get; set; }\n    public Guid CustomerId { get; set; }\n    public string Status { get; set; } = \"\";\n    public long TotalCents { get; set; }\n    public long CostCents { get; set; }\n    public double? FraudScore { get; set; }\n    public string? InternalNotes { get; set; }\n    public List<OrderItem> Items { get; set; } = new();\n}\n\npublic class OrderRepository\n{\n    private readonly ShopDbContext _db;\n    public OrderRepository(ShopDbContext db) => _db = db;\n\n    public IQueryable<Order> Query() => _db.Orders; //!issue:1\n}\n\n// GET /me/orders (customer app)\n[HttpGet(\"me/orders\")]\npublic async Task<ActionResult<List<Order>>> MyOrders()\n{\n    var customerId = User.GetCustomerId();\n    var orders = await _orders.Query().Where(o => o.CustomerId == customerId).ToListAsync(); //!issue:1,4\n    foreach (var order in orders)\n    {\n        order.Items = await _items.Query().Where(i => i.OrderId == order.Id).ToListAsync(); //!issue:3\n    }\n    return Ok(orders); //!issue:2\n}",
+        "java": "@Entity\n@Table(name = \"orders\")\npublic class Order {\n    @Id private UUID id;\n    private UUID customerId;\n    private String status;\n    private long totalCents;\n    private long costCents;\n    private Double fraudScore;\n    private String internalNotes;\n    @OneToMany(mappedBy = \"order\", fetch = FetchType.LAZY)\n    private List<OrderItem> items;\n    // getters and setters omitted\n}\n\npublic interface OrderRepository extends JpaRepository<Order, UUID>, JpaSpecificationExecutor<Order> {} //!issue:1\n\n// GET /me/orders (customer app)\n@GetMapping(\"/me/orders\")\n@Transactional(readOnly = true)\npublic List<Order> myOrders(@AuthenticationPrincipal Customer caller) {\n    List<Order> orders = orderRepository.findAll( //!issue:1,4\n        (root, query, cb) -> cb.equal(root.get(\"customerId\"), caller.getId()));\n    orders.forEach(o -> o.getItems().size()); //!issue:3\n    return orders; //!issue:2\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The repository is a pass-through that exposes the ORM's query API, so persistence details leak into handlers",
+          "fix": "Give it intention-revealing methods, for example `listForCustomer(customerId, cursor): OrderSummary[]`, that own the filter, the item loading and the projection. When callers compose ORM queries, soft-delete filters, tenancy rules and query tuning can no longer be changed in one place, which defeats the PR's own goal."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "The handler serializes ORM entities, sending cost, fraud score and internal notes to customers",
+          "fix": "Map to an explicit `OrderHistoryItem` response with allowlisted fields (id, status, total, placed-at, items with name, quantity and unit price) and add a contract test asserting internal fields never appear in the response."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "N+1 queries: one items query or lazy load per order",
+          "fix": "Load items in one round trip inside the repository, through a join or `WHERE order_id IN (...)` (`relations`, `Preload`, `Include`, a fetch join or `find_with_related`), projected straight into the response type."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Order history is unbounded and unordered",
+          "fix": "Order by `(created_at DESC, id DESC)` and page with a cursor; long-lived customers and B2B accounts can have thousands of orders."
+        }
+      ],
+      "explanation": "The PR says the repository exists so handlers stop touching the ORM, but the handler still writes ORM queries, just through a thinner wrapper, and receives ORM entities back. That leak is what causes the critical bug: with the entity as the response type, every column is public, so customers receive `costCents` (your margin), `fraudScore` and `internalNotes`. It also hides the N+1: in Java the lazy collection is touched once per order, and Jackson serializing a bidirectional relation can recurse; in Go the per-order association error is silently ignored.\n\nThe tempting review is 'add a DTO in the handler'. That fixes the leak in one place, but leaves query composition, item loading and projection scattered across every future caller.\n\n**Takeaway:** a repository earns its keep by hiding persistence, with domain-shaped methods in and domain or read models out; if it returns entities and query builders, the ORM is still your API.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "cr-webhook-signature-01",
+      "domain": "code_quality",
+      "concepts": [
+        "error-handling",
+        "review-practice"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Payment webhook with a broken signature check and slow inline work",
+      "prompt": "**PR: Handle payment provider webhooks**\n\n> Verifies the provider's signature, marks the order paid, emails the receipt and creates the shipment.\n\nReview the change against the provider's contract in the context.",
+      "context": "Provider contract:\n- Header `X-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of t + '.' + raw request body>`.\n- Deliveries time out after 10 s; any non-2xx or timeout is retried with backoff for 3 days, and endpoints failing for 3 days are disabled.\n\nReceipt PDF rendering takes 2 to 6 s.",
+      "language": null,
+      "estSeconds": 540,
+      "code": {
+        "ts": "app.post(\"/webhooks/payments\", express.json(), async (req, res) => {\n  const sig = Object.fromEntries(\n    (req.get(\"X-Signature\") ?? \"\").split(\",\").map((part) => part.split(\"=\", 2)),\n  );\n  const expected = createHmac(\"sha256\", WEBHOOK_SECRET)\n    .update(`${sig.t}.${JSON.stringify(req.body)}`) //!issue:1\n    .digest(\"hex\");\n  if (expected !== sig.v1) return res.sendStatus(401); //!issue:1\n\n  const event = req.body as ProviderEvent;\n  switch (event.type) {\n    case \"payment.succeeded\": { //!issue:3\n      const order = await orders.markPaid(event.data.orderId, event.data.amount);\n      const pdf = await invoices.render(order); //!issue:2\n      await mailer.send(order.customerEmail, \"Your receipt\", { attachments: [pdf] }); //!issue:2\n      await fulfillment.createShipment(order); //!issue:2\n      break;\n    }\n    default:\n      return res.status(400).send(`unhandled event ${event.type}`); //!issue:4\n  }\n  res.sendStatus(200);\n});",
+        "go": "func (h *Handler) PaymentsWebhook(w http.ResponseWriter, r *http.Request) {\n\tvar event ProviderEvent\n\tif err := json.NewDecoder(r.Body).Decode(&event); err != nil {\n\t\thttp.Error(w, \"bad payload\", http.StatusBadRequest)\n\t\treturn\n\t}\n\tsig := parseSignatureHeader(r.Header.Get(\"X-Signature\")) // map: \"t\" -> ..., \"v1\" -> ...\n\tcanonical, _ := json.Marshal(event) //!issue:1\n\tmac := hmac.New(sha256.New, h.webhookSecret)\n\tmac.Write([]byte(sig[\"t\"] + \".\" + string(canonical))) //!issue:1\n\tif hex.EncodeToString(mac.Sum(nil)) != sig[\"v1\"] { //!issue:1\n\t\thttp.Error(w, \"bad signature\", http.StatusUnauthorized)\n\t\treturn\n\t}\n\tctx := r.Context()\n\tswitch event.Type {\n\tcase \"payment.succeeded\": //!issue:3\n\t\torder, err := h.orders.MarkPaid(ctx, event.Data.OrderID, event.Data.Amount)\n\t\tvar pdf []byte\n\t\tif err == nil {\n\t\t\tpdf, err = h.invoices.Render(ctx, order) //!issue:2\n\t\t}\n\t\tif err == nil {\n\t\t\terr = h.mailer.Send(ctx, order.CustomerEmail, \"Your receipt\", pdf) //!issue:2\n\t\t}\n\t\tif err == nil {\n\t\t\terr = h.fulfillment.CreateShipment(ctx, order) //!issue:2\n\t\t}\n\t\tif err != nil {\n\t\t\thttp.Error(w, \"processing failed\", http.StatusInternalServerError)\n\t\t\treturn\n\t\t}\n\tdefault:\n\t\thttp.Error(w, \"unhandled event \"+event.Type, http.StatusBadRequest) //!issue:4\n\t\treturn\n\t}\n\tw.WriteHeader(http.StatusOK)\n}",
+        "rust": "pub async fn payments_webhook(\n    State(app): State<AppState>,\n    headers: HeaderMap,\n    Json(event): Json<ProviderEvent>,\n) -> StatusCode {\n    let header = headers.get(\"X-Signature\").and_then(|v| v.to_str().ok()).unwrap_or(\"\");\n    let sig: HashMap<&str, &str> = header.split(',').filter_map(|p| p.split_once('=')).collect();\n    let canonical = serde_json::to_string(&event).unwrap(); //!issue:1\n    let mut mac = Hmac::<Sha256>::new_from_slice(&app.webhook_secret).unwrap();\n    mac.update(format!(\"{}.{}\", sig.get(\"t\").unwrap_or(&\"\"), canonical).as_bytes()); //!issue:1\n    if hex::encode(mac.finalize().into_bytes()) != *sig.get(\"v1\").unwrap_or(&\"\") { //!issue:1\n        return StatusCode::UNAUTHORIZED;\n    }\n    match event.kind.as_str() {\n        \"payment.succeeded\" => { //!issue:3\n            let result: Result<(), AppError> = async {\n                let order = app.orders.mark_paid(&event.data.order_id, event.data.amount).await?;\n                let pdf = app.invoices.render(&order).await?; //!issue:2\n                app.mailer.send(&order.customer_email, \"Your receipt\", vec![pdf]).await?; //!issue:2\n                app.fulfillment.create_shipment(&order).await //!issue:2\n            }\n            .await;\n            if result.is_err() {\n                return StatusCode::INTERNAL_SERVER_ERROR;\n            }\n        }\n        other => {\n            tracing::warn!(event_type = other, \"unhandled webhook event\");\n            return StatusCode::BAD_REQUEST; //!issue:4\n        }\n    }\n    StatusCode::OK\n}",
+        "csharp": "[HttpPost(\"webhooks/payments\")]\npublic async Task<IActionResult> PaymentsWebhook([FromBody] ProviderEvent evt)\n{\n    var sig = Request.Headers[\"X-Signature\"].ToString().Split(',')\n        .Select(p => p.Split('=', 2)).Where(kv => kv.Length == 2)\n        .ToDictionary(kv => kv[0], kv => kv[1]);\n    var canonical = JsonSerializer.Serialize(evt); //!issue:1\n    using var hmac = new HMACSHA256(_webhookSecret);\n    var payload = Encoding.UTF8.GetBytes($\"{sig.GetValueOrDefault(\"t\")}.{canonical}\"); //!issue:1\n    var expected = Convert.ToHexString(hmac.ComputeHash(payload)).ToLowerInvariant();\n    if (expected != sig.GetValueOrDefault(\"v1\")) return Unauthorized(); //!issue:1\n\n    switch (evt.Type)\n    {\n        case \"payment.succeeded\": //!issue:3\n            var order = await _orders.MarkPaidAsync(evt.Data.OrderId, evt.Data.Amount);\n            var pdf = await _invoices.RenderAsync(order); //!issue:2\n            await _mailer.SendAsync(order.CustomerEmail, \"Your receipt\", pdf); //!issue:2\n            await _fulfillment.CreateShipmentAsync(order); //!issue:2\n            break;\n        default:\n            return BadRequest($\"unhandled event {evt.Type}\"); //!issue:4\n    }\n    return Ok();\n}",
+        "java": "@PostMapping(\"/webhooks/payments\")\npublic ResponseEntity<String> paymentsWebhook(@RequestHeader(\"X-Signature\") String header,\n                                              @RequestBody ProviderEvent event) throws Exception {\n    Map<String, String> sig = Arrays.stream(header.split(\",\"))\n        .map(p -> p.split(\"=\", 2)).filter(kv -> kv.length == 2)\n        .collect(Collectors.toMap(kv -> kv[0], kv -> kv[1]));\n    String canonical = objectMapper.writeValueAsString(event); //!issue:1\n    Mac mac = Mac.getInstance(\"HmacSHA256\");\n    mac.init(new SecretKeySpec(webhookSecret, \"HmacSHA256\"));\n    byte[] digest = mac.doFinal((sig.get(\"t\") + \".\" + canonical).getBytes(StandardCharsets.UTF_8)); //!issue:1\n    if (!HexFormat.of().formatHex(digest).equals(sig.get(\"v1\"))) { //!issue:1\n        return ResponseEntity.status(401).build();\n    }\n    switch (event.type()) {\n        case \"payment.succeeded\" -> { //!issue:3\n            Order order = orders.markPaid(event.data().orderId(), event.data().amount());\n            byte[] pdf = invoices.render(order); //!issue:2\n            mailer.send(order.customerEmail(), \"Your receipt\", pdf); //!issue:2\n            fulfillment.createShipment(order); //!issue:2\n        }\n        default -> {\n            return ResponseEntity.badRequest().body(\"unhandled event \" + event.type()); //!issue:4\n        }\n    }\n    return ResponseEntity.ok().build();\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Signature is computed over re-serialized JSON instead of the raw body, compared with a non-constant-time equality, and the timestamp is never checked",
+          "fix": "Read the raw request bytes before any JSON binding and HMAC exactly `t + '.' + raw`; compare with a constant-time function on equal-length bytes (`timingSafeEqual`, `hmac.Equal`, `Mac::verify_slice`, `CryptographicOperations.FixedTimeEquals`, `MessageDigest.isEqual`); reject timestamps more than 5 minutes from now; accept any of several `v1` values so the secret can rotate."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "PDF rendering, email and shipment creation run before the 200, so slow deliveries time out and get retried while still running",
+          "fix": "Verify, persist the event, and acknowledge with 2xx immediately; do the work in a background worker from the stored event, with each step idempotent and retried independently."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "No dedupe on the event id, so retries and replays mark paid, email and ship again",
+          "fix": "Insert the provider's event id into a `processed_webhook_events` table with a unique constraint in the same transaction as the state change, and skip duplicates; make `createShipment` idempotent on the order id as a second guard."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Unknown event types get a 400, so the provider retries them for 3 days and may disable the endpoint",
+          "fix": "Return 2xx for event types you do not handle (log them at debug or info), and subscribe only to the types you need."
+        }
+      ],
+      "explanation": "Re-serializing parsed JSON does not reproduce the signed bytes: key order, whitespace, number formatting, escaping and dropped unknown fields all differ. Legitimate deliveries start failing with 401, the provider disables the endpoint after 3 days, and the 'fix' someone ships under pressure is to turn verification off. Even with the right bytes, plain string comparison leaks timing and the unchecked timestamp lets a captured delivery be replayed indefinitely.\n\nThen the handler spends 2 to 6 s rendering a PDF plus two more network calls before acknowledging. Past 10 s the provider times out and redelivers while the first attempt is still running; with no event-id dedupe, each redelivery sends another receipt and creates another shipment. A failure in step three returns 500, and the retry repeats steps one and two.\n\nThe tempting review is 'move the work to a queue'. Necessary, but without idempotency on the event id the queue just moves the duplicates downstream.\n\n**Takeaway:** a webhook endpoint should verify the raw bytes, record the event idempotently, acknowledge fast and do the work asynchronously.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "cr-product-cache-01",
+      "domain": "code_quality",
+      "concepts": [
+        "concurrency",
+        "abstraction",
+        "design-patterns"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 5,
+      "title": "Single-flight product cache that caches failures forever",
+      "prompt": "**PR: Cache product lookups to cut catalog DB load**\n\n> Adds a single-flight read-through cache in front of `getProduct(tenantId, productId)`: concurrent misses share one in-flight load, and price edits invalidate the entry.\n\nReview the change.",
+      "context": "- Product ids are per-tenant integer sequences starting at 1; there are about 9,000 tenants.\n- The service runs 12 replicas behind a load balancer. Admins edit prices in a separate admin app, which calls `updatePrice` on whichever replica serves the request.\n- Checkout reads prices through this cache.",
+      "language": null,
+      "estSeconds": 600,
+      "code": {
+        "ts": "export class ProductCache {\n  private readonly loads = new Map<string, Promise<Product | null>>(); //!issue:3\n\n  constructor(private readonly catalog: CatalogDb) {}\n\n  get(tenantId: number, productId: number): Promise<Product | null> {\n    const key = `${tenantId}${productId}`; //!issue:2\n    let load = this.loads.get(key);\n    if (!load) {\n      load = this.catalog.getProduct(tenantId, productId); //!issue:1,4\n      this.loads.set(key, load); //!issue:1,3\n    }\n    return load;\n  }\n\n  async updatePrice(tenantId: number, productId: number, priceCents: number): Promise<void> {\n    await this.catalog.updatePrice(tenantId, productId, priceCents);\n    this.loads.delete(`${tenantId}${productId}`); //!issue:2,3\n  }\n}\n\n// checkout.ts\nfor (const line of cart.lines) {\n  const product = await productCache.get(cart.tenantId, line.productId);\n  if (!product) throw new NotFoundError(`product ${line.productId}`);\n  totalCents += product.priceCents * line.quantity;\n}",
+        "go": "type load struct {\n\tdone chan struct{}\n\tval  *Product\n\terr  error\n}\n\ntype ProductCache struct {\n\tcatalog CatalogDB\n\tmu      sync.Mutex\n\tloads   map[string]*load //!issue:3\n}\n\nfunc (c *ProductCache) Get(ctx context.Context, tenantID, productID int64) (*Product, error) {\n\tkey := strconv.FormatInt(tenantID, 10) + strconv.FormatInt(productID, 10) //!issue:2\n\tc.mu.Lock()\n\tl, ok := c.loads[key]\n\tif !ok {\n\t\tl = &load{done: make(chan struct{})}\n\t\tc.loads[key] = l //!issue:1,3\n\t\tc.mu.Unlock()\n\t\tl.val, l.err = c.catalog.GetProduct(context.Background(), tenantID, productID) //!issue:1,4\n\t\tclose(l.done)\n\t} else {\n\t\tc.mu.Unlock()\n\t}\n\t<-l.done //!issue:4\n\treturn l.val, l.err\n}\n\nfunc (c *ProductCache) UpdatePrice(ctx context.Context, tenantID, productID, priceCents int64) error {\n\tif err := c.catalog.UpdatePrice(ctx, tenantID, productID, priceCents); err != nil {\n\t\treturn err\n\t}\n\tc.mu.Lock()\n\tdelete(c.loads, strconv.FormatInt(tenantID, 10)+strconv.FormatInt(productID, 10)) //!issue:2,3\n\tc.mu.Unlock()\n\treturn nil\n}",
+        "rust": "type SharedLoad = Shared<BoxFuture<'static, Result<Option<Arc<Product>>, Arc<CatalogError>>>>;\n\npub struct ProductCache {\n    catalog: Arc<CatalogDb>,\n    loads: Mutex<HashMap<String, SharedLoad>>, //!issue:3\n}\n\nimpl ProductCache {\n    pub async fn get(&self, tenant_id: i64, product_id: i64) -> Result<Option<Arc<Product>>, Arc<CatalogError>> {\n        let key = format!(\"{tenant_id}{product_id}\"); //!issue:2\n        let load = {\n            let mut loads = self.loads.lock().unwrap();\n            loads\n                .entry(key) //!issue:1,3\n                .or_insert_with(|| {\n                    let catalog = Arc::clone(&self.catalog);\n                    async move {\n                        catalog.get_product(tenant_id, product_id).await //!issue:1,4\n                            .map(|p| p.map(Arc::new))\n                            .map_err(Arc::new)\n                    }\n                    .boxed()\n                    .shared()\n                })\n                .clone()\n        };\n        load.await\n    }\n\n    pub async fn update_price(&self, tenant_id: i64, product_id: i64, price_cents: i64) -> Result<(), CatalogError> {\n        self.catalog.update_price(tenant_id, product_id, price_cents).await?;\n        self.loads.lock().unwrap().remove(&format!(\"{tenant_id}{product_id}\")); //!issue:2,3\n        Ok(())\n    }\n}",
+        "csharp": "public sealed class ProductCache\n{\n    private readonly ICatalogDb _catalog;\n    private readonly ConcurrentDictionary<string, Lazy<Task<Product?>>> _loads = new(); //!issue:3\n\n    public ProductCache(ICatalogDb catalog) => _catalog = catalog;\n\n    public Task<Product?> GetAsync(long tenantId, long productId)\n    {\n        var key = $\"{tenantId}{productId}\"; //!issue:2\n        var lazy = _loads.GetOrAdd(key, _ => new Lazy<Task<Product?>>( //!issue:1,3\n            () => _catalog.GetProductAsync(tenantId, productId))); //!issue:1,4\n        return lazy.Value;\n    }\n\n    public async Task UpdatePriceAsync(long tenantId, long productId, long priceCents)\n    {\n        await _catalog.UpdatePriceAsync(tenantId, productId, priceCents);\n        _loads.TryRemove($\"{tenantId}{productId}\", out _); //!issue:2,3\n    }\n}\n\n// CheckoutService\nforeach (var line in cart.Lines)\n{\n    var product = await _productCache.GetAsync(cart.TenantId, line.ProductId)\n        ?? throw new NotFoundException($\"product {line.ProductId}\");\n    totalCents += product.PriceCents * line.Quantity;\n}",
+        "java": "public final class ProductCache {\n    private final CatalogDb catalog;\n    private final ConcurrentHashMap<String, CompletableFuture<Optional<Product>>> loads = new ConcurrentHashMap<>(); //!issue:3\n\n    public ProductCache(CatalogDb catalog) {\n        this.catalog = catalog;\n    }\n\n    public CompletableFuture<Optional<Product>> get(long tenantId, long productId) {\n        String key = \"\" + tenantId + productId; //!issue:2\n        return loads.computeIfAbsent(key, k -> //!issue:1,3\n            CompletableFuture.supplyAsync(() -> catalog.getProduct(tenantId, productId))); //!issue:1,4\n    }\n\n    public void updatePrice(long tenantId, long productId, long priceCents) {\n        catalog.updatePrice(tenantId, productId, priceCents);\n        loads.remove(\"\" + tenantId + productId); //!issue:2,3\n    }\n}\n\n// CheckoutService\nfor (CartLine line : cart.lines()) {\n    Product product = productCache.get(cart.tenantId(), line.productId()).join()\n        .orElseThrow(() -> new NotFoundException(\"product \" + line.productId()));\n    totalCents += product.priceCents() * line.quantity();\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The in-flight future is the cached value, so a failed load is cached forever and one transient DB error poisons that product until restart",
+          "fix": "On failure, remove the entry, but only if the map still holds that same future so a newer load is not evicted; or keep in-flight loads and completed values in separate maps and always clear the in-flight entry on completion. Go has `golang.org/x/sync/singleflight` for exactly this."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "Key concatenation without a delimiter collides across tenants: tenant 1 product 23 and tenant 12 product 3 share key 123",
+          "fix": "Use a structured key (a tuple or record of tenant id and product id) or a delimiter that cannot occur in either part (`tenantId:productId`), and add a test with colliding pairs. As written, one tenant can be shown, and charged, another tenant's product."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "No TTL, size bound or cross-replica invalidation: entries (including not-found results) live forever, and a price edit clears only one of 12 replicas",
+          "fix": "Use a bounded cache (LRU with a max entry count) with a short TTL plus jitter, broadcast invalidations to all replicas (pub/sub, or a version stamp checked on read), and have checkout price from the source of truth or validate a price version instead of trusting the cache."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "Shared loads have no timeout and waiters cannot cancel",
+          "fix": "Bound the shared load with its own timeout and let each waiter stop waiting on its own context or cancellation token, so one hung query does not stall every request for that product."
+        }
+      ],
+      "explanation": "Single-flight is the right tool for stampedes, but this version caches the future rather than the value, so it also caches failures. One DB timeout during a deploy and that product returns the same error on that replica until the pod restarts; the same applies to a `null` cached for a product looked up moments before it was created.\n\nBecause nothing expires, price edits are the next problem: `updatePrice` clears one replica's entry while the other 11 keep serving, and charging, the old price indefinitely. With roughly 9,000 tenants and no bound, memory also grows with every product ever viewed.\n\nThe tenant collision is the quiet one. With per-tenant integer ids, string concatenation maps tenant 1/product 23 and tenant 12/product 3 to the same key, a cross-tenant data leak that no single-tenant test will catch.\n\nLanguage notes: if the Go loader panics before `close`, every waiter blocks forever; Java's `supplyAsync` runs blocking JDBC on the shared ForkJoin pool.\n\n**Takeaway:** a cache is a consistency decision; define structural keys, expiry, cross-replica invalidation and what happens to failures before you add one.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    }
+  ]
+}

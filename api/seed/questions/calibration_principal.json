@@ -1,0 +1,350 @@
+{
+  "file": "calibration_principal",
+  "questions": [
+    {
+      "id": "cal-fast-fail-magnet-01",
+      "domain": "system_design",
+      "concepts": ["load-balancing", "graceful-degradation"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "One bad pod of twenty fails 61% of requests",
+      "prompt": "One of 20 identical API pods got a broken config and answers every request with a 503. Clients do not retry. Overall error rate is 61%, not the 5% you would expect from one pod in twenty. What explains it, and what is the best durable fix?",
+      "context": "```\nbalancer: L7, per request, least-connections across all 20 pods\nhealthy pods: p50 80 ms   bad pod: 503 in 2 ms\n/healthz on bad pod: 200 OK\n```",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "The fast-failing pod always has the fewest in-flight requests, so least-connections hands it most traffic; eject backends on error rate (outlier detection)" },
+        { "id": "b", "text": "The health check does not exercise the config path, so the pod stays in rotation; make /healthz load and validate the config" },
+        { "id": "c", "text": "The other 19 pods slow down under the extra load, which tips more traffic toward the bad pod; scale the deployment out" },
+        { "id": "d", "text": "Least-connections concentrates load on outliers in general; switch to round-robin so any bad pod only ever gets 1/20 of traffic" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Right. A pod that fails in 2 ms holds almost no in-flight requests, so it wins nearly every least-connections decision. Load-aware balancing must treat errors as load or eject the backend.",
+        "b": "True, and worth fixing, but a passing health check only explains why the pod gets 1/20 of traffic, not 61%.",
+        "c": "Healthy pods are not the problem; the bad pod is attracting traffic because it is fast, not because the others are slow.",
+        "d": "Caps the damage at 5% forever and throws away load awareness. Outlier ejection gets you to about 0% and keeps least-connections."
+      },
+      "explanation": "Least-connections (and other load-aware schemes that reward low latency) assume a fast backend is a healthy one. A backend that fails instantly looks idle, so it attracts a share of traffic far beyond 1/N, a failure mode sometimes called a black hole or fast-fail magnet. The fix is outlier detection that ejects a backend on consecutive errors or error rate, or a balancing signal that counts errors as load. Fixing the health check helps too, but alone it leaves the amplification in place for any failure the check does not cover.\n\nTakeaway: any balancer that favors fast backends must also penalize failing ones, or the fastest failure wins the traffic.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "cal-quorum-new-then-old-01",
+      "domain": "distributed_systems",
+      "concepts": ["quorums", "consistency-models"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Strict quorum read returns new, then old",
+      "prompt": "A leaderless store uses N=3, W=2, R=2 with strict quorums (no sloppy quorum or hinted handoff). Write timestamps are unique and increasing, and readers return the newest value they see. While a write of `x=2` (old value `x=1`) is in flight, client A reads `x=2`. After A's read returns, client B reads `x=1`. Which explanation and fix is correct?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "This cannot happen when R+W>N; some replica acknowledged the write without persisting it, so audit the fsync path" },
+        { "id": "b", "text": "The write had reached one replica; A's quorum included it and B's did not. R+W>N only overlaps completed writes; readers must write back what they return to a quorum first" },
+        { "id": "c", "text": "Asynchronous read repair after A's read overwrote the newer replica with x=1; make read repair compare timestamps before writing" },
+        { "id": "d", "text": "Anti-entropy had not yet copied the write to the other replicas; run Merkle-tree repair more often so replicas converge faster" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "R+W>N guarantees a read quorum intersects every completed write quorum. This write had not completed, so no guarantee applies and no replica misbehaved.",
+        "b": "Right. A read {r1, r2} saw x=2 on r1; B read {r2, r3}, both still x=1. Write-back before returning (as in the ABD algorithm) makes the value A saw visible to every later quorum.",
+        "c": "Read repair propagates the newest value it saw, never an older one, and the timestamps here are unique and increasing.",
+        "d": "Faster background repair shrinks the window but cannot close it; the anomaly happens within one in-flight write."
+      },
+      "explanation": "Quorum intersection is a statement about completed operations. While the write is partially applied (on r1 only), a read quorum that includes r1 returns the new value and a later quorum of the two untouched replicas returns the old one. That is a new-then-old read across two clients whose operations did not overlap, so the store is not linearizable even with R+W>N. The classic fix, from Attiya, Bar-Noy and Dolev, is a two-phase read: after choosing the newest value, write it back to a quorum before returning, so any later read quorum must intersect a replica holding it.\n\nTakeaway: R+W>N buys overlap with finished writes, not linearizability; you need synchronous write-back on reads for that.",
+      "references": ["Attiya, Bar-Noy, Dolev, Sharing Memory Robustly in Message-Passing Systems (JACM 1995)", "Kleppmann, Designing Data-Intensive Applications, ch. 9 (Linearizability and quorums)"],
+      "tags": ["interview", "gotcha"]
+    },
+    {
+      "id": "cal-shuffle-shard-blast-01",
+      "domain": "reliability",
+      "concepts": ["graceful-degradation", "blast-radius", "dependency-failure"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 5,
+      "title": "Blast radius of a poison request under shuffle sharding",
+      "prompt": "A queue service has 8 workers. Each tenant is assigned a random pair of distinct workers (tenants are spread evenly over all 28 pairs). A client sends to one of its two workers and, on failure, retries the other. One tenant starts sending a request that crashes any worker that processes it, over and over. Which statements are true? (Select all that apply.)",
+      "language": null,
+      "estSeconds": 110,
+      "options": [
+        { "id": "a", "text": "About 1 in 28 other tenants (under 4%) lose both workers and are fully down" },
+        { "id": "b", "text": "About 43% of other tenants share exactly one worker and stay up only because their client fails over" },
+        { "id": "c", "text": "Versus 4 fixed cells of 2 workers, the share of tenants fully down drops from 25% to under 4%" },
+        { "id": "d", "text": "Letting clients retry on any of the 8 workers would shrink the blast radius further" },
+        { "id": "e", "text": "The poisoned tenant itself stays available, because its second worker keeps serving" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "True. Only tenants with exactly the same pair lose both workers: 1 of C(8,2) = 28 pairs.",
+        "b": "True. Pairs touching neither poisoned worker: C(6,2) = 15. Same pair: 1. Exactly one shared: 28 - 15 - 1 = 12, or about 43%. Their availability depends entirely on client failover.",
+        "c": "True. With fixed cells, every tenant in the poisoned tenant's cell (a quarter of them) shares its fate.",
+        "d": "False. Retrying a poison request across every worker carries the crash to all 8 and takes everyone down.",
+        "e": "False. Its retry delivers the poison to its second worker as well, so it loses both."
+      },
+      "explanation": "Shuffle sharding shrinks the set of tenants that share a failure domain completely: with 8 workers and pairs, only 1/28 of tenants share both workers with the poisoned one, versus 1/4 with four fixed cells. But it does not shrink partial overlap: 12/28 of tenants still share one worker and are only fine because their clients fail over within their own shard. Widening retries to the whole fleet undoes the isolation, because the poison follows the retries. The poisoned tenant still loses everything; you still need to detect and quarantine the request.\n\nTakeaway: shuffle sharding only contains a blast radius if clients fail over inside their shard and nothing lets the bad input escape it.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cal-cfs-quota-stall-01",
+      "domain": "debugging",
+      "concepts": ["production-debugging", "concurrency", "kubernetes-ops"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "p99 near 100 ms while the pod uses 40% of its CPU limit",
+      "prompt": "A Go 1.22 service (no GOMAXPROCS set) runs on Kubernetes. Average CPU is far below its limit, yet p99 latency is terrible. What is the most likely cause?",
+      "context": "```\nnode: 64 cores, 30% busy, steal 0%\npod: CPU limit 2, usage avg 0.8 cores\nlatency: p50 4 ms, p99 110 ms\nslow requests: extra delay clusters at 85 to 100 ms\nGC pause p99: 0.4 ms\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Stop-the-world GC pauses during heap growth; tune GOGC or set a soft memory limit to reduce GC frequency" },
+        { "id": "b", "text": "CFS quota throttling: with 64 runnable threads the pod burns its 200 ms per 100 ms period in a few ms, then stalls for the rest; check throttled periods and size GOMAXPROCS to the limit" },
+        { "id": "c", "text": "The pod's CPU request is below its usage, so the kernel deprioritizes it against neighbors; raise the request to match the limit" },
+        { "id": "d", "text": "Lock contention and context switches among 64 goroutine threads inside the process; profile mutex contention and shard the hot lock" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "GC pause p99 is 0.4 ms, two orders of magnitude below the delay you need to explain.",
+        "b": "Right. GOMAXPROCS defaults to the node's 64 cores. A burst of parallel work exhausts the 2-core quota almost instantly and the cgroup is paused until the next 100 ms period, which is exactly the 85 to 100 ms delay cluster.",
+        "c": "Requests (CPU shares) only matter when the node is contended; it is 30% busy with no steal.",
+        "d": "Contention would show as broad latency spread, not a cluster just under the 100 ms CFS period, and average usage would not stay at 0.8 cores."
+      },
+      "explanation": "A CPU limit is enforced by the CFS bandwidth controller as a quota per period (200 ms of CPU per 100 ms by default for a limit of 2). Averages hide it: a runtime that thinks it has 64 cores can spend the whole quota in about 3 ms of wall time during a burst, and then every thread in the pod is frozen until the period resets. The signature is extra latency just under the period length and a high `container_cpu_cfs_throttled_periods_total` ratio. Fix it by sizing parallelism to the limit (GOMAXPROCS, thread pools; Go 1.25 and later do this by default), or by raising or removing the limit.\n\nTakeaway: when latency clusters near the CFS period and average CPU looks fine, check throttling before you check your code.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "cal-hyrum-unordered-list-01",
+      "domain": "code_quality",
+      "concepts": ["api-ergonomics", "backward-compatibility", "maintainability"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Six consumers depend on an order nobody promised",
+      "prompt": "Your platform library's `listTeams()` has always returned insertion order, though the docs never promised any order. A PR swaps the backing structure for a hash map, making it 30% faster, and the result comes back in stable hash order. Staging shows 6 of 140 consuming services break. The author proposes adding \"order is unspecified\" to the docs and shipping. What is the best path?",
+      "language": null,
+      "estSeconds": 85,
+      "options": [
+        { "id": "a", "text": "Ship it; the contract never included order, so the six teams must fix their code before the release goes out" },
+        { "id": "b", "text": "Keep insertion order and document it as guaranteed, giving up the speedup to avoid breaking anyone" },
+        { "id": "c", "text": "Give the six teams a fix window, then ship the faster version with order shuffled on every call so no one can rely on it" },
+        { "id": "d", "text": "Ship behind a per-consumer legacyOrder option defaulting to on, and let teams opt into the faster path" }
+      ],
+      "answer": ["c"],
+      "optionNotes": {
+        "a": "Fixes today's six but leaves a stable hash order that new consumers will come to rely on, so the next hash or capacity change breaks them in production.",
+        "b": "Turns an accident into a permanent promise and pays 30% for it.",
+        "c": "Right. Shuffling turns hidden reliance into an immediate, deterministic test failure instead of a future production break, the same reason Go randomizes map iteration.",
+        "d": "Default-on means almost nobody migrates, and you now maintain two behaviors indefinitely."
+      },
+      "explanation": "With enough consumers, every observable behavior becomes part of the contract, whatever the docs say (Hyrum's law). The trap in this PR is not the break today; it is that \"stable hash order\" is still observable and stable, so new code will depend on it and break silently on the next internal change. Coordinating the six fixes and then making the unspecified property actually unpredictable (shuffle per call, cheap compared with the speedup) keeps the gain and stops the problem from recurring.\n\nTakeaway: if a behavior is unspecified, make it visibly unstable, or users will specify it for you.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cal-retrograde-throughput-01",
+      "domain": "performance",
+      "concepts": ["concurrency-models", "load-testing"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Throughput falls as you add worker threads",
+      "prompt": "A load test on a 64-core host varies the service's worker threads. What does the shape of this curve tell you, and what should you do?",
+      "context": "```\nworkers   8      16     24     32     48     64\nreq/s     3,900  6,800  7,900  7,600  6,300  5,100\n\nload generator CPU 20%   DB p99 flat at 3 ms   GC time 2%\n```",
+      "language": null,
+      "estSeconds": 80,
+      "options": [
+        { "id": "a", "text": "Amdahl's law: a serial section caps the speedup near 24 workers; extra workers past that cost nothing, so keep 64 for headroom" },
+        { "id": "b", "text": "Workers pay a coordination cost that grows with every other worker (contention, cache-line bouncing); cap concurrency near 24 and find the shared hot spot" },
+        { "id": "c", "text": "The database saturates beyond 24 concurrent callers; add a read replica and spread queries across both" },
+        { "id": "d", "text": "More threads mean more stacks to scan and more GC work; raise the heap limit so collections run less often" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Amdahl's law predicts a plateau, never a decline. Falling throughput is the signal it cannot explain.",
+        "b": "Right. A retrograde curve is the coherency term of the Universal Scalability Law: pairwise coordination cost that grows roughly with N squared. Capping concurrency recovers throughput now; removing the shared lock, counter or cache line fixes it.",
+        "c": "DB p99 is flat at 3 ms across the whole test, so the database is not saturating.",
+        "d": "GC time is 2%; it cannot account for losing a third of peak throughput."
+      },
+      "explanation": "Throughput that rises, peaks and then falls is retrograde scaling. Amdahl's serial fraction only flattens a curve; to make it go down, each added worker must make every other worker slower, which is the coherency (crosstalk) term in Gunther's Universal Scalability Law: lock handoffs, cache-line ping-pong on a shared counter, or a contended pool. The immediate move is to cap concurrency at the measured peak (or use an adaptive limiter); the durable move is to find and partition the shared hot spot.\n\nTakeaway: a plateau means a serial bottleneck; a decline means workers are interfering with each other, and more concurrency makes it worse.",
+      "references": ["Gunther, Guerrilla Capacity Planning (Universal Scalability Law)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "cal-assume-role-deputy-01",
+      "domain": "security",
+      "concepts": ["authn-authz", "multi-tenancy", "least-privilege"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Customers paste an IAM role ARN into our SaaS",
+      "prompt": "Onboarding for your SaaS asks each customer to create an IAM role in their AWS account and paste its ARN into your UI. Your backend then calls `sts:AssumeRole` on that ARN to read their resources. What is the most serious flaw, and the fix?",
+      "context": "Trust policy customers are told to use:\n```json\n{ \"Effect\": \"Allow\",\n  \"Principal\": { \"AWS\": \"arn:aws:iam::111122223333:root\" },\n  \"Action\": \"sts:AssumeRole\" }\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Any customer can paste another customer's role ARN and your backend will assume it; require an ExternalId you generate per customer in the trust policy condition" },
+        { "id": "b", "text": "Role ARNs reveal account ids and must be treated as secrets; encrypt them at rest and mask them in the UI" },
+        { "id": "c", "text": "Trusting the account root is too broad; have customers trust one dedicated role of yours instead of the whole account" },
+        { "id": "d", "text": "Have each customer pick their own secret ExternalId and enter it alongside the ARN, so only they can link the role" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Right. This is the confused deputy: your service holds the trust, and a caller steers it at a victim's role. A per-customer ExternalId that you assign binds each role to exactly one of your customers.",
+        "b": "ARNs are identifiers, not credentials; hiding them does nothing once one is known or guessed.",
+        "c": "Good least privilege on your side, but that one role still assumes roles for every customer, so the deputy problem remains.",
+        "d": "Customer-chosen values let an attacker claim the same value as the victim; the provider must generate and enforce uniqueness. AWS does not treat ExternalId as a secret."
+      },
+      "explanation": "Every customer's role trusts the same principal: you. Without a per-customer binding, your backend will assume whatever ARN a tenant submits, so tenant A can register tenant B's role ARN and read B's resources through you. That is the confused deputy problem. AWS's documented fix is an `sts:ExternalId` condition in the trust policy, with the ExternalId generated by the provider, unique per customer, and never accepted from the customer. Narrowing the trusted principal to a dedicated role is good hygiene but does not fix the binding.\n\nTakeaway: when your service acts on a caller-supplied resource with its own authority, bind that resource to the caller, or you are the attacker's deputy.",
+      "references": ["AWS IAM User Guide, The confused deputy problem"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cal-ddl-lock-queue-01",
+      "domain": "delivery",
+      "concepts": ["database-migrations", "deploy-safety"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "A metadata-only column add stalls checkout for four minutes",
+      "prompt": "A deploy ran `ALTER TABLE orders ADD COLUMN gift_note text;` (nullable, no default) on Postgres 15. Every query touching `orders` hung for four minutes, with no errors. What happened, and what prevents it next time?",
+      "context": "`pg_stat_activity` during the stall:\n```\nfinance export  SELECT ... FROM orders ...  active 9m12s\nmigration       ALTER TABLE orders ...     wait Lock:relation\n~640 app conns  SELECT/UPDATE orders ...   wait Lock:relation\n```",
+      "language": null,
+      "estSeconds": 85,
+      "options": [
+        { "id": "a", "text": "ADD COLUMN rewrote the whole table under an exclusive lock; add new columns in small batches during low traffic" },
+        { "id": "b", "text": "The ALTER queued for its exclusive lock behind the export, and every later query queued behind the ALTER; set a short lock_timeout on DDL and retry" },
+        { "id": "c", "text": "The export held row locks on orders that the ALTER had to wait out; move long exports to a read replica" },
+        { "id": "d", "text": "App connections piled up and exhausted the pool, which starved the migration; raise max_connections before migrations" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "A nullable column with no default is a catalog-only change in Postgres; there is no rewrite.",
+        "b": "Right. The ALTER needs ACCESS EXCLUSIVE, which conflicts with the export's ACCESS SHARE. Lock requests queue in order, so new queries wait behind the pending ALTER. A short lock_timeout makes the DDL give up and retry instead of blocking traffic.",
+        "c": "A SELECT takes no row locks; it holds a table-level ACCESS SHARE lock. Moving exports helps, but this answer cannot explain why all the app queries blocked.",
+        "d": "Backwards: the pile-up is the effect of the waiting ALTER, not its cause."
+      },
+      "explanation": "Even an instant DDL statement must acquire ACCESS EXCLUSIVE on the table. It could not, because a nine-minute export held ACCESS SHARE. While the ALTER waits in the lock queue, any new lock request that conflicts with it (which is every read and write) queues behind it, so a harmless migration becomes a full outage for as long as the oldest transaction runs. The standard guard is `SET lock_timeout = '2s'` (or similar) on migration sessions with a retry loop, plus checking for long-running transactions before DDL.\n\nTakeaway: on a busy table, the risk of DDL is not how long it runs but how long it waits for its lock, so always bound the wait.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "cal-platform-boundary-backlog-01",
+      "domain": "leadership",
+      "concepts": ["org-design", "architecture-decisions"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "The shared notifications service became everyone's queue",
+      "prompt": "Nine months ago you led consolidating three product teams' notification code into one platform-owned service. Now product leads complain it slows them down, and the VP asks for your recommendation. What do you recommend?",
+      "context": "- Platform backlog: 43 tickets, median wait 3 weeks\n- 31 of 43 are template copy or routing-rule changes\n- Delivery incidents since launch: 1\n- Two teams now call the email provider directly to skip the queue",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Fund three more platform engineers so the team can clear the backlog and keep wait times under a week" },
+        { "id": "b", "text": "Make templates and routing rules self-serve for product teams with guardrails; platform keeps delivery, rate limits and provider failover" },
+        { "id": "c", "text": "Return channel ownership to the product teams, since consolidation has clearly cost more than it saved" },
+        { "id": "d", "text": "Block direct provider calls at egress and set up a weekly council to rank the platform backlog" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Treats the symptom. Every product change still routes through another team's backlog, so wait times grow back with headcount.",
+        "b": "Right. The boundary sits in the wrong place: the fast-changing part (content and rules) belongs with the teams that change it, the slow-changing part (delivery) is what the platform does well.",
+        "c": "Throws away the part that works (one delivery incident in nine months) to fix the part that does not.",
+        "d": "Enforcement and process make the bottleneck official; the bypasses are a signal about the boundary, not a compliance problem."
+      },
+      "explanation": "The data says the service is reliable but owns the wrong things: 72% of the backlog is changes product teams could make themselves, and teams are routing around it. That is a boundary problem, not a capacity or discipline problem. Draw the line by rate of change and who has the context: product teams own templates and routing rules through a validated, self-serve surface; the platform owns the shared, rarely changing infrastructure. Adding headcount or a council keeps every change coupled to one team.\n\nTakeaway: when a platform becomes a ticket queue, move the boundary so teams own what they change most often, instead of staffing the queue.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "cal-cost-of-delay-order-01",
+      "domain": "execution",
+      "concepts": ["prioritization", "planning"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Sequencing three projects by cost of delay",
+      "prompt": "The full team finishes each project in the stated duration; a third of the team would take three times as long. Each project costs the business the given amount for every week until it ships. Which plan minimizes the total cost of delay?",
+      "context": "| Project | Cost of delay | Duration |\n| --- | --- | --- |\n| A | $10k / week | 4 weeks |\n| B | $2k / week | 1 week |\n| C | $6k / week | 2 weeks |",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "C, then A, then B" },
+        { "id": "b", "text": "A, then C, then B" },
+        { "id": "c", "text": "B, then C, then A" },
+        { "id": "d", "text": "C, then B, then A" },
+        { "id": "e", "text": "Split the team in thirds and run all three at once" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Right: $86k. C ships at week 2 ($12k), A at week 6 ($60k), B at week 7 ($14k).",
+        "b": "Highest cost of delay first: $90k (A $40k, C $36k, B $14k).",
+        "c": "Shortest job first: $90k (B $2k, C $18k, A $70k).",
+        "d": "Close, $88k (C $12k, B $6k, A $70k), but delaying A by a week to ship B costs more than it saves.",
+        "e": "Worst by far: $162k. B ships at week 3, C at week 6, A at week 12, so everything waits."
+      },
+      "explanation": "Order by cost of delay divided by duration (CD3, or weighted shortest job first): C = 3, A = 2.5, B = 2, giving C, A, B at $86k. Neither \"most valuable first\" nor \"quickest first\" is optimal on its own, because the right order weighs both. Running everything in parallel is the default in many orgs and the worst choice here: it delays every project to near the end of the whole program, so you pay every cost of delay for longer.\n\nTakeaway: sequence by value per unit of time and stop starting things in parallel; splitting a team across projects delays all of them.",
+      "references": ["Reinertsen, The Principles of Product Development Flow (cost of delay, WSJF)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "cal-pooled-queue-wait-01",
+      "domain": "problem_solving",
+      "concepts": ["queueing-theory", "tradeoff-analysis"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 5,
+      "title": "Merging two teams' job runners into one pool",
+      "prompt": "Two teams each have one build runner with its own queue, each at 80% utilization (Poisson arrivals, exponential job times, same mean job time, same load). You propose one shared queue feeding both runners. Which statements are true? (Select all that apply.)",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        { "id": "a", "text": "Mean time spent waiting in the queue drops by more than half" },
+        { "id": "b", "text": "Each runner's utilization stays at about 80%" },
+        { "id": "c", "text": "A burst from one team can now delay the other team's jobs" },
+        { "id": "d", "text": "Mean total time per job (waiting plus running) also drops by more than half" },
+        { "id": "e", "text": "Mean wait stays the same, because utilization has not changed" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "True. M/M/1 at 80%: wait = 4 job-times. M/M/2 at 80%: Erlang C gives P(wait) of about 0.71 and wait of about 1.78 job-times, a 56% drop.",
+        "b": "True. Same total work over the same total capacity.",
+        "c": "True. Pooling trades isolation for efficiency; one team's spike now queues ahead of the other's work.",
+        "d": "False. Total time goes from 5 to about 2.78 job-times, a 44% drop, because the run time itself does not shrink.",
+        "e": "False. Waiting depends on how often a job finds every server busy, not on utilization alone; pooling cuts that probability."
+      },
+      "explanation": "With separate queues, a job can wait while the other runner sits idle. Pooling removes that, so at the same 80% utilization the mean queueing delay falls from 4 job-times (ρ/(1-ρ)) to about 1.78 (Erlang C with c=2, a=1.6). Total time falls less, from 5 to about 2.78, because each job still takes one job-time to run. The cost is coupling: a surge from one team now consumes both runners.\n\nTakeaway: pooling servers cuts queueing delay sharply at high utilization, but quote the gain on waiting, not total latency, and price in the lost isolation.",
+      "references": ["Harchol-Balter, Performance Modeling and Design of Computer Systems, ch. 14 (M/M/k)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "cal-llm-decode-latency-01",
+      "domain": "ai_systems",
+      "concepts": ["cost-latency", "llm-fundamentals"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 5,
+      "title": "Getting a JSON summarization call under four seconds",
+      "prompt": "A backend calls an LLM, parses the complete JSON reply, then acts on it. You need p50 under 4 s. Which changes would get there on their own? (Select all that apply.)",
+      "context": "```\ninput: 6,000 tokens (4,500 static instructions + 1,500 case data)\noutput: ~720 tokens of JSON, six independent sections\ntime to first token p50: 0.7 s\ndecode: ~90 tokens/s\nend-to-end p50: 8.7 s\nrate limits: ample headroom\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        { "id": "a", "text": "Cut output to about 180 tokens by dropping verbose rationale fields nobody reads" },
+        { "id": "b", "text": "Generate the six sections in six parallel calls and merge the results" },
+        { "id": "c", "text": "Enable prompt caching for the 4,500-token static prefix" },
+        { "id": "d", "text": "Halve the input by pre-summarizing the case data" },
+        { "id": "e", "text": "Stream the response tokens to the backend as they are generated" }
+      ],
+      "answer": ["a", "b"],
+      "optionNotes": {
+        "a": "Works: about 0.7 + 180/90 = 2.7 s. Decode time is linear in output tokens and dominates this call.",
+        "b": "Works: each call decodes about 120 tokens, so about 0.7 + 1.3 = 2.0 s, at the cost of paying for the input six times (caching softens that).",
+        "c": "Only shortens time to first token, which is 0.7 s of the 8.7 s total.",
+        "d": "Input is processed in parallel during prefill; halving it saves a fraction of a second.",
+        "e": "Improves time to first byte, but the backend needs the complete JSON, so completion time is unchanged."
+      },
+      "explanation": "End-to-end time is roughly time to first token plus output tokens divided by decode speed: 0.7 + 720/90 = 8.7 s. Eight of those seconds are decoding, so only changes that reduce sequential output tokens can hit 4 s: emit fewer tokens, or split independent output across parallel calls. Prompt caching and shorter inputs act on prefill, which is already under a second, and streaming only helps when a consumer can use partial output.\n\nTakeaway: for LLM latency, count output tokens first; input size and caching mostly move cost and time to first token.",
+      "tags": ["on-the-job"]
+    }
+  ]
+}

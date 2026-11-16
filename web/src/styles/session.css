@@ -1,0 +1,57 @@
+.session { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; padding-bottom: 40px; }
+/* The docked watch must never cover the answer controls: wide screens reserve a gutter for it,
+   narrower ones leave room to scroll the footer above it. */
+.session.timed { padding-bottom: 300px; }
+@media (min-width: 1200px) { .session.timed { padding-right: 250px; padding-bottom: 40px; } }
+.session-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.dots { display: flex; gap: 6px; flex-wrap: wrap; }
+.dot {
+  width: 30px; height: 30px; border-radius: 50%; border: 0; cursor: pointer; font: 700 12px var(--font-head); color: var(--text-dim);
+  background: linear-gradient(180deg, rgba(var(--ink-rgb), 0.12), rgba(var(--ink-rgb), 0.03));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+.dot.done { color: var(--navy); background: radial-gradient(circle at 35% 30%, #fff, #c8d7e5); }
+.dot.skipped { color: #fff; background: rgba(210, 58, 0, 0.45); }
+.dot.gen { animation: pulse 1.4s ease-in-out infinite; }
+.dot.current { box-shadow: 0 0 0 2px var(--accent-hi), 0 0 12px var(--accent-glow); color: var(--text); }
+.dot.done.current { color: var(--navy); }
+.dot.good { background: radial-gradient(circle at 35% 30%, #d9f5e6, var(--good)); color: #fff; }
+.dot.bad { background: radial-gradient(circle at 35% 30%, #ffc7ad, var(--accent)); color: #fff; }
+@keyframes pulse { 50% { opacity: 0.45; } }
+
+.qcard { display: flex; flex-direction: column; gap: 18px; }
+.qmeta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.qtitle { font-size: clamp(22px, 2.6vw, 30px); font-weight: 700; letter-spacing: -0.015em; }
+.qprompt { font-size: 16px; line-height: 1.62; }
+.qcontext { font-size: 14px; }
+.qcontext > .eyebrow { display: block; margin-bottom: 6px; }
+.qfoot { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding-top: 4px; }
+
+/* the paused, obfuscated state: no question text exists in the DOM */
+.scramble { position: relative; display: flex; flex-direction: column; gap: 14px; padding: 8px 0; min-height: 320px; }
+.scramble-line { height: 14px; border-radius: 7px; background: linear-gradient(90deg, rgba(9, 39, 66, 0.12), rgba(9, 39, 66, 0.2), rgba(9, 39, 66, 0.1)); background-size: 200% 100%; animation: shimmer 2.2s linear infinite; }
+.scramble-line.title { height: 26px; width: 62%; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.scramble-glyphs { font: 500 15px/1.9 var(--font-mono); color: rgba(9, 39, 66, 0.18); letter-spacing: 0.08em; filter: blur(2.5px); user-select: none; overflow: hidden; max-height: 160px; word-break: break-all; }
+.paused-veil {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+  background: radial-gradient(circle at 50% 45%, rgba(254, 255, 250, 0.92), rgba(254, 255, 250, 0.55) 60%, rgba(254, 255, 250, 0.2));
+  backdrop-filter: blur(6px); border-radius: var(--r-md);
+}
+.paused-veil h3 { font-size: 26px; }
+
+.feedback { border-top: 1px solid rgba(9, 39, 66, 0.1); padding-top: 18px; }
+.tight-list { margin: 6px 0 0; padding-left: 1.2em; }
+.tight-list li { margin: 3px 0; }
+.flag-hit { color: var(--accent); font-weight: 500; }
+.keypoints { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.keypoints li { padding: 8px 12px; border-radius: 12px; background: rgba(9, 39, 66, 0.04); box-shadow: inset 0 0 0 1px rgba(9, 39, 66, 0.08); }
+.keypoints li.hit { background: var(--good-soft); box-shadow: inset 0 0 0 1px rgba(47, 158, 108, 0.35); }
+.kp-mark { font-weight: 700; color: var(--good); display: inline-block; width: 16px; }
+.keypoints li:not(.hit) .kp-mark { color: rgba(9, 39, 66, 0.35); }
+.followup { margin: 6px 0 0; padding: 10px 14px; border-radius: 12px;
+  background: linear-gradient(to top right, rgba(210, 58, 0, 0.18) 0%, rgba(210, 58, 0, 0) 30%), rgba(210, 58, 0, 0.04);
+  border: 1px solid var(--callout-border); }
+.porcelain .lcd { box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8), 0 1px 0 #fff; }
+
+.time-up { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; background: rgba(var(--well-rgb), 0.7); backdrop-filter: blur(8px); }

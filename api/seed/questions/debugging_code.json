@@ -1,0 +1,456 @@
+{
+  "file": "debugging_code",
+  "questions": [
+    {
+      "id": "dbgc-pagination-first-page-01",
+      "domain": "debugging",
+      "concepts": ["off-by-one"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Newest orders vanish from the merchant dashboard",
+      "prompt": "Last sprint the orders API switched from `?skip=` to `?page=`, documented as 1-based (the dashboard requests `page=1` first). Since then merchants report that their 25 most recent orders never appear anywhere in the dashboard, and the last page of every list renders empty. Find the bug.",
+      "context": "```\nGET /merchants/m_4411/orders?page=1   -> 25 items, first created_at 2026-11-14T09:12Z\nGET /merchants/m_4411/orders?page=4   -> 0 items  (totalPages=4, total=97)\nSELECT ... ORDER BY created_at DESC LIMIT 1  -> created_at 2026-11-16T08:55Z\n```",
+      "language": null,
+      "estSeconds": 120,
+      "code": {
+        "ts": "const PAGE_SIZE = 25;\n\nexport async function listOrders(db: Db, merchantId: string, page: number): Promise<Page<Order>> {\n  if (!Number.isInteger(page) || page < 1) {\n    throw new BadRequestError(\"page must be a positive integer\");\n  }\n  const offset = page * PAGE_SIZE; //!issue:1\n  const [rows, total] = await Promise.all([\n    db.query<Order>(\n      \"SELECT * FROM orders WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3\",\n      [merchantId, PAGE_SIZE, offset],\n    ),\n    db.count(\"orders\", { merchant_id: merchantId }),\n  ]);\n  return { items: rows, page, totalPages: Math.ceil(total / PAGE_SIZE) };\n}",
+        "go": "const pageSize = 25\n\nfunc (s *Store) ListOrders(ctx context.Context, merchantID string, page int) (Page[Order], error) {\n\tif page < 1 {\n\t\treturn Page[Order]{}, ErrBadPage\n\t}\n\toffset := page * pageSize //!issue:1\n\tvar orders []Order\n\terr := s.db.SelectContext(ctx, &orders,\n\t\t`SELECT * FROM orders WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,\n\t\tmerchantID, pageSize, offset)\n\tif err != nil {\n\t\treturn Page[Order]{}, fmt.Errorf(\"list orders: %w\", err)\n\t}\n\ttotal, err := s.countOrders(ctx, merchantID)\n\tif err != nil {\n\t\treturn Page[Order]{}, err\n\t}\n\treturn Page[Order]{Items: orders, Page: page, TotalPages: (total + pageSize - 1) / pageSize}, nil\n}",
+        "rust": "const PAGE_SIZE: i64 = 25;\n\npub async fn list_orders(pool: &PgPool, merchant_id: Uuid, page: i64) -> Result<Page<Order>, ApiError> {\n    if page < 1 {\n        return Err(ApiError::BadRequest(\"page must be >= 1\".into()));\n    }\n    let offset = page * PAGE_SIZE; //!issue:1\n    let items = sqlx::query_as::<_, Order>(\n        \"SELECT * FROM orders WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3\",\n    )\n    .bind(merchant_id)\n    .bind(PAGE_SIZE)\n    .bind(offset)\n    .fetch_all(pool)\n    .await?;\n    let total: i64 = sqlx::query_scalar(\"SELECT count(*) FROM orders WHERE merchant_id = $1\")\n        .bind(merchant_id)\n        .fetch_one(pool)\n        .await?;\n    Ok(Page { items, page, total_pages: (total + PAGE_SIZE - 1) / PAGE_SIZE })\n}",
+        "csharp": "private const int PageSize = 25;\n\npublic async Task<Page<Order>> ListOrdersAsync(Guid merchantId, int page, CancellationToken ct)\n{\n    if (page < 1)\n        throw new BadRequestException(\"page must be >= 1\");\n\n    var query = _db.Orders\n        .Where(o => o.MerchantId == merchantId)\n        .OrderByDescending(o => o.CreatedAt);\n\n    var total = await query.CountAsync(ct);\n    var items = await query\n        .Skip(page * PageSize) //!issue:1\n        .Take(PageSize)\n        .ToListAsync(ct);\n\n    return new Page<Order>(items, page, (total + PageSize - 1) / PageSize);\n}",
+        "java": "private static final int PAGE_SIZE = 25;\n\npublic PageResult<Order> listOrders(UUID merchantId, int page) {\n    if (page < 1) {\n        throw new BadRequestException(\"page must be >= 1\");\n    }\n    Pageable pageable = PageRequest.of(page, PAGE_SIZE, Sort.by(Sort.Direction.DESC, \"createdAt\")); //!issue:1\n    Page<Order> result = orderRepository.findByMerchantId(merchantId, pageable);\n    return new PageResult<>(result.getContent(), page, result.getTotalPages());\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "1-based page number used as a 0-based page index, so page 1 starts at offset 25 and the newest page is skipped",
+          "fix": "Convert at the boundary: offset = (page - 1) * PAGE_SIZE (Spring: PageRequest.of(page - 1, ...)), and add a test that page=1 returns the newest row."
+        }
+      ],
+      "explanation": "The API contract is 1-based but the offset math (or Spring's `PageRequest.of`, which is 0-based) treats the number as 0-based. Page 1 therefore starts at row 25, so the first 25 rows are unreachable, and the last page computed from `totalPages` lands past the end and comes back empty. The validation and the `totalPages` math look right, which is why the bug survives review. The tempting misread is to blame `ORDER BY created_at` or a replica lag issue; the context shows the newest row exists and is simply never requested. Staff-level takeaway: pick one indexing convention per boundary, convert exactly once where it enters the system, and pin it with a test on the first and last page.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "dbgc-null-unlimited-seats-01",
+      "domain": "debugging",
+      "concepts": ["null-handling"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Enterprise customers with unlimited seats cannot invite anyone",
+      "prompt": "A migration last week made `plans.max_seats` nullable so Enterprise plans can mean \"unlimited\" (NULL). Since the deploy, every Enterprise admin who invites a teammate gets `403 seat limit reached`. Starter (5 seats) and Team (50 seats) plans behave normally. Find the bug.",
+      "context": "```\nWARN invite rejected org=o_77 plan=enterprise used=212 limit=0 reason=seat_limit_reached\nWARN invite rejected org=o_19 plan=enterprise used=48  limit=0 reason=seat_limit_reached\n```",
+      "language": null,
+      "estSeconds": 120,
+      "code": {
+        "ts": "interface Plan {\n  id: string;\n  name: string;\n  maxSeats: number | null; // null = unlimited\n}\n\nexport async function assertCanInvite(org: Org, plans: PlanRepo, seats: SeatRepo): Promise<void> {\n  const plan = await plans.get(org.planId);\n  const used = await seats.countActive(org.id);\n  const limit = plan.maxSeats ?? 0; //!issue:1\n  if (used >= limit) {\n    throw new ForbiddenError(\"seat limit reached\", { used, limit });\n  }\n}",
+        "go": "type Plan struct {\n\tID       string\n\tName     string\n\tMaxSeats *int // nil = unlimited\n}\n\nfunc (s *Service) AssertCanInvite(ctx context.Context, org Org) error {\n\tplan, err := s.plans.Get(ctx, org.PlanID)\n\tif err != nil {\n\t\treturn err\n\t}\n\tused, err := s.seats.CountActive(ctx, org.ID)\n\tif err != nil {\n\t\treturn err\n\t}\n\tlimit := 0 //!issue:1\n\tif plan.MaxSeats != nil {\n\t\tlimit = *plan.MaxSeats\n\t}\n\tif used >= limit {\n\t\treturn ErrSeatLimitReached\n\t}\n\treturn nil\n}",
+        "rust": "pub struct Plan {\n    pub id: String,\n    pub name: String,\n    pub max_seats: Option<u32>, // None = unlimited\n}\n\npub async fn assert_can_invite(org: &Org, plans: &PlanRepo, seats: &SeatRepo) -> Result<(), InviteError> {\n    let plan = plans.get(&org.plan_id).await?;\n    let used = seats.count_active(&org.id).await?;\n    let limit = plan.max_seats.unwrap_or_default(); //!issue:1\n    if used >= limit {\n        return Err(InviteError::SeatLimitReached { used, limit });\n    }\n    Ok(())\n}",
+        "csharp": "public sealed record Plan(string Id, string Name, int? MaxSeats); // null = unlimited\n\npublic async Task AssertCanInviteAsync(Org org, CancellationToken ct)\n{\n    var plan = await _plans.GetAsync(org.PlanId, ct);\n    var used = await _seats.CountActiveAsync(org.Id, ct);\n    var limit = plan.MaxSeats.GetValueOrDefault(); //!issue:1\n    if (used >= limit)\n    {\n        throw new ForbiddenException($\"seat limit reached ({used}/{limit})\");\n    }\n}",
+        "java": "public record Plan(String id, String name, Optional<Integer> maxSeats) {} // empty = unlimited\n\npublic void assertCanInvite(Org org) {\n    Plan plan = plans.get(org.planId());\n    int used = seats.countActive(org.id());\n    int limit = plan.maxSeats().orElse(0); //!issue:1\n    if (used >= limit) {\n        throw new ForbiddenException(\"seat limit reached (\" + used + \"/\" + limit + \")\");\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Absent max_seats (meaning unlimited) is defaulted to 0, so every unlimited plan is treated as having zero seats",
+          "fix": "Handle the absent case explicitly: only enforce the check when a limit exists, e.g. `if (plan.maxSeats !== null && used >= plan.maxSeats)` (Go: `if plan.MaxSeats != nil && used >= *plan.MaxSeats`; Rust: `if let Some(max) = plan.max_seats`)."
+        }
+      ],
+      "explanation": "The schema gave NULL a meaning (unlimited), and the code collapsed it into a real value (0) with a convenience default (`?? 0`, `unwrap_or_default`, `GetValueOrDefault`, `orElse(0)`). The compiler is satisfied and the logs even show `limit=0`, but the semantics are inverted. Defaulting to `Integer.MAX_VALUE` would also make the symptom go away, but it hides the meaning in a magic number that the next feature (billing, seat displays) will misread. Staff-level takeaway: when absence carries business meaning, branch on it explicitly instead of defaulting it away, and review every reader when a column becomes nullable.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "dbgc-promo-check-then-incr-01",
+      "domain": "debugging",
+      "concepts": ["race-conditions", "concurrency"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Promo capped at 1,000 redemptions grants 1,312",
+      "prompt": "Marketing launched a promo limited to the first 1,000 redemptions. The redemption endpoint runs on 24 pods behind a load balancer and peaked at about 900 requests per second in the first minute. Finance reports 1,312 credits granted, and the Redis counter reads exactly 1,312. Find the bug.",
+      "context": "```\n10:00:00.000  promo LAUNCH-26 live, maxRedemptions=1000\n10:00:41.380  redeemed counter=1000\n10:00:41.402  redeemed counter=1001  (pod checkout-7f9c, user u_88123)\n...\n10:00:41.951  redeemed counter=1312\n10:00:42.010  first sold_out response\n```",
+      "language": null,
+      "estSeconds": 180,
+      "code": {
+        "ts": "export async function redeemPromo(redis: Redis, db: Db, code: string, userId: string): Promise<RedeemResult> {\n  const promo = await db.promos.findByCode(code);\n  if (!promo || promo.expiresAt < new Date()) {\n    return { ok: false, reason: \"invalid\" };\n  }\n  const key = `promo:${promo.id}:redeemed`;\n  const redeemed = Number((await redis.get(key)) ?? 0); //!issue:1\n  if (redeemed >= promo.maxRedemptions) { //!issue:1\n    return { ok: false, reason: \"sold_out\" };\n  }\n  await redis.incr(key); //!issue:1\n  await db.credits.grant(userId, promo.creditCents, { promoId: promo.id });\n  return { ok: true };\n}",
+        "go": "func (s *PromoService) Redeem(ctx context.Context, code, userID string) error {\n\tpromo, err := s.db.PromoByCode(ctx, code)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif time.Now().After(promo.ExpiresAt) {\n\t\treturn ErrPromoInvalid\n\t}\n\tkey := fmt.Sprintf(\"promo:%s:redeemed\", promo.ID)\n\tredeemed, err := s.redis.Get(ctx, key).Int() //!issue:1\n\tif err != nil && !errors.Is(err, redis.Nil) {\n\t\treturn err\n\t}\n\tif redeemed >= promo.MaxRedemptions { //!issue:1\n\t\treturn ErrPromoSoldOut\n\t}\n\tif err := s.redis.Incr(ctx, key).Err(); err != nil { //!issue:1\n\t\treturn err\n\t}\n\treturn s.db.GrantCredit(ctx, userID, promo.CreditCents, promo.ID)\n}",
+        "rust": "pub async fn redeem(&self, code: &str, user_id: Uuid) -> Result<(), PromoError> {\n    let promo = self.db.promo_by_code(code).await?.ok_or(PromoError::Invalid)?;\n    if promo.expires_at < Utc::now() {\n        return Err(PromoError::Invalid);\n    }\n    let key = format!(\"promo:{}:redeemed\", promo.id);\n    let mut conn = self.redis.clone();\n    let redeemed: Option<i64> = conn.get(&key).await?; //!issue:1\n    if redeemed.unwrap_or(0) >= promo.max_redemptions { //!issue:1\n        return Err(PromoError::SoldOut);\n    }\n    let _: i64 = conn.incr(&key, 1).await?; //!issue:1\n    self.db.grant_credit(user_id, promo.credit_cents, promo.id).await?;\n    Ok(())\n}",
+        "csharp": "public async Task<RedeemResult> RedeemAsync(string code, Guid userId, CancellationToken ct)\n{\n    var promo = await _db.Promos.SingleOrDefaultAsync(p => p.Code == code, ct);\n    if (promo is null || promo.ExpiresAt < DateTimeOffset.UtcNow)\n        return RedeemResult.Invalid;\n\n    var key = $\"promo:{promo.Id}:redeemed\";\n    var redeemed = (long?)await _redis.StringGetAsync(key) ?? 0; //!issue:1\n    if (redeemed >= promo.MaxRedemptions) //!issue:1\n        return RedeemResult.SoldOut;\n\n    await _redis.StringIncrementAsync(key); //!issue:1\n    await _credits.GrantAsync(userId, promo.CreditCents, promo.Id, ct);\n    return RedeemResult.Ok;\n}",
+        "java": "public RedeemResult redeem(String code, UUID userId) {\n    Promo promo = promoRepository.findByCode(code).orElse(null);\n    if (promo == null || promo.expiresAt().isBefore(Instant.now())) {\n        return RedeemResult.INVALID;\n    }\n    String key = \"promo:\" + promo.id() + \":redeemed\";\n    String raw = redis.get(key); //!issue:1\n    long redeemed = raw == null ? 0 : Long.parseLong(raw);\n    if (redeemed >= promo.maxRedemptions()) { //!issue:1\n        return RedeemResult.SOLD_OUT;\n    }\n    redis.incr(key); //!issue:1\n    credits.grant(userId, promo.creditCents(), promo.id());\n    return RedeemResult.OK;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Check-then-act: the counter is read, compared, and incremented as three separate operations, so hundreds of concurrent requests all pass the check before any increment lands",
+          "fix": "Make the claim atomic and decide on its result: `n = INCR key; if n > max { DECR key; return sold_out }` (or a Lua script, or `UPDATE promos SET redeemed = redeemed + 1 WHERE id = $1 AND redeemed < max RETURNING ...` in the same transaction as the grant)."
+        }
+      ],
+      "explanation": "Each individual Redis command is atomic, but the decision spans a GET, a comparison in application memory and a later INCR. At 900 requests per second across 24 pods, every request that reads 999 (or anything below 1,000) before the others' increments land is granted, which is exactly the overshoot in the log. Adding a local mutex does nothing across 24 pods, and a distributed lock around the block works but serializes the hot path for no reason. The fix is to let the atomic operation make the decision: increment first and act on the returned value, or use a conditional update in the database so the counter and the grant commit together. Staff-level takeaway: atomic primitives only protect you when the decision is made from the value the atomic operation returns, not from an earlier read.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "dbgc-ttl-map-never-evicts-01",
+      "domain": "debugging",
+      "concepts": ["memory-leaks"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Quote cache with a 5-minute TTL OOMs the pricing service daily",
+      "prompt": "The pricing service's pods are OOMKilled roughly every 20 hours. Heap grows about 180 MB per hour regardless of traffic shape, and GC pause time climbs steadily before each kill. The author of the quote cache says it cannot be the cause because \"entries expire after five minutes.\" A heap dump taken at hour 18 is summarized below. Find the bug.",
+      "context": "```\nheap dump summary (hour 18)\n  retained by quoteCache        3.1 GB   4,118,902 entries\n  entries with expiresAt < now  4,097,310 (99.5%)\n  distinct customerId in keys   611,204\n  distinct sku in keys          18,440\n```",
+      "language": null,
+      "estSeconds": 180,
+      "code": {
+        "ts": "const quoteCache = new Map<string, CachedQuote>(); //!issue:1\n\nexport async function getQuote(sku: string, customerId: string, qty: number): Promise<Quote> {\n  const key = `${sku}:${customerId}:${qty}`;\n  const hit = quoteCache.get(key);\n  if (hit && hit.expiresAt > Date.now()) {\n    return hit.quote;\n  }\n  const quote = await pricingEngine.compute({ sku, customerId, qty });\n  quoteCache.set(key, { quote, expiresAt: Date.now() + 5 * 60_000 }); //!issue:1\n  return quote;\n}",
+        "go": "type cachedQuote struct {\n\tquote     Quote\n\texpiresAt time.Time\n}\n\nvar (\n\tquoteMu    sync.RWMutex\n\tquoteCache = map[string]cachedQuote{} //!issue:1\n)\n\nfunc GetQuote(ctx context.Context, sku, customerID string, qty int) (Quote, error) {\n\tkey := fmt.Sprintf(\"%s:%s:%d\", sku, customerID, qty)\n\tquoteMu.RLock()\n\tc, ok := quoteCache[key]\n\tquoteMu.RUnlock()\n\tif ok && time.Now().Before(c.expiresAt) {\n\t\treturn c.quote, nil\n\t}\n\tq, err := pricingEngine.Compute(ctx, sku, customerID, qty)\n\tif err != nil {\n\t\treturn Quote{}, err\n\t}\n\tquoteMu.Lock()\n\tquoteCache[key] = cachedQuote{quote: q, expiresAt: time.Now().Add(5 * time.Minute)} //!issue:1\n\tquoteMu.Unlock()\n\treturn q, nil\n}",
+        "rust": "struct CachedQuote {\n    quote: Quote,\n    expires_at: Instant,\n}\n\npub struct QuoteService {\n    engine: PricingEngine,\n    cache: RwLock<HashMap<String, CachedQuote>>, //!issue:1\n}\n\nimpl QuoteService {\n    pub async fn get_quote(&self, sku: &str, customer_id: &str, qty: u32) -> Result<Quote, PricingError> {\n        let key = format!(\"{sku}:{customer_id}:{qty}\");\n        if let Some(c) = self.cache.read().unwrap().get(&key) {\n            if c.expires_at > Instant::now() {\n                return Ok(c.quote.clone());\n            }\n        }\n        let quote = self.engine.compute(sku, customer_id, qty).await?;\n        let entry = CachedQuote { quote: quote.clone(), expires_at: Instant::now() + Duration::from_secs(300) };\n        self.cache.write().unwrap().insert(key, entry); //!issue:1\n        Ok(quote)\n    }\n}",
+        "csharp": "public sealed class QuoteService\n{\n    private sealed record CachedQuote(Quote Quote, DateTimeOffset ExpiresAt);\n\n    private static readonly ConcurrentDictionary<string, CachedQuote> Cache = new(); //!issue:1\n    private readonly IPricingEngine _engine;\n\n    public QuoteService(IPricingEngine engine) => _engine = engine;\n\n    public async Task<Quote> GetQuoteAsync(string sku, string customerId, int qty, CancellationToken ct)\n    {\n        var key = $\"{sku}:{customerId}:{qty}\";\n        if (Cache.TryGetValue(key, out var hit) && hit.ExpiresAt > DateTimeOffset.UtcNow)\n            return hit.Quote;\n\n        var quote = await _engine.ComputeAsync(sku, customerId, qty, ct);\n        Cache[key] = new CachedQuote(quote, DateTimeOffset.UtcNow.AddMinutes(5)); //!issue:1\n        return quote;\n    }\n}",
+        "java": "public class QuoteService {\n    private record CachedQuote(Quote quote, Instant expiresAt) {}\n\n    private static final Map<String, CachedQuote> CACHE = new ConcurrentHashMap<>(); //!issue:1\n    private final PricingEngine engine;\n\n    public QuoteService(PricingEngine engine) {\n        this.engine = engine;\n    }\n\n    public Quote getQuote(String sku, String customerId, int qty) {\n        String key = sku + \":\" + customerId + \":\" + qty;\n        CachedQuote hit = CACHE.get(key);\n        if (hit != null && hit.expiresAt().isAfter(Instant.now())) {\n            return hit.quote();\n        }\n        Quote quote = engine.compute(sku, customerId, qty);\n        CACHE.put(key, new CachedQuote(quote, Instant.now().plus(Duration.ofMinutes(5)))); //!issue:1\n        return quote;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Expiry is only checked on read; expired entries are never removed and the map has no size bound, so a high-cardinality key space (sku x customer x qty) grows forever",
+          "fix": "Use a bounded cache that evicts: max entries plus TTL (lru-cache with max/ttl, Caffeine maximumSize + expireAfterWrite, MemoryCache with SizeLimit, moka in Rust, an expirable LRU in Go), and size it from the measured working set."
+        }
+      ],
+      "explanation": "The TTL controls freshness, not memory: an expired entry is skipped on read and then overwritten only if the exact same key is requested again. With 611k customers, 18k SKUs and arbitrary quantities, almost no key repeats, so 99.5% of the map is dead entries that nothing will ever remove. That is a classic leak: a global collection that only grows, with growth proportional to distinct keys rather than traffic peaks. Raising the pod memory limit or tuning GC only moves the OOM out a few hours. A proper cache bounds both size and age and evicts on write or on a background sweep. Staff-level takeaway: any process-lifetime map keyed by user input is a leak until it has an explicit eviction bound, and \"it has a TTL\" is not one.",
+      "tags": ["on-the-job", "classic"]
+    },
+    {
+      "id": "dbgc-float-installments-01",
+      "domain": "debugging",
+      "concepts": ["floating-point"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Fully paid installment invoices stuck in PARTIALLY_PAID",
+      "prompt": "Customers can pay invoices in installments. Finance reports that about 2% of installment invoices sit in `PARTIALLY_PAID` forever, even though the payment processor shows the customer paid in full and the invoice page shows a balance of $0.00. Single-payment invoices are never affected. Find the bug.",
+      "context": "```\ninvoice inv_20931  total=11.40  status=PARTIALLY_PAID  balance_display=$0.00\n  payment 1  3.80  settled 2026-09-01\n  payment 2  3.80  settled 2026-10-01\n  payment 3  3.80  settled 2026-11-01\n```",
+      "language": null,
+      "estSeconds": 150,
+      "code": {
+        "ts": "interface Payment { amount: number; settledAt: Date } // dollars, e.g. 3.8\ninterface Invoice { id: string; total: number; payments: Payment[] }\n\nexport function applyPayment(invoice: Invoice, payment: Payment): InvoiceStatus {\n  invoice.payments.push(payment);\n  const paid = invoice.payments.reduce((sum, p) => sum + p.amount, 0); //!issue:1\n  if (paid >= invoice.total) { //!issue:1\n    return \"PAID\";\n  }\n  return paid > 0 ? \"PARTIALLY_PAID\" : \"OPEN\";\n}",
+        "go": "type Payment struct {\n\tAmount    float64 // dollars\n\tSettledAt time.Time\n}\n\ntype Invoice struct {\n\tID       string\n\tTotal    float64\n\tPayments []Payment\n}\n\nfunc (inv *Invoice) ApplyPayment(p Payment) Status {\n\tinv.Payments = append(inv.Payments, p)\n\tvar paid float64\n\tfor _, pay := range inv.Payments {\n\t\tpaid += pay.Amount //!issue:1\n\t}\n\tif paid >= inv.Total { //!issue:1\n\t\treturn StatusPaid\n\t}\n\tif paid > 0 {\n\t\treturn StatusPartiallyPaid\n\t}\n\treturn StatusOpen\n}",
+        "rust": "pub struct Payment {\n    pub amount: f64, // dollars\n    pub settled_at: DateTime<Utc>,\n}\n\npub struct Invoice {\n    pub id: String,\n    pub total: f64,\n    pub payments: Vec<Payment>,\n}\n\nimpl Invoice {\n    pub fn apply_payment(&mut self, payment: Payment) -> Status {\n        self.payments.push(payment);\n        let paid: f64 = self.payments.iter().map(|p| p.amount).sum(); //!issue:1\n        if paid >= self.total { //!issue:1\n            Status::Paid\n        } else if paid > 0.0 {\n            Status::PartiallyPaid\n        } else {\n            Status::Open\n        }\n    }\n}",
+        "csharp": "public sealed record Payment(double Amount, DateTimeOffset SettledAt); // dollars\n\npublic sealed class Invoice\n{\n    public string Id { get; init; } = \"\";\n    public double Total { get; init; }\n    public List<Payment> Payments { get; } = new();\n\n    public InvoiceStatus ApplyPayment(Payment payment)\n    {\n        Payments.Add(payment);\n        double paid = 0;\n        foreach (var p in Payments)\n            paid += p.Amount; //!issue:1\n        if (paid >= Total) //!issue:1\n            return InvoiceStatus.Paid;\n        return paid > 0 ? InvoiceStatus.PartiallyPaid : InvoiceStatus.Open;\n    }\n}",
+        "java": "public final class Invoice {\n    private final String id;\n    private final double total; // dollars\n    private final List<Payment> payments = new ArrayList<>();\n\n    public Invoice(String id, double total) {\n        this.id = id;\n        this.total = total;\n    }\n\n    public InvoiceStatus applyPayment(Payment payment) {\n        payments.add(payment);\n        double paid = 0;\n        for (Payment p : payments) {\n            paid += p.amount(); //!issue:1\n        }\n        if (paid >= total) { //!issue:1\n            return InvoiceStatus.PAID;\n        }\n        return paid > 0 ? InvoiceStatus.PARTIALLY_PAID : InvoiceStatus.OPEN;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Money is summed and compared as binary floating point: 3.80 + 3.80 + 3.80 evaluates to 11.399999999999999, which is less than 11.40",
+          "fix": "Represent money as integer minor units (cents) or a decimal type (decimal, BigDecimal, rust_decimal) end to end, and compare exactly; never compare float sums of currency."
+        }
+      ],
+      "explanation": "3.80 has no exact binary representation, so each addition rounds and the sum of three installments lands one ulp below the stored total. The `>=` comparison then fails, while the UI's formatting rounds the balance to $0.00, which is why the record looks paid to humans. Single payments are never affected because one value is compared with itself. Adding an epsilon (`paid >= total - 0.005`) makes this ticket go away but leaves every other money path (tax, proration, refunds) exposed to the same drift. Integer cents or a decimal type makes the arithmetic exact. Staff-level takeaway: currency is a fixed-point domain; storing it as float is a data-model bug, and every comparison on it is a latent incident.",
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "dbgc-swallowed-crm-sync-01",
+      "domain": "debugging",
+      "concepts": ["error-handling", "production-debugging"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Nightly CRM sync reports success while dropping contacts",
+      "prompt": "The nightly CRM sync has reported `success` every night for two weeks and the job dashboard is green. The job runner marks a run successful whenever this function returns without throwing, and records the returned number as \"contacts synced\". Sales ops just found about 3,000 contacts created since Nov 2 that never reached the CRM, and the CRM vendor's API logs show bursts of `413 Payload Too Large` from our integration user. Find the bug.",
+      "context": "```\n2026-11-15T02:00:04Z INFO  job crm-sync started contacts=48211\n2026-11-15T02:03:51Z WARN  crm upsert failed, continuing size=500 err=\"413 Payload Too Large\"\n2026-11-15T02:03:58Z WARN  crm upsert failed, continuing size=500 err=\"413 Payload Too Large\"\n2026-11-15T02:11:40Z INFO  crm sync finished synced=48211\n2026-11-15T02:11:40Z INFO  job crm-sync status=success\n```",
+      "language": null,
+      "estSeconds": 180,
+      "code": {
+        "ts": "export async function syncContacts(contacts: Contact[], crm: CrmClient, log: Logger): Promise<number> {\n  const started = Date.now();\n  let synced = 0;\n  for (const batch of chunk(contacts, 500)) {\n    try {\n      await crm.upsertContacts(batch);\n    } catch (err) {\n      log.warn(\"crm upsert failed, continuing\", { size: batch.length, err }); //!issue:1\n    }\n    synced += batch.length; //!issue:1\n  }\n  log.info(\"crm sync finished\", { synced, durationMs: Date.now() - started });\n  return synced;\n}",
+        "go": "func SyncContacts(ctx context.Context, contacts []Contact, crm CRMClient, log *slog.Logger) (int, error) {\n\tstarted := time.Now()\n\tsynced := 0\n\tfor start := 0; start < len(contacts); start += batchSize {\n\t\tbatch := contacts[start:min(start+batchSize, len(contacts))]\n\t\tif err := crm.UpsertContacts(ctx, batch); err != nil {\n\t\t\tlog.Warn(\"crm upsert failed, continuing\", \"size\", len(batch), \"err\", err) //!issue:1\n\t\t}\n\t\tsynced += len(batch) //!issue:1\n\t}\n\tlog.Info(\"crm sync finished\", \"synced\", synced, \"duration_ms\", time.Since(started).Milliseconds())\n\treturn synced, nil\n}",
+        "rust": "pub async fn sync_contacts(contacts: &[Contact], crm: &CrmClient) -> Result<usize, SyncError> {\n    let started = Instant::now();\n    let mut synced = 0;\n    for batch in contacts.chunks(BATCH_SIZE) {\n        if let Err(err) = crm.upsert_contacts(batch).await {\n            tracing::warn!(size = batch.len(), error = %err, \"crm upsert failed, continuing\"); //!issue:1\n        }\n        synced += batch.len(); //!issue:1\n    }\n    tracing::info!(synced, duration_ms = started.elapsed().as_millis() as u64, \"crm sync finished\");\n    Ok(synced)\n}",
+        "csharp": "public async Task<int> SyncContactsAsync(IReadOnlyList<Contact> contacts, CancellationToken ct)\n{\n    var started = Stopwatch.StartNew();\n    var synced = 0;\n    foreach (var batch in contacts.Chunk(BatchSize))\n    {\n        try\n        {\n            await _crm.UpsertContactsAsync(batch, ct);\n        }\n        catch (CrmException ex)\n        {\n            _log.LogWarning(ex, \"CRM upsert failed for {Size} contacts, continuing\", batch.Length); //!issue:1\n        }\n        synced += batch.Length; //!issue:1\n    }\n    _log.LogInformation(\"CRM sync finished: {Synced} contacts in {DurationMs} ms\", synced, started.ElapsedMilliseconds);\n    return synced;\n}",
+        "java": "public int syncContacts(List<Contact> contacts) {\n    long started = System.nanoTime();\n    int synced = 0;\n    for (List<Contact> batch : Lists.partition(contacts, BATCH_SIZE)) {\n        try {\n            crm.upsertContacts(batch);\n        } catch (CrmException e) {\n            log.warn(\"CRM upsert failed for {} contacts, continuing\", batch.size(), e); //!issue:1\n        }\n        synced += batch.size(); //!issue:1\n    }\n    log.info(\"CRM sync finished: {} contacts in {} ms\", synced, (System.nanoTime() - started) / 1_000_000);\n    return synced;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "A failed batch is logged at WARN and then counted as synced; the function never surfaces the failure, so the runner reports success with an inflated count",
+          "fix": "Count failures separately, only add to synced on success, keep the failed records for retry (or a dead-letter table), and return an error or a partial status when any batch fails so the run alerts. Separately, split 413 batches and retry smaller."
+        }
+      ],
+      "explanation": "Continuing past a bad batch can be a reasonable choice for a bulk job, but only if the failure is still accounted for. Here the `synced +=` line runs regardless of the outcome, and the function returns normally, so the only trace is a WARN line nobody alerts on. The 413s explain the trigger (some contacts grew large enough to push a 500-record batch over the vendor's payload limit), but the incident is the reporting: two weeks of green runs hid data loss. Turning the WARN into an ERROR does not fix it either; the runner's success signal and the count are both still wrong. Staff-level takeaway: a job's status and metrics must be computed from outcomes, and \"log and continue\" is only acceptable when the skipped work is recorded and reflected in the result.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "dbgc-slot-lease-error-path-01",
+      "domain": "debugging",
+      "concepts": ["resource-leaks", "error-handling"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Tenant exports stuck waiting for a slot after an S3 brownout",
+      "prompt": "Exports are limited to 4 concurrent jobs per tenant by a Redis-backed semaphore (`acquire` adds the job id to a set if it has fewer than 4 members, `release` removes it). Since Tuesday's 10-minute S3 brownout, three large tenants have every export stuck in `waiting for slot`. The semaphore set for one of them holds 4 job ids, all of which failed on Tuesday. Restarting the export workers does not help. Find the bug.",
+      "context": "```\n> SMEMBERS export-slots:t_8812\n1) \"exp_5521\"  2) \"exp_5522\"  3) \"exp_5530\"  4) \"exp_5534\"\n> SELECT id, status, error FROM export_jobs WHERE id IN ('exp_5521','exp_5522','exp_5530','exp_5534');\nexp_5521 | failed | upload: SlowDown: Please reduce your request rate\nexp_5522 | failed | upload: RequestTimeout\nexp_5530 | failed | upload: SlowDown: Please reduce your request rate\nexp_5534 | failed | upload: InternalError\n```",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "export async function runExport(job: ExportJob, deps: Deps): Promise<void> {\n  const lease = await deps.slots.acquire(`export-slots:${job.tenantId}`, job.id, { max: 4 }); //!issue:1\n  const rows = await deps.warehouse.query(job.sql, { timeoutMs: 120_000 });\n  const file = await deps.csv.write(rows);\n  await deps.s3.putObject({ Bucket: EXPORT_BUCKET, Key: `${job.tenantId}/${job.id}.csv`, Body: file });\n  await deps.jobs.markDone(job.id, { rows: rows.length });\n  await deps.slots.release(lease); //!issue:1\n}",
+        "go": "func (w *Worker) RunExport(ctx context.Context, job ExportJob) error {\n\tlease, err := w.slots.Acquire(ctx, \"export-slots:\"+job.TenantID, job.ID, 4) //!issue:1\n\tif err != nil {\n\t\treturn fmt.Errorf(\"acquire slot: %w\", err)\n\t}\n\trows, err := w.warehouse.Query(ctx, job.SQL)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"query: %w\", err)\n\t}\n\tfile, err := w.csv.Write(rows)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"write csv: %w\", err)\n\t}\n\tif err := w.s3.PutObject(ctx, exportBucket, job.TenantID+\"/\"+job.ID+\".csv\", file); err != nil {\n\t\treturn fmt.Errorf(\"upload: %w\", err)\n\t}\n\tif err := w.jobs.MarkDone(ctx, job.ID, len(rows)); err != nil {\n\t\treturn err\n\t}\n\treturn w.slots.Release(ctx, lease) //!issue:1\n}",
+        "rust": "pub async fn run_export(&self, job: &ExportJob) -> Result<(), ExportError> {\n    let key = format!(\"export-slots:{}\", job.tenant_id);\n    let lease = self.slots.acquire(&key, &job.id, 4).await?; //!issue:1\n    let rows = self.warehouse.query(&job.sql).await?;\n    let file = self.csv.write(&rows)?;\n    self.s3\n        .put_object(EXPORT_BUCKET, &format!(\"{}/{}.csv\", job.tenant_id, job.id), file)\n        .await?;\n    self.jobs.mark_done(&job.id, rows.len()).await?;\n    self.slots.release(lease).await?; //!issue:1\n    Ok(())\n}",
+        "csharp": "public async Task RunExportAsync(ExportJob job, CancellationToken ct)\n{\n    var lease = await _slots.AcquireAsync($\"export-slots:{job.TenantId}\", job.Id, max: 4, ct); //!issue:1\n    var rows = await _warehouse.QueryAsync(job.Sql, ct);\n    await using var file = await _csv.WriteAsync(rows, ct);\n    await _s3.PutObjectAsync(new PutObjectRequest\n    {\n        BucketName = ExportBucket,\n        Key = $\"{job.TenantId}/{job.Id}.csv\",\n        InputStream = file,\n    }, ct);\n    await _jobs.MarkDoneAsync(job.Id, rows.Count, ct);\n    await _slots.ReleaseAsync(lease); //!issue:1\n}",
+        "java": "public void runExport(ExportJob job) {\n    SlotLease lease = slots.acquire(\"export-slots:\" + job.tenantId(), job.id(), 4); //!issue:1\n    List<Row> rows = warehouse.query(job.sql());\n    Path file = csvWriter.write(rows);\n    s3.putObject(PutObjectRequest.builder()\n            .bucket(EXPORT_BUCKET)\n            .key(job.tenantId() + \"/\" + job.id() + \".csv\")\n            .build(), file);\n    jobs.markDone(job.id(), rows.size());\n    slots.release(lease); //!issue:1\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The slot is released only on the success path; any error after acquire (query, CSV, S3 upload, markDone) returns early and leaks the slot permanently, because the Redis set has no expiry",
+          "fix": "Release on every path (try/finally, defer, or an explicit match on the result in Rust, since async release cannot run in Drop), and give leases a TTL with heartbeats so a crashed or killed worker cannot hold a slot forever."
+        }
+      ],
+      "explanation": "Every error between acquire and release propagates out (`throw`, `return err`, `?`) and skips the release call, so each failed upload during the brownout permanently consumed one of the tenant's four slots. Large tenants ran the most exports, so they filled all four first. Restarting workers does not help because the leaked state lives in Redis, not in the process. Two things are wrong: the release is not on the error path, and the lease has no expiry, so even a correct finally block would leak on SIGKILL or a pod eviction. In Rust the `?` operator makes this especially easy to miss, and a Drop guard cannot await the release, so the fix is to capture the result, release, then return it. Staff-level takeaway: any resource held outside your process needs both deterministic release on every path and a lease timeout for the paths your code never gets to run.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "dbgc-transfer-lock-order-01",
+      "domain": "debugging",
+      "concepts": ["deadlocks", "concurrency"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Wallet ledger freezes a few times a week during transfers",
+      "prompt": "The wallet service keeps balances in an in-memory ledger that is snapshotted to Postgres. A few times a week it stops completing transfers: requests pile up until the pod is restarted, the health check stays green (it does not touch the ledger), and CPU drops to near zero. It has only ever happened while peer-to-peer transfers were in flight. A dump taken during the last freeze is summarized below. Find the bug.",
+      "context": "```\nworker-14  holds lock(acct 1042)  waiting for lock(acct 7781)  since 09:14:03.118\nworker-31  holds lock(acct 7781)  waiting for lock(acct 1042)  since 09:14:03.118\n212 other workers waiting for lock(acct 1042) or lock(acct 7781)\nin-flight: transfer 1042 -> 7781 ($25.00), transfer 7781 -> 1042 ($10.00)\n```",
+      "language": null,
+      "estSeconds": 210,
+      "code": {
+        "ts": "export class Ledger {\n  private readonly accounts = new Map<string, Account>(); // Account: { id, balanceCents, lock: Mutex }\n\n  constructor(private readonly journal: Journal) {}\n\n  async transfer(fromId: string, toId: string, amountCents: number): Promise<void> {\n    const from = this.mustGet(fromId);\n    const to = this.mustGet(toId);\n    await from.lock.runExclusive(async () => { //!issue:1\n      await to.lock.runExclusive(async () => { //!issue:1\n        if (from.balanceCents < amountCents) {\n          throw new InsufficientFundsError(fromId);\n        }\n        from.balanceCents -= amountCents;\n        to.balanceCents += amountCents;\n        await this.journal.append({ fromId, toId, amountCents });\n      });\n    });\n  }\n}",
+        "go": "type Account struct {\n\tmu      sync.Mutex\n\tID      int64\n\tBalance int64 // cents\n}\n\nfunc (l *Ledger) Transfer(from, to *Account, amount int64) error {\n\tfrom.mu.Lock() //!issue:1\n\tdefer from.mu.Unlock()\n\tto.mu.Lock() //!issue:1\n\tdefer to.mu.Unlock()\n\n\tif from.Balance < amount {\n\t\treturn ErrInsufficientFunds\n\t}\n\tfrom.Balance -= amount\n\tto.Balance += amount\n\tl.journal.Append(Entry{From: from.ID, To: to.ID, Amount: amount})\n\treturn nil\n}",
+        "rust": "pub struct Account {\n    pub id: u64,\n    pub balance_cents: Mutex<i64>,\n}\n\nimpl Ledger {\n    pub fn transfer(&self, from: &Account, to: &Account, amount: i64) -> Result<(), LedgerError> {\n        let mut src = from.balance_cents.lock().unwrap(); //!issue:1\n        let mut dst = to.balance_cents.lock().unwrap(); //!issue:1\n        if *src < amount {\n            return Err(LedgerError::InsufficientFunds(from.id));\n        }\n        *src -= amount;\n        *dst += amount;\n        self.journal.append(Entry { from: from.id, to: to.id, amount });\n        Ok(())\n    }\n}",
+        "csharp": "public sealed class Account\n{\n    public long Id { get; init; }\n    public long BalanceCents { get; set; }\n    public object Sync { get; } = new();\n}\n\npublic void Transfer(Account from, Account to, long amountCents)\n{\n    lock (from.Sync) //!issue:1\n    {\n        lock (to.Sync) //!issue:1\n        {\n            if (from.BalanceCents < amountCents)\n                throw new InsufficientFundsException(from.Id);\n            from.BalanceCents -= amountCents;\n            to.BalanceCents += amountCents;\n            _journal.Append(new Entry(from.Id, to.Id, amountCents));\n        }\n    }\n}",
+        "java": "public void transfer(Account from, Account to, long amountCents) {\n    synchronized (from) { //!issue:1\n        synchronized (to) { //!issue:1\n            if (from.getBalanceCents() < amountCents) {\n                throw new InsufficientFundsException(from.getId());\n            }\n            from.setBalanceCents(from.getBalanceCents() - amountCents);\n            to.setBalanceCents(to.getBalanceCents() + amountCents);\n            journal.append(new Entry(from.getId(), to.getId(), amountCents));\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Locks are taken in argument order (source, then destination), so two opposite-direction transfers between the same accounts each hold one lock and wait forever for the other",
+          "fix": "Acquire both locks in a global canonical order (for example lower account id first) regardless of transfer direction, reject from == to up front, and keep the critical section free of I/O where possible."
+        }
+      ],
+      "explanation": "A transfer from A to B locks A then B; a concurrent transfer from B to A locks B then A. If each gets its first lock before the other's second, neither can proceed: a textbook lock-ordering deadlock (mutual exclusion, hold-and-wait, no preemption, circular wait). Everyone else touching either account then queues behind them, which matches the 212 waiters and the idle CPU. Adding a lock timeout or `tryLock` with retry turns the hang into errors and livelock risk without removing the cycle; one global lock fixes it but serializes every transfer. Ordering acquisition by a stable key breaks the circular wait with no throughput cost. Note that a self-transfer (from == to) also deadlocks here with non-reentrant mutexes. Staff-level takeaway: whenever code holds more than one lock, the lock order is part of the design and must be defined globally, not inherited from argument order.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "dbgc-dst-digest-drift-01",
+      "domain": "debugging",
+      "concepts": ["timezones-dates"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "9:00 daily digests start arriving at 8:00 after the clocks change",
+      "prompt": "Users choose a local delivery time for their daily digest, stored as an IANA zone plus `HH:MM`. A dispatcher wakes every minute, sends every digest whose `nextRunAt` has passed, then calls the function below. The first digest after signup always arrives on time. Starting Sunday, Nov 1, US users who signed up over the summer report their 9:00 digest arriving at 8:00 (EU users reported the same from Oct 25). Users who signed up last winter say theirs arrived at 10:00 all summer and \"fixed itself\" this week. Find the bug.",
+      "context": "```\nuser u_301  zone=America/New_York  localTime=09:00  signed_up=2026-06-12\n  sent 2026-10-30T13:00:00Z   (09:00 EDT)\n  sent 2026-10-31T13:00:00Z   (09:00 EDT)\n  sent 2026-11-01T13:00:00Z   (08:00 EST)\n  sent 2026-11-02T13:00:00Z   (08:00 EST)\n```",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "import { DateTime } from \"luxon\";\n\nexport interface DigestSchedule {\n  userId: string;\n  zone: string;        // IANA zone chosen by the user, e.g. \"America/New_York\"\n  localTime: string;   // \"09:00\" in that zone\n  nextRunAt: DateTime; // stored and loaded as UTC\n}\n\n// Called by the dispatcher right after a digest is sent at s.nextRunAt.\nexport function scheduleNext(s: DigestSchedule): DigestSchedule {\n  const next = s.nextRunAt.plus({ days: 1 }); //!issue:1\n  return { ...s, nextRunAt: next.toUTC() };\n}",
+        "go": "type DigestSchedule struct {\n\tUserID    string\n\tZone      string    // IANA zone chosen by the user, e.g. \"America/New_York\"\n\tLocalTime string    // \"09:00\" in that zone\n\tNextRunAt time.Time // stored as timestamptz, scanned back in UTC\n}\n\n// ScheduleNext is called by the dispatcher right after a digest is sent at s.NextRunAt.\nfunc ScheduleNext(s DigestSchedule) DigestSchedule {\n\ts.NextRunAt = s.NextRunAt.AddDate(0, 0, 1) //!issue:1\n\treturn s\n}",
+        "rust": "use chrono::{DateTime, Days, NaiveTime, Utc};\nuse chrono_tz::Tz;\n\npub struct DigestSchedule {\n    pub user_id: Uuid,\n    pub zone: Tz,              // chosen by the user, e.g. America/New_York\n    pub local_time: NaiveTime, // 09:00 in that zone\n    pub next_run_at: DateTime<Utc>,\n}\n\n/// Called by the dispatcher right after a digest is sent at `next_run_at`.\npub fn schedule_next(mut s: DigestSchedule) -> DigestSchedule {\n    s.next_run_at = s.next_run_at.checked_add_days(Days::new(1)).expect(\"date in range\"); //!issue:1\n    s\n}",
+        "csharp": "public sealed class DigestSchedule\n{\n    public Guid UserId { get; init; }\n    public string TimeZoneId { get; init; } = \"America/New_York\"; // chosen by the user\n    public TimeOnly LocalTime { get; init; }                       // 09:00 in that zone\n    public DateTimeOffset NextRunAt { get; set; }                  // persisted as UTC\n}\n\n// Called by the dispatcher right after a digest is sent at NextRunAt.\npublic static void ScheduleNext(DigestSchedule s)\n{\n    s.NextRunAt = s.NextRunAt.AddDays(1); //!issue:1\n}",
+        "java": "public final class DigestSchedule {\n    private final UUID userId;\n    private final ZoneId zone;          // chosen by the user, e.g. America/New_York\n    private final LocalTime localTime;  // 09:00 in that zone\n    private Instant nextRunAt;          // persisted as UTC\n\n    // constructor and getters omitted\n\n    /** Called by the dispatcher right after a digest is sent at nextRunAt. */\n    public void scheduleNext() {\n        nextRunAt = nextRunAt.plus(1, ChronoUnit.DAYS); //!issue:1\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "\"One day later\" is computed on a UTC (or fixed-offset) timestamp, which is always exactly 24 hours, so the send stays pinned to the same UTC instant and drifts by an hour in local time whenever the user's zone changes offset",
+          "fix": "Compute the next run in the user's zone from the stored local time: take the next local date in `zone`, combine it with `localTime`, resolve it to an instant (with an explicit rule for skipped and repeated local times), then store it as UTC."
+        }
+      ],
+      "explanation": "Adding a calendar day is only wall-clock aware when the value carries the user's time zone. Here the timestamp is UTC (`Instant`, `DateTimeOffset`, `DateTime<Utc>`, a UTC-located `time.Time`, a Luxon DateTime in UTC), so +1 day means +24 h and the digest stays at 13:00Z forever. Summer signups chose 09:00 EDT (13:00Z), which becomes 08:00 EST in November; winter signups chose 09:00 EST (14:00Z), which was 10:00 EDT all summer. The first send is right because it is computed from the zone and local time, which is why the bug hides for months. Swapping +1 day for +24 hours changes nothing here, and checking the server's DST configuration misses the point: the server zone is irrelevant, the user's zone is what matters. Recomputing from (zone, localTime) each time also self-heals and picks up preference changes. Staff-level takeaway: store user intent (zone plus local time) and derive instants from it; never derive the next occurrence from the previous instant.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "dbgc-utf8-preview-truncation-01",
+      "domain": "debugging",
+      "concepts": ["encoding"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Japanese push previews end in a replacement character",
+      "prompt": "Push notification previews are capped at 100 bytes of UTF-8 so the payload stays inside the provider's size budget. Since the Japanese launch, support has screenshots of previews ending in `�…`, and the provider occasionally rejects payloads as over budget even though this function is supposed to guarantee the cap. English previews are always fine. Find the bug.",
+      "context": "```\nin : \"明日の打ち合わせは15時からに変更になりました。資料は共有フォルダにアップロード済みです。ご確認ください。\"  (155 bytes)\nout: \"明日の打ち合わせは15時からに変更になりました。資料は共有フォルダ�…\"  (101 bytes)\n```",
+      "language": null,
+      "estSeconds": 210,
+      "code": {
+        "ts": "const MAX_PREVIEW_BYTES = 100;\nconst ELLIPSIS = \"…\";\n\nexport function previewFor(message: string): string {\n  const bytes = Buffer.from(message, \"utf8\");\n  if (bytes.length <= MAX_PREVIEW_BYTES) {\n    return message;\n  }\n  const budget = MAX_PREVIEW_BYTES - Buffer.byteLength(ELLIPSIS, \"utf8\");\n  return bytes.subarray(0, budget).toString(\"utf8\") + ELLIPSIS; //!issue:1\n}",
+        "go": "const maxPreviewBytes = 100\nconst ellipsis = \"…\"\n\n// PreviewFor truncates a message body so the push payload stays under budget.\nfunc PreviewFor(message string) string {\n\tif len(message) <= maxPreviewBytes {\n\t\treturn message\n\t}\n\treturn message[:maxPreviewBytes-len(ellipsis)] + ellipsis //!issue:1\n}",
+        "rust": "const MAX_PREVIEW_BYTES: usize = 100;\nconst ELLIPSIS: &str = \"…\";\n\n/// Truncates a message body so the push payload stays under budget.\npub fn preview_for(message: &str) -> String {\n    if message.len() <= MAX_PREVIEW_BYTES {\n        return message.to_owned();\n    }\n    let cut = &message.as_bytes()[..MAX_PREVIEW_BYTES - ELLIPSIS.len()]; //!issue:1\n    let mut out = String::from_utf8_lossy(cut).into_owned(); //!issue:1\n    out.push_str(ELLIPSIS);\n    out\n}",
+        "csharp": "private const int MaxPreviewBytes = 100;\nprivate const string Ellipsis = \"…\";\n\npublic static string PreviewFor(string message)\n{\n    var bytes = Encoding.UTF8.GetBytes(message);\n    if (bytes.Length <= MaxPreviewBytes)\n        return message;\n\n    var budget = MaxPreviewBytes - Encoding.UTF8.GetByteCount(Ellipsis);\n    return Encoding.UTF8.GetString(bytes, 0, budget) + Ellipsis; //!issue:1\n}",
+        "java": "private static final int MAX_PREVIEW_BYTES = 100;\nprivate static final String ELLIPSIS = \"…\";\n\npublic static String previewFor(String message) {\n    byte[] bytes = message.getBytes(StandardCharsets.UTF_8);\n    if (bytes.length <= MAX_PREVIEW_BYTES) {\n        return message;\n    }\n    int budget = MAX_PREVIEW_BYTES - ELLIPSIS.getBytes(StandardCharsets.UTF_8).length;\n    return new String(bytes, 0, budget, StandardCharsets.UTF_8) + ELLIPSIS; //!issue:1\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The byte cut can land inside a multi-byte UTF-8 sequence; decoding the partial sequence yields U+FFFD (3 bytes), which both corrupts the text and can push the result over the byte cap",
+          "fix": "Back the cut up to a code point boundary before decoding (skip back over continuation bytes 0b10xxxxxx, or accumulate whole code points until the budget is reached); better, cut on grapheme cluster boundaries (Intl.Segmenter, unicode-segmentation) so emoji sequences are not split."
+        }
+      ],
+      "explanation": "Japanese characters are 3 bytes each in UTF-8, so a 97-byte budget ends one byte into a character. Decoding those orphaned lead bytes produces the replacement character U+FFFD, which is itself 3 bytes, so the \"guaranteed\" 100-byte output is now 101 bytes. In Go the slice itself is invalid UTF-8 and the JSON encoder substitutes U+FFFD later, with the same visible result. English never triggers it because ASCII is one byte per character. Counting UTF-16 code units (`string.length`, `substring`) instead of bytes is the tempting fix, but it breaks the byte budget and can still split surrogate pairs. Staff-level takeaway: truncate text in units the reader sees (code points at minimum, graphemes ideally) and measure the result in units the transport enforces (bytes), never just one of the two.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "dbgc-batch-closure-capture-01",
+      "domain": "debugging",
+      "concepts": ["concurrency", "race-conditions"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Event shipper loses 40% of events and duplicates others",
+      "prompt": "The event shipper buffers analytics events and flushes them to the warehouse in batches of 500, with up to 4 writes in flight so the consumer loop never blocks on the warehouse. Since this rewrite shipped, warehouse row counts are about 40% below the producer's counters, thousands of batches arrive with 0 rows, and spot checks find the same event id in two consecutive batches. The sink reports 100% success and there are no errors in the logs. Find the bug.",
+      "context": "```\nproducer_events_total{stream=\"clicks\"}        12,480,113\nwarehouse_rows_inserted{table=\"clicks\"}        7,301,962   (-41.5%)\nwarehouse_batches_written                         24,961\nwarehouse_batches_with_zero_rows                   9,882\nevent_ids present in two adjacent batches        211,407\n```",
+      "language": null,
+      "estSeconds": 270,
+      "code": {
+        "ts": "const limit = pLimit(4); // at most 4 concurrent warehouse writes\n\nexport async function shipEvents(source: AsyncIterable<Event>, sink: WarehouseSink): Promise<void> {\n  const inflight: Promise<void>[] = [];\n  const batch: Event[] = [];\n  for await (const event of source) {\n    batch.push(event);\n    if (batch.length >= BATCH_SIZE) {\n      inflight.push(limit(() => sink.write(batch))); //!issue:1\n      batch.length = 0; //!issue:1\n    }\n  }\n  if (batch.length > 0) {\n    inflight.push(limit(() => sink.write(batch)));\n  }\n  await Promise.all(inflight);\n}",
+        "go": "func ShipEvents(ctx context.Context, events <-chan Event, sink WarehouseSink) error {\n\tg, ctx := errgroup.WithContext(ctx)\n\tg.SetLimit(4) // at most 4 concurrent warehouse writes\n\tbatch := make([]Event, 0, batchSize)\n\tfor ev := range events {\n\t\tbatch = append(batch, ev)\n\t\tif len(batch) >= batchSize {\n\t\t\tg.Go(func() error { return sink.Write(ctx, batch) }) //!issue:1\n\t\t\tbatch = batch[:0] //!issue:1\n\t\t}\n\t}\n\tif len(batch) > 0 {\n\t\tg.Go(func() error { return sink.Write(ctx, batch) })\n\t}\n\treturn g.Wait()\n}",
+        "rust": "pub async fn ship_events(mut events: mpsc::Receiver<Event>, sink: Arc<WarehouseSink>) -> Result<(), ShipError> {\n    // Shared with the periodic flush timer, hence Arc<Mutex<..>>.\n    let buffer: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::with_capacity(BATCH_SIZE)));\n    let permits = Arc::new(Semaphore::new(4)); // at most 4 concurrent warehouse writes\n    let mut tasks = JoinSet::new();\n    while let Some(event) = events.recv().await {\n        let mut buf = buffer.lock().await;\n        buf.push(event);\n        if buf.len() >= BATCH_SIZE {\n            let permit = permits.clone().acquire_owned().await?;\n            let (sink, shared) = (sink.clone(), buffer.clone()); //!issue:1\n            tasks.spawn(async move {\n                let batch = shared.lock().await; //!issue:1\n                let result = sink.write(&batch).await;\n                drop(permit);\n                result\n            });\n            buf.clear(); //!issue:1\n        }\n    }\n    while let Some(res) = tasks.join_next().await {\n        res??;\n    }\n    Ok(())\n}",
+        "csharp": "public async Task ShipEventsAsync(ChannelReader<Event> events, CancellationToken ct)\n{\n    var gate = new SemaphoreSlim(4); // at most 4 concurrent warehouse writes\n    var inflight = new List<Task>();\n    var batch = new List<Event>(BatchSize);\n    await foreach (var ev in events.ReadAllAsync(ct))\n    {\n        batch.Add(ev);\n        if (batch.Count < BatchSize) continue;\n\n        await gate.WaitAsync(ct);\n        inflight.Add(Task.Run(async () => //!issue:1\n        {\n            try { await _sink.WriteAsync(batch, ct); } //!issue:1\n            finally { gate.Release(); }\n        }, ct));\n        batch.Clear(); //!issue:1\n    }\n    if (batch.Count > 0)\n        await _sink.WriteAsync(batch, ct);\n    await Task.WhenAll(inflight);\n}",
+        "java": "public void shipEvents(BlockingQueue<Event> events) throws InterruptedException {\n    Semaphore permits = new Semaphore(4); // at most 4 concurrent warehouse writes\n    List<Event> batch = new ArrayList<>(BATCH_SIZE);\n    while (running) {\n        Event ev = events.poll(1, TimeUnit.SECONDS);\n        if (ev == null) continue;\n        batch.add(ev);\n        if (batch.size() >= BATCH_SIZE) {\n            permits.acquire();\n            executor.submit(() -> { //!issue:1\n                try {\n                    sink.write(batch); //!issue:1\n                } finally {\n                    permits.release();\n                }\n            });\n            batch.clear(); //!issue:1\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The deferred write captures the shared, still-mutable batch (variable or buffer) instead of its own snapshot; the loop then clears and refills it before or while the write reads it",
+          "fix": "Hand each write ownership of its own batch and start a fresh buffer: `const toSend = batch.splice(0)`, Go `toSend := batch; batch = make([]Event, 0, batchSize)`, Rust `let batch = std::mem::take(&mut *buf)` moved into the task, C#/Java `var toSend = batch; batch = new List<>(...)` (or copy) before submitting."
+        }
+      ],
+      "explanation": "Closures capture variables or references, not values. Each write is scheduled to run later (p-limit defers to a microtask, `g.Go` and `Task.Run` start a new goroutine or task, the Rust task cannot lock until the loop releases the buffer), and by then the loop has already cleared the buffer and may have pushed the next events into it. Writes therefore see an empty batch (the zero-row batches), or a batch containing the next window's events that will be written again (the duplicates), and the original 500 events are never written (the shortfall). The sink reports success because it really did write what it was given. Adding a lock around `sink.write` does not help; the data was already gone. Go 1.22's per-iteration loop variables do not help either, because `batch` is declared outside the loop. Staff-level takeaway: when work crosses into another task, transfer ownership of the data explicitly; if the scheduler can delay it, assume it will.",
+      "tags": ["gotcha", "on-the-job"]
+    },
+    {
+      "id": "dbgc-cache-delete-before-write-01",
+      "domain": "debugging",
+      "concepts": ["cache-invalidation", "race-conditions"],
+      "skill": "design",
+      "type": "bug_hunt",
+      "difficulty": 4,
+      "title": "Profile edits occasionally revert for exactly an hour",
+      "prompt": "Profile reads go through Redis using cache-aside with a 1 hour TTL. About 1 in 2,000 profile edits \"doesn't stick\": the user saves a new display name, gets a 200, and then sees the old name on every device for up to an hour. Re-saving almost always fixes it. The rate is far higher for creators whose profiles are read thousands of times a minute while they edit. Find the bug.",
+      "context": "```\nstale-profile reports, last 7 days: 412\n  median profile read rate at time of edit: 2,300 reads/min   (all profiles: 4 reads/min)\n  in 409/412 cases a cache SET for that key happened < 50 ms after the PATCH started\n  stale value lifetime: 59m 41s to 60m 00s\n```",
+      "language": null,
+      "estSeconds": 300,
+      "code": {
+        "ts": "const TTL_SECONDS = 3600;\n\nexport async function getProfile(userId: string): Promise<Profile> {\n  const cached = await redis.get(`profile:${userId}`);\n  if (cached) return JSON.parse(cached);\n  const profile = await db.profiles.findById(userId);\n  await redis.set(`profile:${userId}`, JSON.stringify(profile), \"EX\", TTL_SECONDS);\n  return profile;\n}\n\nexport async function updateProfile(userId: string, patch: ProfilePatch): Promise<Profile> {\n  await redis.del(`profile:${userId}`); //!issue:1\n  const updated = await db.profiles.update(userId, patch); //!issue:1\n  return updated;\n}",
+        "go": "const profileTTL = time.Hour\n\nfunc (s *Store) GetProfile(ctx context.Context, userID string) (Profile, error) {\n\tkey := \"profile:\" + userID\n\tif b, err := s.redis.Get(ctx, key).Bytes(); err == nil {\n\t\tvar p Profile\n\t\tif err := json.Unmarshal(b, &p); err == nil {\n\t\t\treturn p, nil\n\t\t}\n\t}\n\tp, err := s.db.ProfileByID(ctx, userID)\n\tif err != nil {\n\t\treturn Profile{}, err\n\t}\n\tif b, err := json.Marshal(p); err == nil {\n\t\ts.redis.Set(ctx, key, b, profileTTL)\n\t}\n\treturn p, nil\n}\n\nfunc (s *Store) UpdateProfile(ctx context.Context, userID string, patch ProfilePatch) (Profile, error) {\n\tif err := s.redis.Del(ctx, \"profile:\"+userID).Err(); err != nil { //!issue:1\n\t\treturn Profile{}, err\n\t}\n\treturn s.db.UpdateProfile(ctx, userID, patch) //!issue:1\n}",
+        "rust": "const PROFILE_TTL_SECS: u64 = 3600;\n\nimpl ProfileStore {\n    pub async fn get_profile(&self, user_id: Uuid) -> Result<Profile, StoreError> {\n        let key = format!(\"profile:{user_id}\");\n        let mut redis = self.redis.clone();\n        if let Some(json) = redis.get::<_, Option<String>>(&key).await? {\n            return Ok(serde_json::from_str(&json)?);\n        }\n        let profile = self.db.profile_by_id(user_id).await?;\n        let _: () = redis.set_ex(&key, serde_json::to_string(&profile)?, PROFILE_TTL_SECS).await?;\n        Ok(profile)\n    }\n\n    pub async fn update_profile(&self, user_id: Uuid, patch: ProfilePatch) -> Result<Profile, StoreError> {\n        let mut redis = self.redis.clone();\n        let _: () = redis.del(format!(\"profile:{user_id}\")).await?; //!issue:1\n        let updated = self.db.update_profile(user_id, patch).await?; //!issue:1\n        Ok(updated)\n    }\n}",
+        "csharp": "private static readonly TimeSpan ProfileTtl = TimeSpan.FromHours(1);\n\npublic async Task<Profile> GetProfileAsync(Guid userId, CancellationToken ct)\n{\n    var key = $\"profile:{userId}\";\n    var cached = await _redis.StringGetAsync(key);\n    if (cached.HasValue)\n        return JsonSerializer.Deserialize<Profile>(cached.ToString())!;\n\n    var profile = await _db.Profiles.AsNoTracking().SingleAsync(p => p.UserId == userId, ct);\n    await _redis.StringSetAsync(key, JsonSerializer.Serialize(profile), ProfileTtl);\n    return profile;\n}\n\npublic async Task<Profile> UpdateProfileAsync(Guid userId, ProfilePatch patch, CancellationToken ct)\n{\n    await _redis.KeyDeleteAsync($\"profile:{userId}\"); //!issue:1\n    var profile = await _db.Profiles.SingleAsync(p => p.UserId == userId, ct);\n    patch.ApplyTo(profile);\n    await _db.SaveChangesAsync(ct); //!issue:1\n    return profile;\n}",
+        "java": "private static final Duration PROFILE_TTL = Duration.ofHours(1);\n\npublic Profile getProfile(UUID userId) {\n    String key = \"profile:\" + userId;\n    String cached = redis.opsForValue().get(key);\n    if (cached != null) {\n        return codec.decode(cached);\n    }\n    Profile profile = profiles.findById(userId).orElseThrow();\n    redis.opsForValue().set(key, codec.encode(profile), PROFILE_TTL);\n    return profile;\n}\n\n@Transactional\npublic Profile updateProfile(UUID userId, ProfilePatch patch) {\n    redis.delete(\"profile:\" + userId); //!issue:1\n    Profile profile = profiles.findById(userId).orElseThrow();\n    patch.applyTo(profile);\n    return profiles.save(profile); //!issue:1\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The cache is invalidated before the database write commits; a concurrent reader misses, reads the old row, and repopulates the cache with the stale value for the full TTL",
+          "fix": "Invalidate after the write commits (in Spring, after commit via TransactionSynchronization or an AFTER_COMMIT event listener, not inside the @Transactional method). To close the remaining read-old/set-late window, use versioned set-if-newer writes, a delayed second delete, or CDC-driven invalidation, and keep the TTL as a bounded backstop."
+        }
+      ],
+      "explanation": "Between the DEL and the commit there is a window where the key is absent but the database still holds the old row. A hot profile is almost certain to get a read in that window; the reader misses, loads the old row and SETs it, and nothing deletes it again, so the stale value lives for exactly the TTL. That matches the 50 ms SET correlation and the ~60 minute lifetime. Re-saving works because the second edit's window rarely collides. In the Java variant, moving the delete to the end of the method is still wrong: `@Transactional` commits after the method returns, so the delete must be registered to run after commit. Even delete-after-commit leaves a smaller race (a reader that read the old row before the commit and SETs after the delete), which is why high-read keys need versioned writes, leases or CDC invalidation. Shortening the TTL only shrinks the damage. Staff-level takeaway: cache-aside invalidation must happen after the source of truth commits, and for hot keys you need a mechanism that refuses to write older data over newer.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "dbgc-retry-fresh-idempotency-key-01",
+      "domain": "debugging",
+      "concepts": ["retry-storms", "error-handling"],
+      "skill": "design",
+      "type": "bug_hunt",
+      "difficulty": 4,
+      "title": "Retries with idempotency keys still double-charge customers",
+      "prompt": "On Nov 3 the payment processor had a 6-minute latency incident (p99 went from 400 ms to 9 s). Our client timeout is 5 s. Finance found 214 customers charged twice and 9 charged three times for single orders during that window. The PR that added idempotency keys and jittered backoff last quarter was meant to make retries safe, and the processor confirms it honors idempotency keys for 24 hours. Find the bug.",
+      "context": "```\n14:21:02.140 charge attempt=1 order=ord_77812 amount=4999 -> timeout after 5000ms\n14:21:07.391 charge attempt=2 order=ord_77812 amount=4999 -> 201 ch_9QX\nprocessor dashboard for ord_77812:\n  ch_9QW  created 14:21:02.188  succeeded 14:21:10.802\n  ch_9QX  created 14:21:07.430  succeeded 14:21:07.912\n```",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "export async function chargeOrder(order: Order, psp: PaymentClient): Promise<Charge> {\n  const maxAttempts = 3;\n  for (let attempt = 1; ; attempt++) {\n    const idempotencyKey = randomUUID(); //!issue:1\n    try {\n      return await psp.createCharge(\n        { amountCents: order.totalCents, currency: order.currency, customerId: order.customerId },\n        { idempotencyKey, timeoutMs: 5_000 },\n      );\n    } catch (err) {\n      if (attempt >= maxAttempts || !isRetryable(err)) throw err;\n      await sleep(backoffWithJitter(attempt));\n    }\n  }\n}",
+        "go": "func (s *Checkout) ChargeOrder(ctx context.Context, order Order) (Charge, error) {\n\tconst maxAttempts = 3\n\tvar lastErr error\n\tfor attempt := 1; attempt <= maxAttempts; attempt++ {\n\t\treq := psp.ChargeRequest{\n\t\t\tAmountCents:    order.TotalCents,\n\t\t\tCurrency:       order.Currency,\n\t\t\tCustomerID:     order.CustomerID,\n\t\t\tIdempotencyKey: uuid.NewString(), //!issue:1\n\t\t}\n\t\tcallCtx, cancel := context.WithTimeout(ctx, 5*time.Second)\n\t\tcharge, err := s.psp.CreateCharge(callCtx, req)\n\t\tcancel()\n\t\tif err == nil {\n\t\t\treturn charge, nil\n\t\t}\n\t\tlastErr = err\n\t\tif !isRetryable(err) {\n\t\t\tbreak\n\t\t}\n\t\ttime.Sleep(backoffWithJitter(attempt))\n\t}\n\treturn Charge{}, fmt.Errorf(\"charge order %s: %w\", order.ID, lastErr)\n}",
+        "rust": "pub async fn charge_order(&self, order: &Order) -> Result<Charge, PaymentError> {\n    let max_attempts = 3;\n    let mut attempt = 1;\n    loop {\n        let req = ChargeRequest {\n            amount_cents: order.total_cents,\n            currency: order.currency.clone(),\n            customer_id: order.customer_id.clone(),\n            idempotency_key: Uuid::new_v4().to_string(), //!issue:1\n        };\n        match timeout(Duration::from_secs(5), self.psp.create_charge(req)).await {\n            Ok(Ok(charge)) => return Ok(charge),\n            Ok(Err(e)) if !e.is_retryable() || attempt >= max_attempts => return Err(e),\n            Err(_elapsed) if attempt >= max_attempts => return Err(PaymentError::Timeout),\n            _ => {}\n        }\n        sleep(backoff_with_jitter(attempt)).await;\n        attempt += 1;\n    }\n}",
+        "csharp": "public async Task<Charge> ChargeOrderAsync(Order order, CancellationToken ct)\n{\n    const int maxAttempts = 3;\n    for (var attempt = 1; ; attempt++)\n    {\n        var options = new RequestOptions { IdempotencyKey = Guid.NewGuid().ToString() }; //!issue:1\n        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);\n        timeout.CancelAfter(TimeSpan.FromSeconds(5));\n        try\n        {\n            return await _charges.CreateAsync(new ChargeCreateOptions\n            {\n                Amount = order.TotalCents,\n                Currency = order.Currency,\n                Customer = order.CustomerId,\n            }, options, timeout.Token);\n        }\n        catch (Exception ex) when (attempt < maxAttempts && IsRetryable(ex))\n        {\n            await Task.Delay(BackoffWithJitter(attempt), ct);\n        }\n    }\n}",
+        "java": "public Charge chargeOrder(Order order) throws PaymentException, InterruptedException {\n    final int maxAttempts = 3;\n    for (int attempt = 1; ; attempt++) {\n        ChargeRequest request = ChargeRequest.builder()\n                .amountCents(order.totalCents())\n                .currency(order.currency())\n                .customerId(order.customerId())\n                .idempotencyKey(UUID.randomUUID().toString()) //!issue:1\n                .timeout(Duration.ofSeconds(5))\n                .build();\n        try {\n            return psp.createCharge(request);\n        } catch (PaymentException e) {\n            if (attempt >= maxAttempts || !e.isRetryable()) {\n                throw e;\n            }\n            Thread.sleep(backoffWithJitter(attempt));\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "A new random idempotency key is generated for every attempt, so the processor sees each retry as a brand new charge; a timed-out attempt that actually succeeded is charged again",
+          "fix": "Derive the key from the business operation and reuse it on every attempt, e.g. a key minted once per order payment and persisted with the order before the first call (or `charge:{orderId}:{paymentAttemptId}`), so retries from this loop, a redelivered job, or a restarted pod all send the same key."
+        }
+      ],
+      "explanation": "A client timeout is an unknown outcome, not a failure: attempt 1 (ch_9QW) was still being processed and succeeded at 14:21:10, after we had given up and sent attempt 2. Idempotency keys exist exactly for this case, but only if the retry presents the same key; a fresh UUID per attempt tells the processor these are different requests, so it executes both. The backoff and jitter are fine and irrelevant to the duplicate charges, and raising the timeout to 10 s only moves the threshold. The key also has to survive beyond this function: if the checkout request itself is retried by the client or the job is redelivered, a key generated inside `chargeOrder` is new again, so it should be persisted with the order. Staff-level takeaway: retrying a side effect is safe only when the retry is provably the same request, and the idempotency key must be tied to the business operation, not to the attempt.",
+      "tags": ["on-the-job", "interview", "gotcha"]
+    },
+    {
+      "id": "dbgc-chunk-offset-shift-overflow-01",
+      "domain": "debugging",
+      "concepts": ["integer-overflow", "production-debugging"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 4,
+      "title": "Downloads of large objects fail at exactly the 2 GiB mark",
+      "prompt": "The blob service stores objects as 1 MiB chunks and serves HTTP Range requests by mapping each chunk's index from the manifest to a byte range. A customer started uploading video masters between 2 and 4 GiB, and every download of those objects fails as soon as the client reaches byte 2,147,483,648; everything before that point is byte-perfect. The engineer on call points out that the offsets are already 64-bit. Find the bug.",
+      "context": "```\nERROR range lookup failed object=obj_2f9a size=3221225472 chunk=2048\n      range start -2147483648 out of bounds for object size 3221225472\nINFO  chunks 0..2047 served OK for obj_2f9a\n```",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "const CHUNK_SHIFT = 20; // 1 MiB chunks\nconst CHUNK_SIZE = 1 << CHUNK_SHIFT;\n\n// chunk.index comes from the protobuf field `int32 index = 1`.\nexport function chunkRange(chunk: ChunkRef, objectSize: number): ByteRange {\n  const start = chunk.index << CHUNK_SHIFT; //!issue:1\n  if (start < 0 || start >= objectSize) {\n    throw new RangeError(`range start ${start} out of bounds for object size ${objectSize}`);\n  }\n  const end = Math.min(start + CHUNK_SIZE, objectSize) - 1;\n  return { start, end };\n}",
+        "go": "const chunkShift = 20 // 1 MiB chunks\nconst chunkSize = int64(1) << chunkShift\n\n// ChunkRef.Index is generated from the protobuf field `int32 index = 1`.\nfunc ChunkRange(chunk *pb.ChunkRef, objectSize int64) (ByteRange, error) {\n\tstart := int64(chunk.Index << chunkShift) //!issue:1\n\tif start < 0 || start >= objectSize {\n\t\treturn ByteRange{}, fmt.Errorf(\"range start %d out of bounds for object size %d\", start, objectSize)\n\t}\n\tend := min(start+chunkSize, objectSize) - 1\n\treturn ByteRange{Start: start, End: end}, nil\n}",
+        "rust": "const CHUNK_SHIFT: u32 = 20; // 1 MiB chunks\nconst CHUNK_SIZE: i64 = 1 << CHUNK_SHIFT;\n\n/// `chunk.index` is generated by prost from the protobuf field `int32 index = 1`.\npub fn chunk_range(chunk: &ChunkRef, object_size: i64) -> Result<ByteRange, RangeError> {\n    let start = (chunk.index << CHUNK_SHIFT) as i64; //!issue:1\n    if start < 0 || start >= object_size {\n        return Err(RangeError::OutOfBounds { start, object_size });\n    }\n    let end = (start + CHUNK_SIZE).min(object_size) - 1;\n    Ok(ByteRange { start, end })\n}",
+        "csharp": "private const int ChunkShift = 20; // 1 MiB chunks\nprivate const long ChunkSize = 1L << ChunkShift;\n\n// chunk.Index is generated from the protobuf field `int32 index = 1`.\npublic static ByteRange ChunkRange(ChunkRef chunk, long objectSize)\n{\n    long start = chunk.Index << ChunkShift; //!issue:1\n    if (start < 0 || start >= objectSize)\n        throw new ArgumentOutOfRangeException(nameof(chunk), $\"range start {start} out of bounds for object size {objectSize}\");\n\n    var end = Math.Min(start + ChunkSize, objectSize) - 1;\n    return new ByteRange(start, end);\n}",
+        "java": "private static final int CHUNK_SHIFT = 20; // 1 MiB chunks\nprivate static final long CHUNK_SIZE = 1L << CHUNK_SHIFT;\n\n// chunk.getIndex() is generated from the protobuf field `int32 index = 1`.\npublic static ByteRange chunkRange(ChunkRef chunk, long objectSize) {\n    long start = chunk.getIndex() << CHUNK_SHIFT; //!issue:1\n    if (start < 0 || start >= objectSize) {\n        throw new IllegalArgumentException(\n                \"range start \" + start + \" out of bounds for object size \" + objectSize);\n    }\n    long end = Math.min(start + CHUNK_SIZE, objectSize) - 1;\n    return new ByteRange(start, end);\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The shift is evaluated in 32-bit signed arithmetic and only then widened to 64 bits, so chunk 2048 << 20 wraps to -2^31 (and chunk 4096 wraps to 0, silently serving the wrong bytes)",
+          "fix": "Widen before shifting: `int64(chunk.Index) << chunkShift`, `(chunk.index as i64) << CHUNK_SHIFT`, `(long)chunk.Index << ChunkShift`, `(long) chunk.getIndex() << CHUNK_SHIFT`; in TypeScript use `chunk.index * CHUNK_SIZE`, since JS bitwise operators always work on 32-bit integers. Add a test at chunk 2047, 2048 and 4096."
+        }
+      ],
+      "explanation": "The destination is 64-bit, which is why the code looks safe, but the expression's type is decided by its operands: an `int32` shifted left stays `int32`, and the widening happens after the bits are already gone. 2048 x 2^20 = 2^31 lands exactly on the sign bit, giving -2,147,483,648, which matches the log. None of these languages trap here: Go, C# and Java wrap silently, Rust's overflow checks cover the shift amount but not bits shifted out, and JavaScript's `<<` converts to int32 by definition. The bounds check catches 2 to 4 GiB only by luck; at chunk 4096 the value wraps to 0 and the service would return the first megabyte as if it were the 4 GiB mark, silent corruption that no error log would show. Staff-level takeaway: overflow bugs live in intermediate expressions, so review where widening happens, and test sizes across the 2^31 and 2^32 boundaries before customers do.",
+      "tags": ["gotcha"]
+    },
+    {
+      "id": "dbgc-timeout-without-cancel-01",
+      "domain": "debugging",
+      "concepts": ["cancellation", "production-debugging"],
+      "skill": "design",
+      "type": "bug_hunt",
+      "difficulty": 5,
+      "title": "Gateway timeouts that keep a brownout going for 25 minutes",
+      "prompt": "The search gateway gives the search cluster a 2 s budget and serves cached \"popular results\" on timeout. During yesterday's incident the gateway behaved as designed from the user's side: p99 held at 2.0 s and users saw fallback results. But the cluster never recovered on its own. A bad index merge was reverted at 13:06, yet cluster CPU stayed at 100% until 13:31, its slow log shows queries completing 30 to 94 s after they were issued, and the backlog drained within 70 s only once we rate-limited the gateway. Find the bug in the gateway that turned a brief brownout into a sustained one.",
+      "context": "```\n13:02  search p50 latency 80ms -> 6.1s ; gateway fallback_rate 0% -> 97%\n13:06  bad merge reverted\n13:06-13:31  search executing_queries 3,900 (normal: 40) ; cpu 100%\n13:06-13:31  gateway fallback_rate 97% ; gateway -> search request rate unchanged (2,100/s)\n13:31  gateway rate-limited to search at 300/s ; executing_queries -> 40 by 13:32\n```",
+      "language": null,
+      "estSeconds": 330,
+      "code": {
+        "ts": "const SEARCH_BUDGET_MS = 2_000;\n\nexport async function handleSearch(req: Request, res: Response): Promise<void> {\n  const q = parseQuery(req);\n  const search = fetch(`${SEARCH_URL}/query`, { //!issue:1\n    method: \"POST\",\n    headers: { \"content-type\": \"application/json\" },\n    body: JSON.stringify(q),\n  })\n    .then((r) => r.json() as Promise<SearchResult>)\n    .catch(() => null);\n  const timedOut = sleep(SEARCH_BUDGET_MS).then(() => null);\n  const result = await Promise.race([search, timedOut]); //!issue:1\n  res.json(result ?? (await popularResults(q)));\n}",
+        "go": "const searchBudget = 2 * time.Second\n\nfunc (g *Gateway) HandleSearch(w http.ResponseWriter, r *http.Request) {\n\tq := parseQuery(r)\n\tresults := make(chan []Hit, 1)\n\tgo func() {\n\t\thits, err := g.search.Query(context.Background(), q) //!issue:1\n\t\tif err != nil {\n\t\t\thits = nil\n\t\t}\n\t\tresults <- hits\n\t}()\n\tselect {\n\tcase hits := <-results:\n\t\tif hits != nil {\n\t\t\twriteJSON(w, hits)\n\t\t\treturn\n\t\t}\n\tcase <-time.After(searchBudget): //!issue:1\n\t}\n\twriteJSON(w, g.popular(q))\n}",
+        "rust": "const SEARCH_BUDGET: Duration = Duration::from_secs(2);\n\npub async fn handle_search(State(gw): State<Arc<Gateway>>, Query(q): Query<SearchQuery>) -> Json<Vec<Hit>> {\n    let search = gw.search.clone();\n    let query = q.clone();\n    let handle = tokio::spawn(async move { search.query(&query).await }); //!issue:1\n    match timeout(SEARCH_BUDGET, handle).await { //!issue:1\n        Ok(Ok(Ok(hits))) => Json(hits),\n        _ => Json(gw.popular(&q).await),\n    }\n}",
+        "csharp": "private static readonly TimeSpan SearchBudget = TimeSpan.FromSeconds(2);\n\n[HttpGet(\"search\")]\npublic async Task<IActionResult> Search([FromQuery] SearchQuery q)\n{\n    try\n    {\n        var hits = await _search.QueryAsync(q).WaitAsync(SearchBudget); //!issue:1\n        return Ok(hits);\n    }\n    catch (Exception ex) when (ex is TimeoutException or HttpRequestException)\n    {\n        return Ok(await _popular.GetAsync(q));\n    }\n}",
+        "java": "private static final Duration SEARCH_BUDGET = Duration.ofSeconds(2);\n\n@GetMapping(\"/search\")\npublic List<Hit> search(SearchQuery q) {\n    CompletableFuture<List<Hit>> pending = searchClient.queryAsync(q); //!issue:1\n    try {\n        return pending.get(SEARCH_BUDGET.toMillis(), TimeUnit.MILLISECONDS); //!issue:1\n    } catch (TimeoutException | ExecutionException e) {\n        return popularResults.get(q);\n    } catch (InterruptedException e) {\n        Thread.currentThread().interrupt();\n        return popularResults.get(q);\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The 2 s budget only stops the gateway waiting; the downstream query is never cancelled and never told the deadline, so every abandoned request keeps running on the cluster and the offered load never drops",
+          "fix": "Propagate cancellation and the deadline to the downstream call: derive it from the request context with the budget (Go `context.WithTimeout(r.Context(), budget)`, TS `AbortSignal.timeout` combined with the request's signal, C# a linked token with CancelAfter passed to QueryAsync, Rust `timeout(budget, search.query(&q))` without spawn or `handle.abort()`, Java a client-side deadline plus `cancel`), send the deadline to the cluster (for example a timeout parameter or header) so it abandons expired work, and shed load when the fallback rate spikes."
+        }
+      ],
+      "explanation": "Each variant times out the wait, not the work: `Promise.race` and `WaitAsync` leave the operation running, the Go goroutine uses `context.Background()`, dropping a Tokio `JoinHandle` detaches the task rather than aborting it, and `Future.get` with a timeout does not cancel the future. So at 97% fallback the gateway still sends 2,100 queries per second, and the cluster spends all its capacity finishing queries whose callers left 30 to 90 s ago. Throughput of useful work is near zero, queues never shrink, and the system stays in a metastable failure after the trigger is gone, exactly what the rate limit at 13:31 proved. Adding retries or a circuit breaker helps but treats the symptom; the core bug is that the gateway's deadline is not part of the downstream request. Staff-level takeaway: a timeout that does not propagate cancellation and the deadline downstream protects your latency while converting the dependency's brownout into a sustained overload.",
+      "references": ["Bronson et al., Metastable Failures in Distributed Systems (HotOS 2021)"],
+      "tags": ["on-the-job", "interview"]
+    }
+  ]
+}

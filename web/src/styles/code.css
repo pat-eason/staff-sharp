@@ -1,0 +1,74 @@
+.code {
+  font: 13px/1.65 var(--font-mono); font-variant-ligatures: none; color: var(--code-fg); border-radius: var(--r-md); overflow-x: auto; padding: 10px 0;
+  background: var(--code-bg);
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.7);
+  counter-reset: line;
+}
+.code-line { display: flex; align-items: flex-start; min-width: max-content; padding-right: 16px; cursor: pointer; position: relative; }
+.code.readonly .code-line { cursor: default; }
+.code:not(.readonly) .code-line:hover { background: var(--code-hover); }
+.code-num { flex: none; width: 46px; padding-right: 12px; text-align: right; color: var(--code-num); user-select: none; }
+.code-src { white-space: pre; flex: 1; }
+.code-add {
+  position: absolute; left: 4px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; border-radius: 50%;
+  display: none; place-items: center; font: 700 13px/1 var(--font-head); color: #fff; background: var(--accent);
+}
+.code-line:hover .code-add, .code-line:focus-visible .code-add { display: grid; }
+.code-line.has-comment { background: rgba(134, 174, 211, 0.12); box-shadow: inset 3px 0 0 var(--navy-300); }
+.code-line.editing { background: rgba(255, 106, 43, 0.12); box-shadow: inset 3px 0 0 var(--accent-hi); }
+.code-line.issue { background: rgba(47, 158, 108, 0.16); box-shadow: inset 3px 0 0 var(--good); }
+.code-line.issue.has-comment { background: rgba(47, 158, 108, 0.26); }
+.code-line.false-flag { background: rgba(210, 58, 0, 0.14); box-shadow: inset 3px 0 0 var(--accent); }
+
+.code-editor, .code-comment, .code-issue {
+  margin: 4px 16px 8px 46px; padding: 10px 12px; border-radius: 12px; font-family: var(--font-body); font-size: 13.5px; line-height: 1.5;
+  white-space: normal; min-width: 280px;
+}
+.code-editor { display: flex; flex-direction: column; gap: 8px; background: var(--porcelain-grad); color: var(--navy); box-shadow: var(--porcelain-edge); }
+.code-editor .textarea { min-height: 70px; color: var(--navy); background: #fff; box-shadow: inset 0 1px 3px rgba(9, 39, 66, 0.2), inset 0 0 0 1px rgba(9, 39, 66, 0.15); }
+.code-editor .seg { background: #e6ebe3; box-shadow: inset 0 1px 3px rgba(9, 39, 66, 0.18); }
+.code-editor .seg button { color: var(--ink-soft); text-transform: capitalize; }
+.code-editor .seg button.on { color: #fff; background: linear-gradient(180deg, var(--navy-600), var(--navy)); }
+.code-editor .btn.ghost { color: var(--navy); box-shadow: inset 0 0 0 1px rgba(9, 39, 66, 0.2); }
+.code-comment { display: flex; gap: 10px; align-items: flex-start; color: var(--code-fg); background: rgba(134, 174, 211, 0.14); box-shadow: inset 0 0 0 1px rgba(134, 174, 211, 0.25); }
+.code-comment.off { background: rgba(210, 58, 0, 0.14); box-shadow: inset 0 0 0 1px rgba(255, 106, 43, 0.35); }
+.code-issue { color: var(--code-fg); background: rgba(47, 158, 108, 0.16); box-shadow: inset 0 0 0 1px rgba(47, 158, 108, 0.4); display: flex; flex-direction: column; gap: 6px; }
+.code-issue .muted { color: var(--code-fg); opacity: 0.8; }
+
+.tk-kw { color: var(--tk-kw); }
+.tk-ty { color: var(--tk-ty); }
+.tk-str { color: var(--tk-str); }
+.tk-com { color: var(--tk-com); font-style: italic; }
+.tk-num { color: var(--tk-num); }
+.tk-fn { color: var(--tk-fn); font-weight: 600; }
+.tk-plain { color: var(--code-fg); }
+
+/* ---------------------------------------------------------------- diagram */
+.diagram { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 0; border-radius: var(--r-md); overflow: hidden; height: 520px;
+  box-shadow: inset 0 0 0 1px rgba(9, 39, 66, 0.15), 0 2px 8px rgba(9, 39, 66, 0.15); background: #fff; }
+.diagram-palette { overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(9, 39, 66, 0.25) transparent; padding: 10px; display: flex; flex-direction: column; gap: 4px; background: linear-gradient(180deg, #eef2ea, #e3e9e0); border-right: 1px solid rgba(9, 39, 66, 0.1); }
+.diagram-palette button {
+  display: flex; align-items: center; gap: 8px; text-align: left; border: 0; cursor: pointer; padding: 7px 9px; border-radius: 10px;
+  font: 500 12.5px var(--font-body); color: var(--navy); background: linear-gradient(180deg, #fff, #f5f7f2);
+  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px rgba(9, 39, 66, 0.12);
+}
+.diagram-palette button:hover { box-shadow: inset 0 1px 0 #fff, 0 0 0 1px var(--navy-400); }
+.diagram-canvas { position: relative; background: radial-gradient(circle at 1px 1px, rgba(9, 39, 66, 0.12) 1px, transparent 0) 0 0 / 18px 18px, #fbfcf8; }
+.diagram-help { position: absolute; left: 12px; bottom: 10px; z-index: 5; font-size: 12px; color: var(--ink-soft); background: rgba(254, 255, 250, 0.9); padding: 4px 10px; border-radius: 999px; box-shadow: 0 0 0 1px rgba(9, 39, 66, 0.1); pointer-events: none; }
+.dnode {
+  min-width: 120px; max-width: 200px; padding: 8px 12px; border-radius: 14px; text-align: center; color: var(--navy);
+  background: linear-gradient(180deg, #ffffff, #eef2ea);
+  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px rgba(9, 39, 66, 0.25), 0 6px 12px -6px rgba(9, 39, 66, 0.5);
+  font: 500 12.5px var(--font-body);
+}
+.dnode.selected { box-shadow: inset 0 1px 0 #fff, 0 0 0 2px var(--accent), 0 8px 16px -6px rgba(210, 58, 0, 0.4); }
+.dnode-type { display: block; font: 700 9.5px var(--font-head); letter-spacing: 0.12em; text-transform: uppercase; color: var(--navy-400); margin-bottom: 2px; }
+.dnode input { width: 100%; border: 0; background: transparent; text-align: center; font: 600 13px var(--font-head); color: var(--navy); outline: none; padding: 0; }
+.dnode.note { background: linear-gradient(180deg, #fff9e6, #fbefc8); border-radius: 4px; }
+.diagram .react-flow__handle { width: 9px; height: 9px; background: var(--navy-600); border: 2px solid #fff; }
+.diagram .react-flow__edge-path { stroke: var(--navy-600); stroke-width: 1.6; }
+.diagram .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent); }
+.diagram .react-flow__edge-textbg { fill: #fefffa; }
+.diagram .react-flow__edge-text { font: 600 11px var(--font-body); fill: var(--navy); }
+.diagram .react-flow__controls button { background: #fff; border-bottom-color: #e3e8e0; }
+@media (max-width: 760px) { .diagram { grid-template-columns: 1fr; height: auto; } .diagram-palette { flex-direction: row; flex-wrap: wrap; max-height: 140px; } .diagram-canvas { height: 440px; } }

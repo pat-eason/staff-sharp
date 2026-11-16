@@ -1,0 +1,884 @@
+{
+  "file": "leadership",
+  "questions": [
+    {
+      "id": "lead-strategy-missing-diagnosis-01",
+      "domain": "leadership",
+      "concepts": ["technical-strategy"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "The platform strategy that is really a wish list",
+      "prompt": "Your VP of Engineering asks you to review this draft before it is presented at the engineering all-hands next week. What is the most important gap?",
+      "context": "```\n## 2027 Platform Strategy\n\nGoals\n- Be the best developer platform in the industry\n- Reduce incidents by 50%\n- Migrate every service to Kubernetes\n- Improve developer happiness (eNPS +20)\n\nInitiatives\n- Kubernetes migration (Q1-Q4)\n- New CI system (Q2)\n- Observability revamp (Q3)\n- Golden-path service templates (Q4)\n```",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "It has no diagnosis: nothing names what actually causes the incidents or slows developers, so nothing explains why these initiatives beat the alternatives" },
+        { "id": "b", "text": "The goals have no owners or quarterly milestones, so nobody will be able to tell at the next all-hands whether the plan is on track" },
+        { "id": "c", "text": "It commits to too many initiatives for one year and should be cut to the two with the highest expected return on engineering time" },
+        { "id": "d", "text": "The goals are not measurable; \"best developer platform in the industry\" should be replaced with a benchmark such as DORA lead time" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Without a diagnosis there is no way to judge whether Kubernetes or a new CI system addresses the real obstacle. Everything else in the doc depends on it.",
+        "b": "Owners and milestones matter, but they make an unjustified plan trackable, not right.",
+        "c": "You cannot know which initiatives have the highest return until you know what problem you are solving.",
+        "d": "Sharper goals are an improvement, but a list of measurable goals is still a list of goals, not a strategy."
+      },
+      "explanation": "Rumelt's kernel of strategy is diagnosis, guiding policy and coherent actions. This draft skips straight from aspirations to a project list, which is the classic shape of a bad strategy: it sounds ambitious, but nobody can argue with it because it never says what the hard problem is. Ask the author what evidence (incident reviews, developer surveys, lead-time data) points at the obstacle, then check that each initiative attacks it. Takeaway: a strategy without a diagnosis is a wish list with dates.",
+      "references": ["Richard Rumelt, Good Strategy Bad Strategy (2011), ch. 5 \"The Kernel of Good Strategy\""],
+      "tags": ["on-the-job", "classic"]
+    },
+    {
+      "id": "lead-rfc-holdout-objection-01",
+      "domain": "leadership",
+      "concepts": ["rfc-writing", "influence"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "One staff engineer is blocking your mTLS RFC",
+      "prompt": "You authored RFC-112. The decision meeting is Thursday and your director is the named decider. What is the best move before Thursday?",
+      "context": "**RFC-112: Replace shared API keys with mTLS via the service mesh**\n\n- In review for 3 weeks; 9 of 11 owning teams have approved\n- Marco (staff engineer, Payments) has left 14 comments. His latest:\n\n> This puts a sidecar hop on the authorize path. We have a 120 ms p99 budget and a PCI audit in Q1. -1 until I see numbers for our path, not a vendor blog post.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Meet Marco before Thursday, benchmark the sidecar on the authorize path together, and update the RFC with the results plus either a Payments rollout plan or his recorded dissent" },
+        { "id": "b", "text": "Point out that 9 of 11 teams approved and ask the director to decide on Thursday, since an RFC process should not require unanimous consent" },
+        { "id": "c", "text": "Give Payments a permanent exemption from the mesh so the RFC can be approved Thursday without further objection from Marco" },
+        { "id": "d", "text": "Reply in the doc thread with published Envoy sidecar latency benchmarks that show sub-millisecond overhead at the 99th percentile" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "It treats the objection as information, produces the specific evidence he asked for, and turns Thursday into a decision with the real tradeoff on the table.",
+        "b": "True that consent is not unanimity, but Payments owns the hardest constraint. Overriding them without data creates a resentful owner of the riskiest rollout.",
+        "c": "Buys agreement by fragmenting the security model; the exemption will outlive everyone's memory of why it exists.",
+        "d": "He explicitly rejected generic benchmarks, and a public thread rebuttal escalates the argument instead of resolving it."
+      },
+      "explanation": "The holdout with the most at stake is the person whose objection most needs to be answered, not outvoted. Marco named a concrete, testable concern (p99 on one path, audit timing), so the cheapest path to a durable decision is to measure it with him and bring the result to the decider. If the numbers are bad, the RFC improves (a phased Payments rollout after the audit); if they are fine, he has his evidence; either way, any remaining disagreement goes on record. Takeaway: shepherding an RFC means converting objections into evidence or explicit, recorded tradeoffs before the decision meeting.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-adr-supersede-01",
+      "domain": "leadership",
+      "concepts": ["architecture-decisions", "culture"],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Recording a decision that reverses an old ADR",
+      "prompt": "Two years ago the team wrote ADR-0017, \"Use Postgres logical replication for CDC into the warehouse\". After repeated replication-slot incidents, the team has now agreed to move to Debezium. How should the decision log be updated?",
+      "language": null,
+      "estSeconds": 45,
+      "options": [
+        { "id": "a", "text": "Write ADR-0042 with its own context and consequences, mark ADR-0017 as \"Superseded by ADR-0042\", link both ways, and leave 0017's text intact" },
+        { "id": "b", "text": "Edit ADR-0017 in place to describe Debezium, so the decision log always describes the architecture as it exists today" },
+        { "id": "c", "text": "Delete ADR-0017 from the repository, so nobody finds the outdated decision and builds new pipelines on logical replication" },
+        { "id": "d", "text": "Note the switch in the CDC service README, since ADRs capture the initial design and later changes belong in service docs" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "ADRs are an append-only log: the old record keeps the reasoning that was sound at the time, and the new one explains what changed.",
+        "b": "Rewriting history loses why logical replication was chosen and what we learned, which is exactly what stops the next team repeating it.",
+        "c": "Deletion removes the evidence trail; a superseded status already prevents people from following it.",
+        "d": "Significant reversals are decisions in their own right and deserve the same context and consequences as the original."
+      },
+      "explanation": "Michael Nygard's ADR format treats records as immutable: each has a status (proposed, accepted, deprecated, superseded), and a reversal is a new ADR that references the old one. The value of the log is the reasoning over time, including decisions that turned out wrong and why. Takeaway: never edit a decision away; supersede it, so the next person can see both what you believed and what changed your mind.",
+      "references": ["Michael Nygard, \"Documenting Architecture Decisions\" (2011)"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "lead-disagree-director-mandate-01",
+      "domain": "leadership",
+      "concepts": ["communicating-up", "influence"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Your director mandates Rust for every new service",
+      "prompt": "At the engineering all-hands, Director Dana announces: \"Starting Q2, all new services will be written in Rust, for memory safety and performance.\" You are the staff engineer for the platform group. You believe the mandate will slow delivery for little gain. What should you do first?",
+      "context": "- 85% of the 120 services are Go; the rest are Kotlin and Python\n- 2 of 45 engineers have shipped production Rust\n- Last year's Sev1s: 0 caused by memory-safety bugs; 2 services have hard latency problems (bidding, image resize)",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Ask Dana for a 1:1, learn the problem behind the mandate, then bring data (incident causes, hiring, latency profiles) and a scoped alternative such as Rust for the two latency-critical services" },
+        { "id": "b", "text": "Raise the objection in the all-hands Q&A so the many engineers who share your concern can be heard together before the decision hardens" },
+        { "id": "c", "text": "Accept the mandate publicly, and quietly keep your group on Go for new services until leadership notices the cost and revisits the policy" },
+        { "id": "d", "text": "Write an RFC arguing against the mandate and gather sign-off from the other staff engineers before you share it with Dana" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Private first, curious first, evidence second, and an alternative that solves her real problem. If she still decides otherwise, you commit.",
+        "b": "Public challenge in front of the org forces her to defend the position rather than reconsider it.",
+        "c": "Silent non-compliance destroys trust and leaves the org with two strategies, one of them secret.",
+        "d": "Building a coalition behind her back reads as a campaign against her; she should see your argument before anyone else does."
+      },
+      "explanation": "Disagreeing well with a leader means assuming there is a real problem behind the mandate (maybe a security finding, a customer requirement or a cost target you have not seen), going to them privately, and bringing evidence plus an option that addresses their goal. The data here suggests a scoped adoption would capture most of the benefit. If Dana hears you out and keeps the mandate, you disagree and commit, and help it succeed. Takeaway: challenge decisions privately with data and an alternative; never publicly, never around the decider, never by quiet non-compliance.",
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "lead-sponsor-not-mentor-01",
+      "domain": "leadership",
+      "concepts": ["mentoring-sponsorship"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Turning mentorship into sponsorship",
+      "prompt": "Aisha is a senior engineer on an adjacent team. She is technically ready for staff, but every project she has led stayed inside her team, and she was passed over in the last promotion cycle for \"limited org-level impact\". You have mentored her monthly for a year. Which action is sponsorship rather than mentorship?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        { "id": "a", "text": "Recommend her to your director as technical lead of the upcoming cross-team billing migration, and speak to her work in the next promotion calibration" },
+        { "id": "b", "text": "Move your mentoring sessions from monthly to weekly and work through a staff-level design document together, line by line" },
+        { "id": "c", "text": "Share your own promotion packet with her so she can see how you framed org-level impact for the committee" },
+        { "id": "d", "text": "Invite her to the staff engineers' reading group and send her your list of the best books on technical strategy" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "You spend your own credibility to get her a visible, org-level opportunity and advocate for her in rooms she is not in.",
+        "b": "Better mentoring, but it still builds skills she already has rather than the scope she lacks.",
+        "c": "Helpful advice about framing, but there is still no org-level impact to frame.",
+        "d": "Exposure to ideas, not to opportunity; nobody with influence changes their view of her."
+      },
+      "explanation": "Mentoring gives advice; sponsoring uses your position to put someone's name forward for stretch scope and to advocate for them where decisions are made. Aisha's gap is not knowledge but visible, org-level work, which only an opportunity can fix. The other options are all reasonable mentoring moves, which is why they are tempting. Takeaway: when someone is ready but invisible, more advice will not help; give them a project and your public backing.",
+      "references": ["Tanya Reilly, The Staff Engineer's Path (2022)"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-build-vs-buy-flags-01",
+      "domain": "leadership",
+      "concepts": ["build-vs-buy"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "\"Building our own flag service is cheaper\"",
+      "prompt": "Your head of engineering asks you to sanity-check this Slack argument before approving it. Which flaw matters most?",
+      "context": "> **#platform** Ty: Vendor quote is $84k/yr for 300 seats. Two of us can build a flag service in a quarter; it's basically a key-value store with a UI. At $240k fully loaded per engineer that's $120k **once** vs $84k **every year**. Building wins by year two.\n\nThe company runs services in Go, TypeScript, Kotlin and Swift. Flags are evaluated on the request path of every service.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "It compares a one-time build cost to a recurring fee; the build also carries SDKs in four languages, on-call for a request-path dependency, ongoing features, and two engineers' opportunity cost" },
+        { "id": "b", "text": "It ignores vendor price escalation; SaaS vendors commonly raise prices 20 to 30% at renewal, so the three-year vendor cost is much higher than $252k" },
+        { "id": "c", "text": "It ignores lock-in: once flags are embedded in hundreds of call sites, switching vendors later is costly, which favors building regardless of price" },
+        { "id": "d", "text": "It uses fully loaded cost; existing engineers are already paid, so the marginal cost of building is closer to zero and building wins even sooner" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "A flag system on the hot path is a tier-0 service. Even half an engineer ongoing ($120k/yr) erases the claimed saving, before counting what those engineers would otherwise ship.",
+        "b": "Escalation is a real negotiation point, but speculative, and it pushes the conclusion in the wrong direction (toward building).",
+        "c": "Lock-in is mitigated cheaply with a thin wrapper or an OpenFeature provider; it does not justify building a tier-0 system.",
+        "d": "Backwards: engineers are a scarce resource, and their time spent here is time not spent on the product. Opportunity cost is the largest line item."
+      },
+      "explanation": "The classic build-vs-buy error is comparing the build's first version to the vendor's ongoing price. Building means owning the system for its lifetime: client SDKs in every language, targeting rules, audit logs, percentage rollouts, high availability (if flags fail, every service degrades), upgrades and on-call. A realistic run cost of 0.5 to 1 FTE is $120k to $240k a year, well above the $84k licence, and the two builders are not shipping product for a quarter. Buy the non-differentiating commodity and wrap it behind a thin interface. Takeaway: in build vs buy, the build's cost is the total cost of ownership plus the opportunity cost, not the first quarter.",
+      "tags": ["on-the-job", "classic"]
+    },
+    {
+      "id": "lead-debt-pitch-pricing-01",
+      "domain": "leadership",
+      "concepts": ["tech-debt-strategy", "roadmapping"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Getting a pricing refactor funded on the third try",
+      "prompt": "The VP of Product has rejected two earlier \"refactor the pricing module\" proposals as \"engineering wants a quarter off\". Which pitch is most likely to get the work funded this time?",
+      "context": "- Pricing module: involved in 11 of the last 30 Sev2 incidents\n- Median lead time for a pricing change: 9 days (2 days elsewhere in the service)\n- H1 product roadmap: regional pricing, bundles, promo codes (all touch pricing)",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Tie it to the H1 roadmap: show the incident and lead-time data, and make refactoring the pricing seams the first milestone of regional pricing, with a target of lead time under 3 days" },
+        { "id": "b", "text": "Ask for a standing 20% of every sprint for tech debt, so the team can fix pricing and other hotspots without needing approval for each item" },
+        { "id": "c", "text": "Present a ranked list of the 25 worst debt items in the service with effort estimates, and ask the VP to choose which ones to fund this half" },
+        { "id": "d", "text": "Propose rewriting pricing as a new service over two quarters, since incremental fixes over the past year have not reduced the incident rate" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Speaks product's language (faster delivery of features they already want), uses evidence, and makes the return measurable.",
+        "b": "A reasonable general policy, but it is a bigger, vaguer version of the ask she already rejected twice, with no link to her goals.",
+        "c": "Hands an engineering prioritization call to product and reframes nothing in business terms.",
+        "d": "A larger, riskier version of what was rejected, and it delays the three features she cares about."
+      },
+      "explanation": "Debt gets funded when it is presented as the fastest route to outcomes the stakeholder already wants. Three H1 features run straight through the module, so the refactor is not competing with the roadmap; it is the first step of it. Quantify (incidents, a 4.5x lead-time penalty), scope it to the seams those features need, and commit to a measurable exit so the VP can see the return. Takeaway: do not sell debt paydown as engineering hygiene; sell it as the cheaper path to the next three things product wants.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-conway-checkout-01",
+      "domain": "leadership",
+      "concepts": ["org-design", "architecture-decisions"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Checkout features need three teams to agree",
+      "prompt": "Engineering leadership asks the staff engineers why checkout changes are slow and what should change. Which diagnosis and recommendation is strongest?",
+      "context": "| Team | Owns |\n| --- | --- |\n| Cart | cart-service |\n| Payments | payment-service, PSP integrations |\n| Orders | order-service, shared `checkout` DB schema |\n\nLast two quarters:\n- 14 of 17 checkout features required coordinated changes to all three services\n- 3.4 cross-team syncs per feature on average; a weekly \"checkout guild\" was added in Q2\n- Median lead time for a checkout feature: 6 weeks",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Team boundaries cut across the flow of change and the services mirror them; align one stream-aligned team and its service boundaries to checkout end to end, with PSP integrations as a complicated-subsystem team behind a stable API" },
+        { "id": "b", "text": "The teams lack coordination; add a dedicated TPM for checkout and a shared quarterly roadmap across all three teams so that dependencies are planned before work starts" },
+        { "id": "c", "text": "The shared database schema is the root cause; split it into three per-service databases with clear ownership so that each team can deploy its changes independently" },
+        { "id": "d", "text": "The services are too fine-grained; merge them into a single checkout service jointly owned by all three teams so that one deploy carries each feature end to end" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Recognizes Conway's law at work and applies the inverse Conway maneuver: shape teams around the flow of change and let the architecture follow, keeping the genuinely specialist part separate.",
+        "b": "Treats the symptom; more coordination capacity makes three-team features slightly less painful but keeps them three-team features.",
+        "c": "Splitting the data hardens the very boundaries that features keep crossing and adds distributed-data problems on top.",
+        "d": "Fixes the deploy unit but not ownership; a service jointly owned by three teams is effectively owned by none."
+      },
+      "explanation": "When 14 of 17 features touch all three services, the boundaries are in the wrong place: the system was decomposed along team lines (Conway's law) rather than along the way the business changes. The inverse Conway maneuver is to design the team structure you want the architecture to have: one team that owns the checkout flow, with the deep PSP and compliance work kept as a specialist subsystem behind an API that rarely changes. Coordination roles and data splits are tempting because they need no reorg, but they preserve the structure that causes the handoffs. Takeaway: when every change needs a meeting, look at team boundaries before you look at tooling.",
+      "references": ["Melvin Conway, \"How Do Committees Invent?\" (Datamation, 1968)", "Matthew Skelton and Manuel Pais, Team Topologies (2019)"],
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "lead-archetype-identify-01",
+      "domain": "leadership",
+      "concepts": ["staff-archetypes"],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Which staff archetype is Lena",
+      "prompt": "Lena is a staff engineer with no team of her own. Over the past year she spent about two months each on a cache-corruption bug that three teams had given up on, a runaway cost overrun in the data pipeline, and a stalled database migration. When each one lands, her VP points her at the next. Which staff archetype best describes her role?",
+      "language": null,
+      "estSeconds": 45,
+      "options": [
+        { "id": "a", "text": "Solver" },
+        { "id": "b", "text": "Tech Lead" },
+        { "id": "c", "text": "Architect" },
+        { "id": "d", "text": "Right Hand" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Goes deep on one hard, often ill-defined problem at a time, lands it, and moves on, usually directed by leadership.",
+        "b": "A Tech Lead guides one team's approach and execution over time; Lena has no team.",
+        "c": "An Architect owns direction and quality for a critical area over a long horizon, not a rotating set of fires.",
+        "d": "A Right Hand extends an executive's attention across the org's operations, borrowing their scope, rather than diving into technical problems."
+      },
+      "explanation": "Will Larson's four archetypes describe different shapes of staff work. Lena's pattern, a sequence of deep, high-stakes problems chosen by leadership and handed off once solved, is the Solver. The risk of the Solver role is that solved problems need owners afterward, so a good Solver leaves each area with a clear owner. Takeaway: knowing your archetype tells you what impact looks like and what failure modes to guard against.",
+      "references": ["Will Larson, Staff Engineer: Leadership Beyond the Management Track (2021), \"Staff archetypes\""],
+      "tags": ["classic"]
+    },
+    {
+      "id": "lead-bad-news-early-01",
+      "domain": "leadership",
+      "concepts": ["communicating-up"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "The ledger migration will miss the audit date",
+      "prompt": "You are tech lead for a ledger migration that the CFO committed to the auditors for March 31. On Tuesday, a load test shows the new ledger sustains 1,800 writes/s against a required 3,000. The fix is a partitioning change your team estimates at about six weeks. The next exec review is in three weeks. What do you do?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "Tell your manager and the exec sponsor this week: what you found, the impact on March 31, a revised range with your confidence, and options such as phasing or a temporary dual-write" },
+        { "id": "b", "text": "Spend two weeks prototyping the partitioning fix, so you can bring a precise new date and a proven plan to the exec review instead of a guess" },
+        { "id": "c", "text": "Ask the team to work weekends to recover the six weeks, and raise it at the exec review only if the gap has not closed by then" },
+        { "id": "d", "text": "Flag it as a yellow risk in the weekly status doc, so it is on record without alarming the CFO before you know the full impact" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Bad news early, with a range and options, gives the CFO three extra weeks to talk to the auditors or choose a fallback.",
+        "b": "Precision bought with three weeks of the sponsor's decision time is a bad trade; a range now is worth more than a date later.",
+        "c": "Six weeks cannot be recovered in three by overtime, and hiding it burns the team and the sponsor's trust together.",
+        "d": "Burying a missed external commitment as \"yellow\" is technically disclosed and practically hidden."
+      },
+      "explanation": "Executives can absorb bad news; what they cannot absorb is late bad news, because it removes their options. The auditor date is an external commitment the CFO owns, so the CFO needs to know as soon as you do, framed as: what happened, what it means for the date, a range you are confident in, and the choices available. Waiting for precision is the most tempting mistake because it feels responsible. Takeaway: surface a slipped commitment as soon as you know it, with a range and options, not when you have a perfect answer.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "lead-senior-conflict-thread-01",
+      "domain": "leadership",
+      "concepts": ["conflict-resolution"],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Kafka vs REST has turned personal in #architecture",
+      "prompt": "You are the staff engineer for both teams; neither engineer reports to you. Fulfillment's Q3 work starts in three weeks and depends on this decision. What do you do?",
+      "context": "**#architecture**, 62 replies over two days\n\n> **Sam** (senior, Orders): Kafka here is resume-driven development. We have 4 consumers.\n>\n> **Jo** (senior, Fulfillment): Sync REST is how we got the 3am cascading outage in March, but sure, let's do that again.\n>\n> **Sam**: That outage was a missing timeout, not REST. Read the postmortem.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Move it out of Slack: talk to each 1:1 to understand their concerns, then hold one session to agree on decision criteria and a decider, with both options written up in a single doc" },
+        { "id": "b", "text": "Post in the thread that as staff engineer you will make the call, choose the option you believe is technically right, and close the discussion" },
+        { "id": "c", "text": "Ask both managers to talk to their engineers about tone, and restart the technical discussion once things have cooled down" },
+        { "id": "d", "text": "Ask each engineer to write a separate RFC for their approach and let the architecture review board pick the winner" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Separates the people from the problem, surfaces the interests under the positions, and gives the decision a process and an owner inside the deadline.",
+        "b": "Fast, but it declares a winner and a loser publicly and skips learning why each of them holds their view.",
+        "c": "Managers may need to address tone, but outsourcing the whole thing stalls a decision that has a three-week clock.",
+        "d": "Competing documents turn it into a contest and entrench positions; one doc with both options forces shared framing."
+      },
+      "explanation": "Two seniors arguing positions in public will not converge, because conceding in front of the org costs face. Private 1:1s let each say what they actually fear (Sam: operating Kafka for 4 consumers; Jo: another cascading outage). A shared doc and agreed criteria, such as consumer count, failure isolation and operational cost, turn the argument into an evaluation, and naming a decider guarantees it ends on time. Often the answer combines both (REST with timeouts and bulkheads now, events where fan-out grows). Takeaway: when a technical debate turns personal, change the venue and agree how to decide before debating what to decide.",
+      "references": ["Roger Fisher and William Ury, Getting to Yes (1981)"],
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-debrief-evidence-01",
+      "domain": "leadership",
+      "concepts": ["hiring"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "A \"strong no\" with no evidence in a staff debrief",
+      "prompt": "You are on the hiring committee for a staff candidate. The hiring manager is chairing the debrief. What is the right way to handle interviewer D's score?",
+      "context": "| Interviewer | Area | Score (1-4) | Notes |\n| --- | --- | --- | --- |\n| A | System design | 3 | Clear tradeoffs; missed multi-region failover |\n| B | Coding | 3 | Clean, tested, a bit slow |\n| C | Leadership | 2 | Strong examples, all within one team |\n| D | Values | 1 | \"Not a culture fit. Something felt off. I wouldn't want to work with them.\" |",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "Ask D for the specific behaviors observed and the rubric competency they map to; if there are none, treat the score as uninformative and decide on the documented evidence" },
+        { "id": "b", "text": "Treat D's strong no as a veto, because a bad staff hire is very expensive and any strong concern from an interviewer should block the offer" },
+        { "id": "c", "text": "Average the four scores to 2.25 and apply the 2.5 hiring bar, which keeps the decision objective and stops any one opinion from dominating" },
+        { "id": "d", "text": "Schedule another interview with someone from D's team, so D's concern can be tested with more data before the committee decides" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Holds every signal to the same evidentiary standard. A concrete observation (dismissive of the junior interviewer, say) is valuable; a vibe is not.",
+        "b": "Unexplained \"culture fit\" vetoes are where affinity bias does the most damage, and they teach interviewers that feelings beat evidence.",
+        "c": "Looks objective but launders the unsupported score into the result; garbage in, average out.",
+        "d": "Adds candidate cost to chase a concern nobody can articulate yet; first find out whether there is one."
+      },
+      "explanation": "Calibrated hiring depends on scores that are backed by observed behavior and mapped to a defined competency. \"Culture fit\" without specifics usually means \"not like me\", which is how teams stay homogeneous. The right move is to ask for evidence, not to dismiss D outright: if D saw something real, it should count fully. If not, the committee should say so and the interviewer should get coaching on writing feedback. Takeaway: in a debrief, weigh evidence, not conviction; an unsupported strong opinion is noise, however strongly held.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-blameless-postmortem-lines-01",
+      "domain": "leadership",
+      "concepts": ["culture"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 1,
+      "title": "Spot the blameful lines in a postmortem draft",
+      "prompt": "You are reviewing a postmortem draft for an incident in which a migration ran against production instead of staging. Which lines undermine a blameless culture? Select all that apply.",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        { "id": "a", "text": "\"Root cause: Kevin ran the migration against prod instead of staging.\"" },
+        { "id": "b", "text": "\"The deploy tool accepts any environment name and shows no confirmation for prod.\"" },
+        { "id": "c", "text": "\"The on-call engineer should have known to check the replication-lag dashboard first.\"" },
+        { "id": "d", "text": "\"Action: require a second reviewer for manual prod migrations. Owner: DB team. Due: May 30.\"" },
+        { "id": "e", "text": "\"Human error was the primary contributing factor; the engineers involved will be retrained.\"" }
+      ],
+      "answer": ["a", "c", "e"],
+      "optionNotes": {
+        "a": "Names an individual as the root cause; the real question is why the system made this mistake easy.",
+        "b": "A system contributing factor, exactly what a postmortem should surface.",
+        "c": "Hindsight bias and counterfactual blame: \"should have known\" judges a person instead of asking why the signal was not obvious.",
+        "d": "A concrete systemic action with an owner and a date.",
+        "e": "\"Human error\" ends the inquiry where it should begin, and retraining puts the fix on people rather than the system."
+      },
+      "explanation": "A blameless postmortem assumes people acted reasonably given what they knew, and asks what in the system (tools, defaults, signals, pressure) made the failure possible. Naming individuals, \"should have\" counterfactuals and \"human error\" conclusions all teach engineers that reporting mistakes is dangerous, so the next one gets hidden. Blameless does not mean no accountability: accountability is owning systemic fixes with dates. Takeaway: if a postmortem's fix is \"be more careful\", the inquiry stopped too early.",
+      "references": ["Google, Site Reliability Engineering (2016), ch. 15 \"Postmortem Culture: Learning from Failure\"", "John Allspaw, \"Blameless PostMortems and a Just Culture\" (Etsy Code as Craft, 2012)"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "lead-one-page-update-01",
+      "domain": "leadership",
+      "concepts": ["communicating-up"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "What belongs in a one-page exec update",
+      "prompt": "You are writing the one-page monthly update for your VP on a nine-month data-residency program that a large EU customer contract depends on. Which items belong on that page? Select all that apply.",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "A one-sentence top-line status with your date confidence and what changed since last month" },
+        { "id": "b", "text": "The top three risks, each with its impact, an owner and the current mitigation" },
+        { "id": "c", "text": "A \"decisions and help needed\" section that says what you need and by when" },
+        { "id": "d", "text": "A table of every ticket closed this month by each engineer, to show team throughput" },
+        { "id": "e", "text": "A detailed walk-through of the shard-key choice and its alternatives, so the VP can judge the design" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "The VP may read only this line; it must carry status, confidence and the delta.",
+        "b": "Risks with owners let the VP see what could move the date and whether anyone is on it.",
+        "c": "The most valuable part of an upward update: what only the VP can unblock, with a deadline.",
+        "d": "Activity is not progress, and per-engineer ticket counts invite the wrong kind of attention.",
+        "e": "Design depth belongs in the design doc, linked; the VP needs the decision and its implications, not the derivation."
+      },
+      "explanation": "A good upward update answers three questions fast: are we on track (and how sure are we), what could change that, and what do you need from me. Everything else is a link. Engineers often pad updates with activity or design detail to show rigor, which buries the one thing the reader needs to act on. Takeaway: write the update for a reader with ninety seconds; status, risks and asks on one page, detail behind links.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-guiding-policy-resilience-01",
+      "domain": "leadership",
+      "concepts": ["technical-strategy"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Which statements are real guiding policies",
+      "prompt": "Given this diagnosis, which candidate statements are genuine guiding policies (as opposed to goals, slogans or action lists)? Select all that apply.",
+      "context": "**Diagnosis.** Our 40 services each implement retries, timeouts and service auth differently. 60% of last year's Sev1s began as a single dependency failure that cascaded because a caller had no timeout or retried without backoff. Teams copy client code from whichever service they last worked in, so fixes in one place never reach the others.",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        { "id": "a", "text": "\"Service-to-service calls go through one supported client library with mandatory timeouts and retry budgets; hand-rolled HTTP clients are not supported for new code.\"" },
+        { "id": "b", "text": "\"We will be a world-class reliability organization by the end of 2027.\"" },
+        { "id": "c", "text": "\"Resilience defaults are owned by the platform team and enforced in the paved path; teams may deviate only with a written, time-boxed exception.\"" },
+        { "id": "d", "text": "\"Launch six projects: a retry audit, a chaos day, a timeout dashboard, a client library, an SLO review and on-call training.\"" },
+        { "id": "e", "text": "\"Cut Sev1s caused by cascading dependency failures by 50% within twelve months.\"" }
+      ],
+      "answer": ["a", "c"],
+      "optionNotes": {
+        "a": "Directly attacks the mechanism in the diagnosis (copied, divergent client code) and rules an option out.",
+        "b": "A slogan; it guides no choice and could follow any diagnosis.",
+        "c": "Sets who owns the defaults and how exceptions work, which channels every later decision.",
+        "d": "A list of actions with no unifying approach; some reinforce each other, some are unrelated. Tempting because it is concrete.",
+        "e": "A useful goal and a good measure, but it says nothing about how to get there."
+      },
+      "explanation": "In Rumelt's kernel, the guiding policy is the overall approach chosen to overcome the obstacle named in the diagnosis. It constrains choices, which is why good ones always rule something out (hand-rolled clients, undocumented deviation). Goals and slogans describe the destination; action lists describe activity; neither tells a team what to do when an unlisted situation comes up. Takeaway: test a guiding policy by asking which reasonable option it forbids; if it forbids nothing, it is not guiding anything.",
+      "references": ["Richard Rumelt, Good Strategy Bad Strategy (2011), ch. 5 \"The Kernel of Good Strategy\""],
+      "tags": ["classic"]
+    },
+    {
+      "id": "lead-rfc-shepherd-order-01",
+      "domain": "leadership",
+      "concepts": ["rfc-writing"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Shepherding a cross-team RFC to a decision",
+      "prompt": "You want to move all teams from per-service Postgres instances to a shared managed cluster. Put the steps for taking the RFC from idea to recorded decision in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        { "id": "1", "text": "Agree on the problem statement 1:1 with the people most affected, before proposing any solution" },
+        { "id": "2", "text": "Write the draft with goals, non-goals and the alternatives you considered" },
+        { "id": "3", "text": "Pre-review it with the two or three people most likely to object, and revise" },
+        { "id": "4", "text": "Open it for broad comment with a deadline and a named decider" },
+        { "id": "5", "text": "Resolve or explicitly record every open objection, then get the decision made" },
+        { "id": "6", "text": "Publish the outcome as an ADR and link it from the RFC" }
+      ],
+      "explanation": "Most RFCs that die in review die because the author skipped the first and third steps: stakeholders never agreed there was a problem, and the strongest objections surfaced for the first time in a public thread. Agreeing on the problem first makes the solution debate shorter; pre-reviewing with skeptics turns opponents into co-authors. A deadline and named decider stop review from becoming an endless veto, and an ADR preserves the reasoning after the comment thread is forgotten. Takeaway: an RFC is landed in conversations before and after the document, not only in its comment thread."
+    },
+    {
+      "id": "lead-strategy-kernel-order-01",
+      "domain": "leadership",
+      "concepts": ["technical-strategy", "architecture-decisions"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Writing a storage strategy after three teams diverged",
+      "prompt": "In the last year, three teams adopted three different datastores (DynamoDB, CockroachDB, MongoDB) for new services, and on-call for each is now painful. Your VP asks you to write the engineering strategy for datastore choice. Order the work.",
+      "language": null,
+      "estSeconds": 105,
+      "items": [
+        { "id": "1", "text": "Collect evidence: the design docs, incidents and the reasons each team gave for its choice" },
+        { "id": "2", "text": "Write a diagnosis that names the core challenge and what makes it hard" },
+        { "id": "3", "text": "State a guiding policy that rules some datastores and practices in and others out" },
+        { "id": "4", "text": "Define coherent actions that reinforce one another, each with an owner" },
+        { "id": "5", "text": "Test the draft with the most skeptical affected teams, and revise it" },
+        { "id": "6", "text": "Publish it with the signals that would trigger a revisit, and a review date" }
+      ],
+      "explanation": "Good strategy is written bottom-up from real decisions: the three teams' design docs already contain the constraints and tradeoffs the strategy must address. The diagnosis comes before any policy, because a policy that does not answer the diagnosed problem (for example, \"the teams chose well-suited stores but nobody funds operating three\") is arbitrary. Actions follow policy so they reinforce one another. Testing with skeptics before publishing exposes the cases the policy handles badly, and naming revisit signals keeps the strategy from fossilizing. Takeaway: write strategy from evidence to diagnosis to policy to action, then let the people it constrains try to break it.",
+      "references": ["Richard Rumelt, Good Strategy Bad Strategy (2011), ch. 5 \"The Kernel of Good Strategy\""]
+    },
+    {
+      "id": "lead-disagree-escalate-order-01",
+      "domain": "leadership",
+      "concepts": ["influence", "conflict-resolution"],
+      "skill": "lead",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Disagreeing with a peer team's API decision",
+      "prompt": "A staff engineer on another team has decided to ship a new public API without versioning. You believe it will break the mobile apps, which update on a two-week release train and keep old versions alive for months. Order your steps.",
+      "language": null,
+      "estSeconds": 75,
+      "items": [
+        { "id": "1", "text": "Ask about the reasoning and constraints behind the decision" },
+        { "id": "2", "text": "Share your concern privately, with concrete evidence such as mobile version adoption curves" },
+        { "id": "3", "text": "Propose an alternative or a cheap mitigation they could adopt" },
+        { "id": "4", "text": "If it is still unresolved and the stakes are high, escalate together to a shared decider" },
+        { "id": "5", "text": "Once it is decided, commit to the outcome and record your dissent in the decision doc" }
+      ],
+      "explanation": "Start with curiosity: they may have a constraint you do not know about (an internal-only launch, a versioning scheme already planned). Then make the concern concrete and private, and lower the cost of agreeing by offering a mitigation. Escalation is a legitimate last step, but done jointly (\"we disagree, can you decide?\"), never around them. After the decision, commit fully; a recorded dissent preserves your reasoning without relitigating. Takeaway: escalate together, not around, and only after you have tried to make agreeing cheap."
+    },
+    {
+      "id": "lead-ft-async-jobs-strategy-01",
+      "domain": "leadership",
+      "concepts": ["technical-strategy"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Write the async jobs strategy for a fragmented org",
+      "prompt": "The CTO asks you for an engineering strategy on asynchronous work in four weeks. Outline the diagnosis, the guiding policy and the coherent actions you would propose, and explain how you would get the strategy adopted rather than just published.",
+      "context": "- 220 engineers, 26 teams, platform team of 5\n- Async mechanisms in production today:\n  - Postgres `jobs` table polled by cron: 11 services\n  - SQS with per-team consumer code: 9 services\n  - Redis + BullMQ library: 6 services\n- Last 12 months: 9 Sev1/Sev2 incidents involving async work (jobs lost on deploy, a poison message blocking a queue for 5 hours, `jobs` table bloat stalling the primary DB)\n- Two teams started a fourth approach (Temporal) last month for multi-step onboarding workflows",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Diagnosis names the real obstacle, not just the count of tools: nobody owns the cross-cutting failure modes (retries, dead-lettering, idempotency, visibility), so every team relearns them, and the incidents are evidence of that",
+          "Guiding policy makes a choice and rules things out, for example one supported queue path (and possibly one workflow engine for long-running multi-step work), with the polled Postgres table closed to new use",
+          "Takes an explicit position on Temporal by engaging the two teams, either sanctioning it for a defined workflow tier or redirecting them, rather than ignoring a fourth mechanism",
+          "Coherent actions fit a 5-person platform team: a paved-path library with DLQ, idempotency keys and metrics; migration ordered by incident risk (the Postgres table first); no big-bang deadline; a lightweight exception process",
+          "Adoption plan: socializes the draft with service owners and skeptics before publishing, makes migration cheap (templates, codemods, office hours), gets CTO endorsement, and names metrics and a date to revisit"
+        ],
+        "redFlags": [
+          "Jumps to a technology choice before stating a diagnosis",
+          "A list of goals or initiatives presented as the strategy",
+          "Mandates that all 26 services migrate within a quarter without regard to the platform team's capacity",
+          "Proposes building a new in-house job system, adding a fifth mechanism",
+          "Publishes the doc and treats adoption as the teams' problem"
+        ],
+        "exemplar": "**Diagnosis.** We do not have a queue problem; we have an ownership problem. Three mechanisms (now four) mean the hard parts of async work, at-least-once delivery, retries with backoff, dead-lettering, idempotency and visibility, are re-solved per team. All 9 incidents trace to one of those being missing. The Postgres `jobs` table also couples background load to our primary database.\n\n**Guiding policy.** Two supported tiers, owned by platform: SQS behind a shared library for fire-and-forget jobs, and Temporal for long-running multi-step workflows, which is the problem the onboarding teams correctly spotted. No new use of the polled `jobs` table or BullMQ; deviations need a written, time-boxed exception.\n\n**Coherent actions.** (1) Platform ships the SQS library with DLQ, idempotency keys and standard metrics and dashboards. (2) Migrate the `jobs`-table services first, ordered by incident history, with platform pairing on the first two. (3) Partner with the onboarding teams to harden Temporal as the workflow tier. (4) BullMQ services migrate as they are touched; no forced deadline.\n\n**Adoption.** Review the draft 1:1 with the leads of the largest users of each mechanism before publishing, get the CTO to endorse it at staff meeting, track migration on a public dashboard and revisit in two quarters against async incident count."
+      },
+      "explanation": "Strong answers diagnose before prescribing: the fragmentation matters because the failure modes are unowned, which the incidents prove. A real guiding policy chooses and forbids, deals honestly with the newest deviation (Temporal may be the right answer for workflows), and sizes the actions to the people who will do them. Strategy that is not adopted is just a document, so adoption mechanics (pre-socializing, cheap migration, visible progress, a revisit date) carry as much weight as the technical choice. Takeaway: a strategy is judged by the decisions it changes, so design for adoption from the first draft.",
+      "references": ["Richard Rumelt, Good Strategy Bad Strategy (2011)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "lead-ft-rfc-gateway-objections-01",
+      "domain": "leadership",
+      "concepts": ["rfc-writing"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Landing the gateway consolidation RFC in two weeks",
+      "prompt": "Your RFC to consolidate four API gateways into one Envoy-based gateway has been in review for three weeks. Your director says: \"I need a decision in two weeks.\" How do you land it? Be specific about who you talk to, what changes in the RFC and how the decision gets made.",
+      "context": "- 83 comments; the Mobile and Web teams support it\n- **Search** opposes: their custom gateway coalesces duplicate queries, saving about 30% of search-cluster CPU\n- **Partner API** opposes: they are mid-way through a contract that requires a bespoke HMAC auth flow to be live with a partner by the end of Q2\n- Ops cost of four gateways: about 1.5 FTE, plus three CVE patch cycles last year that each took two weeks across all gateways",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Takes both objections out of the comment thread into 1:1s with the Search and Partner API leads, and restates each objection in their terms until they agree it is accurate",
+          "Separates hard constraints from preferences: request coalescing can be an Envoy filter or a later migration phase; the Partner API contract date makes them last in the sequence, after Q2",
+          "Revises the RFC into a phased plan with explicit, time-boxed exceptions and non-goals, rather than an all-at-once cutover",
+          "Uses the business case (1.5 FTE, CVE patch cycles) to frame the decision for the director, and presents remaining disagreements honestly as options with tradeoffs",
+          "Makes sure the decision is made by the named decider on the date, records dissent, publishes an ADR, and checks back that the promised accommodations (filter, sequencing) actually happen"
+        ],
+        "redFlags": [
+          "Counts votes and declares majority approval",
+          "Asks the director to overrule the opposing teams without addressing their constraints",
+          "Answers each of 83 comments in the thread",
+          "Ignores the Partner API contract date in the migration plan",
+          "Waters the RFC down until it no longer decides anything"
+        ],
+        "exemplar": "Day 1 to 3: 1:1s with the Search and Partner API leads. I restate each concern until they say \"yes, that's it\". Search's is real and quantified: a 30% CPU saving they would lose. Partner API's is a date, not a design objection.\n\nThen I change the RFC. Phase 1 migrates Mobile and Web, the willing teams, and proves the platform. Phase 2 is Search, gated on porting coalescing as an Envoy filter, which I would ask the Search engineer who built it to co-own, with a CPU benchmark as the exit criterion. Phase 3 is Partner API after their Q2 delivery, with HMAC as a filter too. Each exception has an end date. Non-goals: no change to partner-facing contracts.\n\nI send the revised RFC to both leads before it goes public, and ask whether they can live with it. Week 2: the director decides in a 30-minute review. I present the cost of four gateways (1.5 FTE, three two-week CVE cycles), the phased plan, and any open disagreement in the objector's own words. The decision goes into an ADR with dissent noted. After that, I track the filter work so the promises we made to get agreement are kept."
+      },
+      "explanation": "Landing a contentious RFC is mostly stakeholder work: the two objections are different in kind (a technical capability and a delivery date), and each has a structural answer (port the capability, sequence around the date). Phasing lets the willing teams prove value while the hard cases get dedicated solutions with exit criteria. The decider decides on time, with dissent recorded, and the author follows through on the concessions or loses credibility for the next RFC. Takeaway: objections are requirements in disguise; turn each into a phase, a filter or a recorded tradeoff.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "lead-ft-influence-logging-migration-01",
+      "domain": "leadership",
+      "concepts": ["influence", "stakeholder-management"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Seven teams must migrate off the old logging stack",
+      "prompt": "You need seven product teams to move from the legacy logging pipeline to the new OpenTelemetry-based SDK before the legacy vendor contract renews in six months at $400k a year. None of the teams report to you, and their roadmaps are full. How do you get it done?",
+      "context": "- The SDK is ready; two platform-owned services already use it\n- Typical migration: about 3 engineer-days per service, mostly replacing logger calls and updating dashboards\n- 34 services across the seven teams\n- Your director supports the deadline but has said: \"I don't want to force it on teams unless we have to.\"",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Drives the cost of change toward zero: a codemod or migration PR prepared by platform, a compatibility shim, dashboard templates, so teams review rather than build",
+          "Frames the migration in each team's interest (correlated traces and logs, faster debugging on-call) and in business terms ($400k renewal)",
+          "Starts with a willing early-adopter team, then uses their result (time taken, debugging improvement) as social proof",
+          "Makes progress visible: a public dashboard of migrated services, regular updates, director endorsement of the date",
+          "Plans for laggards explicitly: offers to do the migration for them, an exception path, and a clear escalation point well before the renewal date"
+        ],
+        "redFlags": [
+          "Announces a deadline by email and waits",
+          "Asks the director to mandate it without reducing the cost of migration",
+          "Discovers laggards in month five",
+          "Breaks teams' builds or turns off the old pipeline without warning"
+        ],
+        "exemplar": "I make migrating cheaper than not migrating. Platform writes a codemod that replaces the logger calls and opens the PR for each of the 34 services, and ships dashboard templates. That turns 3 engineer-days into about half a day of review per service.\n\nI pick one friendly team with painful on-call and pair with them. When their next incident is debugged with correlated traces, they tell the story at engineering sync. That does more than my pitch.\n\nFor each team lead I bring a one-pager: what they get (traces linked to logs, fewer dashboards to maintain), what it costs them (review time), and the $400k date. I ask my director to endorse the deadline at staff meeting, not to mandate it.\n\nProgress goes on a public dashboard and in a biweekly update. At month three I review laggards 1:1 and offer to do the migration with my own team. At month four, anything not scheduled goes to the director with options. I turn off the old pipeline only after a staged read-only period with plenty of warning."
+      },
+      "explanation": "Influence without authority comes from lowering the cost of saying yes, aligning with the other team's interests, and making progress visible so momentum builds. Leadership backing is useful as endorsement of a date, not as a substitute for making the work easy. The second-order move is planning for laggards early, while there is still time to help them. Takeaway: when you cannot order people to change, make the change nearly free and make its benefits visible.",
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "lead-ft-date-promised-to-sales-01",
+      "domain": "leadership",
+      "concepts": ["stakeholder-management"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Your manager promised sales a date you cannot hit",
+      "prompt": "Your manager messages you: \"Sales has a $1.2M renewal with Acme that depends on SSO and SCIM. I told the VP of Sales we'd ship by September 30. Can you make it work?\" What do you do in the next 48 hours?",
+      "context": "- Your estimate: SAML SSO about 4 weeks; SCIM provisioning 6 to 8 weeks\n- Seven weeks until September 30\n- The team is already committed to a data-export feature for two other enterprise customers due in the same window",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Responds to the manager promptly and privately with the estimate and its basis, rather than silently accepting or flatly refusing",
+          "Finds out what Acme actually needs by September 30 (via sales or the account team), for example SSO for login now and provisioning later",
+          "Offers concrete options with tradeoffs: SSO by the date and SCIM in November, a manual provisioning stopgap, or deferring data export with the other customers' consent",
+          "Helps the manager reset expectations with the VP of Sales quickly, in writing, with a confidence level on the new plan",
+          "Once a plan is agreed, de-risks it early, such as testing against Acme's identity provider in week one, with checkpoints"
+        ],
+        "redFlags": [
+          "Says \"we'll make it work\" and plans weekends",
+          "Refuses without offering options",
+          "Goes over the manager's head to the VP of Sales",
+          "Quietly drops the data-export commitment without telling anyone",
+          "Pads the estimate silently instead of explaining uncertainty"
+        ],
+        "exemplar": "Within the hour, I reply privately: \"I want to help us keep Acme. As scoped, SSO plus SCIM is 10 to 12 weeks of work against 7, with data export also due. Can we take 20 minutes today to pick an option before it goes further with Sales?\"\n\nBefore that call I ask the account executive what Acme actually needs on September 30. Often it is \"users can log in with Okta\" for the renewal, with automated provisioning a nice-to-have they can live without for a quarter.\n\nI bring my manager three options. (A) SSO by September 30, SCIM by mid-November, with manual provisioning by support in between: high confidence. (B) Both by September 30 by pausing data export, which needs those two customers' agreement: medium confidence. (C) Both by September 30 with no other change: low confidence, and I would not recommend it.\n\nI offer to join the conversation with the VP of Sales and send a short written summary afterward. If we pick A, week one includes a test login against Acme's Okta tenant, because the integration is the biggest unknown."
+      },
+      "explanation": "The skill being tested is managing up and sideways at once: protecting the manager's credibility while correcting the commitment quickly, and getting closer to the customer's real need, which is often smaller than the internal promise. Options with confidence levels let the business choose instead of engineering vetoing. Takeaway: never accept or reject an impossible date; bring the real need and two or three options with honest confidence.",
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "lead-ft-grow-seniors-to-staff-01",
+      "domain": "leadership",
+      "concepts": ["mentoring-sponsorship"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Getting two different seniors ready for staff",
+      "prompt": "Your director says: \"Ravi and Mei are our strongest seniors. I'd like both ready for staff within twelve months, and I want you to own that.\" What is your plan for each of them, and how do you tell whether it is working?",
+      "context": "- **Ravi**: the deepest debugger on the team, quietly fixes the hardest problems, rarely writes design docs, almost all his work is inside his own team\n- **Mei**: runs cross-team coordination, writes most of the team's docs and onboarding, unblocks everyone; this glue work rarely shows up in promotion packets, and she has not owned a technically hard project in a year",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Diagnoses a different gap for each: Ravi needs scope, visibility and written influence; Mei needs credited technical ownership and her glue work made visible",
+          "Distinguishes mentoring (advice, doc review, coaching) from sponsoring (putting their names forward for specific scope, advocating in calibration, handing them visible work you would otherwise do yourself)",
+          "Names concrete opportunities: Ravi leads a cross-team design and writes the RFC; Mei owns a technically hard project with support, while someone else picks up part of her glue work",
+          "Sets milestones with the director, gathers evidence for promotion over the year, and gives regular direct feedback",
+          "Anticipates second-order effects: steps back so they get the credit, avoids both becoming dependent on you, and checks the org actually has staff-scope work for two people"
+        ],
+        "redFlags": [
+          "The same plan for both",
+          "Only mentoring: books, 1:1s, advice",
+          "Promises either of them a promotion",
+          "You do the hard parts and give them the review"
+        ],
+        "exemplar": "They have opposite gaps, so they get different plans.\n\n**Ravi** has depth but no reach. Mentoring: I coach him on writing, starting by turning his next hard fix into a short design doc I review. Sponsoring: I put his name forward to lead the cross-team cache redesign, which I would otherwise lead myself, and he presents it at architecture review. Milestone by month six: one RFC accepted across teams.\n\n**Mei** has reach, but her technical depth is not visible. Sponsoring: I ask the director to make her technical lead on the event-pipeline rebuild, and I arrange for part of her coordination load to move to our TPM so she has time. I write up her glue work with outcomes (onboarding time down from 6 weeks to 3) so it counts in calibration. Mentoring: we pair on the hardest design calls early, then I step back.\n\nI agree milestones with the director now, review progress quarterly, and collect evidence as it happens rather than at packet time. I watch for two traps: them leaning on me for decisions, and a lack of real staff-scope work in the org, which I would raise early rather than let them stall."
+      },
+      "explanation": "Growing people to staff is mostly sponsorship: creating and handing over scope, then advocating for the result. A strong answer recognizes that Ravi and Mei need nearly opposite things, gives each a named opportunity, and addresses how glue work is undervalued in promotions. It also notices the constraint that only real staff-scope work can produce staff-level evidence. Takeaway: mentoring builds skills; sponsorship builds the track record that promotions require.",
+      "references": ["Tanya Reilly, \"Being Glue\" (2019)"],
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "lead-ft-search-build-vs-buy-01",
+      "domain": "leadership",
+      "concepts": ["build-vs-buy"],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Self-hosted search, SaaS search or Postgres",
+      "prompt": "Product wants marketplace search rebuilt this year. Using the numbers below, compare the options on total cost and on what matters strategically, make a recommendation, and say what would make you change it.",
+      "context": "- 12M listings, 400 QPS peak, volume growing about 40% a year\n- Search relevance is one of the top three conversion drivers, according to product analytics\n- Fully loaded engineer cost: $20k/month\n\n| Option | Build | Run |\n| --- | --- | --- |\n| A. Self-host OpenSearch on k8s | 2 engineers x 4 months | $9k/month infra (scales with volume) + 1.5 FTE for relevance tuning, upgrades and on-call |\n| B. Hosted search SaaS | 2 engineers x 1.5 months | $18k/month at today's volume, priced per record and per search (scales with volume) + 0.5 FTE for relevance tuning |\n| C. Postgres full-text on the primary DB | 1 engineer x 3 weeks | No new infra; the team says it handles today's load |",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Computes year-one all-in cost including people: A is about $508k ($160k build + $108k infra + ~8 months of 1.5 FTE at $240k), B is about $396k ($60k build + $216k licence + $120k for 0.5 FTE)",
+          "Projects growth: both A's infra and B's licence scale at 40% a year, but A's people cost dominates, so B stays cheaper until roughly year 3 to 4, and names that crossover",
+          "Weighs differentiation correctly: relevance drives conversion, so what matters is relevance iteration speed and evaluation, not owning the cluster",
+          "Rejects or bounds C: it loads the primary OLTP database and lacks relevance features, so at most a short stopgap",
+          "Mitigates lock-in and sets triggers: own the indexing pipeline and the relevance evaluation set behind a thin search interface, negotiate committed-volume pricing, and revisit when the licence approaches A's all-in cost"
+        ],
+        "redFlags": [
+          "Compares $9k vs $18k a month of infrastructure only",
+          "Treats engineer time as free",
+          "Ignores that vendor pricing scales with volume",
+          "Chooses to build because the team is capable of it",
+          "Puts search load on the primary database with no exit plan"
+        ],
+        "exemplar": "Sticker prices mislead here, so I compare all-in cost.\n\n**A (self-host):** build 2 x 4 x $20k = $160k; infra $108k/yr; 1.5 FTE = $360k/yr. Year one is about $508k (people start after the build); year two about $511k; year three about $572k as infra grows.\n\n**B (SaaS):** build $60k; licence $216k/yr growing 40% a year; 0.5 FTE = $120k/yr. Year one is about $396k, year two $422k, year three $543k, year four about $713k against A's $656k. B is cheaper for about three years.\n\n**C (Postgres):** cheapest, but it puts search load on our primary OLTP database, and it lacks synonyms, typo tolerance and learning-to-rank. I would use it only as a stopgap if B slips.\n\nRelevance drives conversion, so the differentiator is how fast we can improve ranking, not who runs the cluster. I recommend B and owning what matters: the indexing pipeline, the relevance evaluation set and a thin search interface in our code. I would negotiate a committed-volume price cap now. I would revisit when the licence reaches about 80% of A's all-in cost, or if we need ranking control the vendor cannot give us."
+      },
+      "explanation": "The arithmetic is the point: once people are costed, the option with double the monthly sticker price is the cheaper one for several years, and the growth curve tells you when that flips. Year by year (A vs B): $508k vs $396k, $511k vs $422k, $572k vs $543k, $656k vs $713k, so the crossover falls between years three and four. The strategic layer matters as much: the business differentiator is relevance, so keep ownership of the evaluation set and the pipeline, and treat the cluster as a commodity. Explicit revisit triggers make the decision durable instead of permanent. Takeaway: build vs buy is total cost of ownership over time plus a clear view of what actually differentiates you; own that part and rent the rest.",
+      "tags": ["interview"]
+    },
+    {
+      "id": "lead-ft-billing-debt-funding-01",
+      "domain": "leadership",
+      "concepts": ["tech-debt-strategy"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Funding the billing cleanup the VP already said no to",
+      "prompt": "Product leadership rejected a \"rewrite billing\" proposal last quarter as \"six months with no features\". The situation has changed. How do you get the investment funded this time, and how would you structure the work?",
+      "context": "- Billing lives in the monolith: 8 of last year's 27 Sev1/Sev2 incidents, including two invoicing errors that cost $140k in customer credits\n- Any invoice-format change takes about three weeks, mostly manual QA\n- Two engineers understand the module; one of them gave notice yesterday (last day in four weeks)\n- The VP of Product's top H2 goal is usage-based pricing, which is implemented almost entirely in billing",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Treats the departure as an immediate risk with its own action: knowledge transfer, pairing, recorded walkthroughs and runbooks in the next four weeks, regardless of funding",
+          "Quantifies the cost in business terms: $140k in credits, incident hours, three-week lead time, and single-person risk, tied to usage-based pricing in H2",
+          "Proposes incremental change (strangler pattern, characterization tests around the seams usage-based pricing needs) instead of re-pitching the rewrite",
+          "Bundles the investment into the feature: the first milestone of usage-based pricing is extracting and testing the rating and invoicing seams, so product sees delivery, not a freeze",
+          "Defines measurable checkpoints (lead time, incidents, credits) and enlists the VP of Product and finance as sponsors, with an explicit decision to continue or stop at each checkpoint"
+        ],
+        "redFlags": [
+          "Re-pitches the full rewrite",
+          "Frames the case as code quality or engineer happiness",
+          "Hides the debt work inside padded feature estimates",
+          "Asks for a feature freeze",
+          "Ignores the departing engineer until after funding is decided"
+        ],
+        "exemplar": "First, independent of any funding decision: the departing engineer spends their last four weeks pairing with the remaining expert and a second engineer, recording walkthroughs of the rating and invoicing paths, and writing runbooks for the last eight incidents. I tell my manager today that our bus factor is about to be one.\n\nThen I reframe the ask. The VP's H2 goal is usage-based pricing, and today every billing change takes three weeks and carries real risk: $140k in credits last year. I do not pitch a rewrite. I pitch usage-based pricing delivered safely, in three steps. Step one (six weeks) adds characterization tests and extracts the rating seam that usage-based pricing needs. Step two builds usage-based pricing on that seam. Step three moves invoicing behind the same seam if the numbers justify it.\n\nEach step has a checkpoint: lead time for a pricing change from three weeks to under one, zero credit-causing errors, and the share of billing incidents. Finance gets the credits number, product gets a delivery plan, and at each checkpoint we decide together whether the next step is worth it."
+      },
+      "explanation": "The strongest answers notice the urgent problem hiding in the context (a key person is leaving) and handle it separately from the funding argument. Debt is then funded as the safest route to the stakeholder's own goal, structured incrementally so value arrives early, with checkpoints that let product stop it if the return does not appear. Re-pitching the rejected rewrite, or hiding the work in estimates, destroys the trust needed for the next ask. Takeaway: fund debt by making it the first phase of something the business already wants, and handle people risk before architecture risk.",
+      "references": ["Martin Fowler, \"StranglerFigApplication\" (2004)"],
+      "tags": ["on-the-job", "interview"]
+    },
+    {
+      "id": "lead-ft-reorg-component-teams-01",
+      "domain": "leadership",
+      "concepts": ["org-design", "architecture-decisions"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Advising the VP on a reorg of component teams",
+      "prompt": "Your VP of Engineering plans to keep the current structure and add a \"feature coordination\" PM role to fix delivery speed. She has asked for your written input within a week. What do you tell her?",
+      "context": "| Team | Engineers |\n| --- | --- |\n| Web | 12 |\n| Mobile | 10 |\n| Backend API | 18 |\n| Data | 8 |\n| QA | 6 |\n| DevOps | 6 |\n\n- Nearly every customer feature touches Web, Mobile and Backend API\n- Features wait an average of 11 days in handoffs between teams\n- Backend API has a 9-week intake queue and is the main bottleneck\n- The product has three fairly distinct areas: buyer experience, seller tools and payments",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Diagnoses the structure as the cause: component teams make every feature a cross-team handoff (Conway's law), so the backend queue is structural, and a coordination role adds capacity to manage handoffs without removing any",
+          "Proposes stream-aligned, cross-functional teams around the product areas (buyer, seller, payments) with web, mobile, backend and embedded QA skills, plus a platform team built largely from DevOps and shared backend infrastructure",
+          "Addresses architecture alignment: code and service ownership must be redrawn to match the new teams (inverse Conway), and names where the backend does not yet split cleanly",
+          "Proposes a staged transition: pilot one stream-aligned team, measure lead time and handoff wait against today's baseline, then expand",
+          "Covers second-order and people effects: mobile and data craft communities (chapters or guilds), on-call ownership, QA career paths, team cognitive load, and clear communication; respects that the VP makes the call"
+        ],
+        "redFlags": [
+          "Endorses the coordination role as the fix",
+          "Reorganizes all 60 engineers at once with no pilot",
+          "Redraws teams without changing code ownership",
+          "Ignores the people impact (QA roles, specialist isolation, managers)",
+          "Presents a recommendation without data or a way to measure success"
+        ],
+        "exemplar": "**What is causing it.** We are organized by component, so every feature is a relay across three teams, and Backend API is the shared baton everyone waits for. The 11 days of handoff wait and the 9-week queue are what that structure produces. A coordination PM would make the relay smoother, but it would still be a relay.\n\n**What I would change.** Three stream-aligned teams around buyer experience, seller tools and payments, each with web, mobile and backend engineers and embedded QA, owning their features end to end. One platform team, mostly from DevOps and the shared backend core, that provides CI, infrastructure and common services as a product. Data stays a specialist team, with an analyst embedded in each stream.\n\n**Architecture has to move too.** Teams must own code, not just tickets, so we redraw backend ownership by area. Payments separates cleanly; buyer and seller share listing code, which needs an explicit owner.\n\n**How to get there.** Pilot payments first for one quarter, measure lead time and handoff wait against today, and expand only if it works. Keep mobile and QA guilds so specialists still learn from each other. Give QA engineers a clear path into quality engineering. It is your call; I can draft the pilot plan."
+      },
+      "explanation": "Org design questions at principal level test whether you can see the system: component teams make every change a multi-team change, and no coordination layer removes those handoffs. Strong answers apply the inverse Conway maneuver deliberately, change code ownership along with team lines, stage the change with measurement, and treat the human costs as design inputs rather than afterthoughts. Takeaway: structure determines flow; if every feature crosses three teams, fix the teams, not the meetings between them.",
+      "references": ["Matthew Skelton and Manuel Pais, Team Topologies (2019)", "Melvin Conway, \"How Do Committees Invent?\" (Datamation, 1968)"],
+      "tags": ["interview"]
+    },
+    {
+      "id": "lead-ft-platform-roadmap-01",
+      "domain": "leadership",
+      "concepts": ["roadmapping", "stakeholder-management"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "An H1 platform roadmap with more asks than capacity",
+      "prompt": "You are the staff engineer for an 8-person developer platform team, building the H1 roadmap. The team can deliver roughly 60% of what has been asked for. How do you decide what goes on it, and how do you communicate it?",
+      "context": "- **Infra:** the Kubernetes version the clusters run reaches end of support in April\n- **Security:** SBOM generation and image signing, required by a customer contract by end of Q2\n- **Payments:** PCI-isolated clusters before a June audit\n- **Four product teams:** faster CI (median 38 min, p90 70 min, about 200 engineers affected)\n- **Search:** GPU node pools for an ML ranking experiment\n- Last half, about 25% of platform capacity went to interrupts and support",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Separates dated, non-negotiable work (the April end of support, the June PCI audit, the Q2 contract) from discretionary work, and schedules the dated work first with buffer",
+          "Reserves explicit capacity for interrupts and support (around 25%, based on last half) instead of planning at 100%",
+          "Prioritizes discretionary work by quantified impact, for example CI time across about 200 engineers versus GPU nodes for one team's experiment",
+          "States what is not on the roadmap and why, and offers alternatives such as a managed GPU service or self-serve docs for Search",
+          "Reviews the draft with stakeholders before publishing, uses an outcome-based now/next/later format with confidence levels, and sets a review cadence"
+        ],
+        "redFlags": [
+          "First come, first served",
+          "Commits to everything and plans at 100% capacity",
+          "Gives precise dates for everything, including later items",
+          "Defers the end-of-support upgrade to make room for features",
+          "Publishes without telling the teams whose asks were cut"
+        ],
+        "exemplar": "I start with what is not optional. The Kubernetes upgrade before April, SBOM and signing before the Q2 contract date, and PCI isolation before the June audit all have external dates and real consequences, so they go in first, sequenced with a few weeks of buffer. Some of the work overlaps: the upgrade is a good moment to build the isolated PCI node pools.\n\nNext I take 25% off the top for interrupts, because that is what last half actually cost. That leaves room for roughly one major discretionary item. CI wins: cutting 38 minutes to about 15 for 200 engineers saves hundreds of engineer-hours a week, while GPU nodes help one team's experiment.\n\nFor Search I do not just say no. I propose they run the experiment on a managed GPU service for now, and we revisit in H2 if it reaches production.\n\nBefore publishing, I walk each requesting team through where their ask landed and why. The roadmap is outcome-based (\"CI p50 under 15 min\") in now/next/later form, with dates only on the committed items, and we review it monthly."
+      },
+      "explanation": "A roadmap is a set of explicit choices under constraint. Strong answers handle external deadlines first, plan honestly for interrupts, use quantified impact to choose among the rest, and treat \"not now\" as something to communicate carefully with an alternative attached. Stakeholders accept no far more readily when they hear it early, with the reasoning, and with a path forward. Takeaway: a credible roadmap shows what you will not do and why, and it plans for the capacity you actually have.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "lead-ft-review-blocking-conflict-01",
+      "domain": "leadership",
+      "concepts": ["conflict-resolution", "culture"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "A tenured engineer is blocking a new senior's PRs",
+      "prompt": "You are the staff engineer on the team. Both engineers have come to you or your manager separately. What do you do over the next two weeks?",
+      "context": "- **Alex**: seven years at the company, wrote most of the ingestion service\n- **Priya**: senior, joined six months ago from a much larger company\n- Priya's last four PRs to ingestion each received 30+ comments from Alex, many on style; one sat for 9 days awaiting his approval\n- Priya to you: \"I'm thinking about transferring. I can't get anything merged.\"\n- Alex to your manager: \"Priya is trying to rewrite everything to look like her old company's code.\"",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Listens to each separately before forming a view, and reads the actual PRs to separate legitimate design concerns from style and gatekeeping",
+          "Names the system problem under the conflict: one person is the de facto owner and sole approver, there are no written review norms, and there is no agreed design direction for the service",
+          "Fixes the system: style rules moved into a linter or formatter, a review-time expectation, a convention for marking blocking versus non-blocking comments, and a short design review before large changes",
+          "Facilitates a direct conversation focused on a shared goal (the service's direction), and keeps the manager involved, since behavior feedback and any performance aspect belong to the manager",
+          "Addresses second-order effects: spreads ownership to reduce Alex's single point of failure, gives Priya a defined area to own, and follows up within a few weeks to check the change held"
+        ],
+        "redFlags": [
+          "Sides with whoever has more tenure, or with whoever complained first",
+          "Tells Priya to toughen up, or tells Alex to just approve the PRs",
+          "Addresses it in a public channel or team meeting",
+          "Treats it purely as a personality clash with no system fix",
+          "Handles it without involving the manager at all"
+        ],
+        "exemplar": "First I listen to each of them separately and read the four PRs myself. My guess is that both have a point: Alex is protecting a system he understands deeply and nobody else does, and Priya is bringing patterns from a larger company without the context for why ingestion is built the way it is. Nine days and thirty style comments per PR is still a gatekeeping problem.\n\nThe underlying issue is structural: one person is the only effective approver and there are no shared norms. So I propose the following to the team, not to them personally. Style rules move into the formatter and linter. Reviews get a 24-hour first-response expectation. Comments are marked blocking or not blocking. Changes above a certain size get a one-page design note before code.\n\nThen I bring them together around the real question: where should ingestion go over the next year? I ask Alex to share the history and Priya to share what she has seen work elsewhere, and we write down the agreed direction.\n\nI keep my manager informed throughout, since feedback on Alex's behavior is theirs to give. Longer term, I make Priya a code owner for one subsystem so Alex is not the only approver. I check in with both after two weeks."
+      },
+      "explanation": "Conflicts between seniors are usually symptoms of missing structure: unclear ownership, unwritten norms and no agreed direction. A staff engineer should listen to both sides, look at the evidence, fix the system so the same conflict cannot recur with the next hire, and coordinate with the manager rather than replace them. The second-order win is reducing a single point of ownership, which was a risk long before Priya arrived. Takeaway: resolve the people conflict, but fix the system that produced it, or it returns with the next new hire.",
+      "tags": ["interview", "on-the-job"]
+    },
+    {
+      "id": "lead-ft-right-hand-first-90-days-01",
+      "domain": "leadership",
+      "concepts": ["staff-archetypes", "stakeholder-management"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "The new CTO wants you as her right hand",
+      "prompt": "A new CTO joined three weeks ago. She asks you, the staff engineer who has acted as Architect for the data platform for two years, to become her right hand: \"I need someone who can be my eyes across the org and drive the things I can't get to.\" What do you clarify before you say yes, and what do you do in your first 90 days?",
+      "context": "- The org has 5 directors and about 180 engineers\n- You have strong relationships in the data org and weaker ones elsewhere\n- Two directors were internal candidates for the CTO role",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Clarifies the mandate before accepting: which initiatives you own, what decision rights you have, when you speak for her versus for yourself, and how your role relates to the directors' scope",
+          "Plans the handoff of the Architect role: names and sponsors a successor for data platform direction instead of keeping both jobs",
+          "Builds trust with the directors early, especially the two internal candidates, and is open about the role to avoid being seen as the CTO's informant",
+          "Picks one or two high-leverage initiatives aligned with her priorities to land in the first 90 days, and sets a regular sync and a shared written record of priorities",
+          "Uses borrowed authority carefully: escalates privately, never makes decisions in her name without alignment, and agrees success criteria and a 90-day review of whether the role is working"
+        ],
+        "redFlags": [
+          "Accepts without clarifying scope or decision rights",
+          "Keeps the full Architect role as well",
+          "Uses the CTO's name to force decisions on directors",
+          "Becomes only a status-report aggregator",
+          "Ignores the political sensitivity of the two internal candidates"
+        ],
+        "exemplar": "Before saying yes, I want clarity on four things. Which two or three problems does she most want moved this half? What can I decide, and what do I bring back to her? When I speak in a meeting, am I representing her or giving my own view? And how does this role sit next to the directors, so I am adding capacity rather than going around them? I would ask her to announce the role in those terms.\n\nNext, I hand off the Architect role. I name a successor for data platform direction, sponsor them publicly, and stay an adviser for one quarter. Doing both jobs would mean doing both badly.\n\nIn days 1 to 30 I meet every director 1:1, starting with the two internal candidates. I say plainly what I am there for and what I am not: I am not reporting on them. I ask what they need from the CTO that they are not getting. In days 30 to 90 I pick one or two initiatives that matter to her and to them, perhaps the cross-org incident process, and land them visibly with the directors' teams, giving them the credit.\n\nWe meet weekly with a shared priority doc. At day 90 we review: is this role helping her, and the org? If not, we change it."
+      },
+      "explanation": "The Right Hand archetype operates on borrowed authority, so the main risks are ambiguity (whose voice is this?), resentment (especially from passed-over directors) and spreading yourself across two roles. Strong answers clarify the mandate first, hand off prior scope deliberately, build trust before using authority, and agree how success will be judged. Takeaway: a Right Hand's power is borrowed, so define it explicitly, use it sparingly, and give the credit to the line leaders.",
+      "references": ["Will Larson, Staff Engineer: Leadership Beyond the Management Track (2021), \"Staff archetypes\""],
+      "tags": ["interview"]
+    },
+    {
+      "id": "lead-ft-blameless-vp-wants-name-01",
+      "domain": "leadership",
+      "concepts": ["culture", "communicating-up"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "The VP wants to know who deleted the customer uploads",
+      "prompt": "You are the incident commander, and you will own the postmortem. How do you respond to the VP, both now and over the following week, and what does the postmortem focus on?",
+      "context": "- A junior engineer ran a storage cleanup script with the wrong `--prefix` flag and deleted 6 hours of customer uploads in one region\n- The data was restored from backup; the restore took 14 hours\n- In the incident channel (40 people), the VP writes: \"I want to know who ran this and why they had prod access. This can't happen again.\"\n- The engineer has messaged you privately: \"I'm so sorry. Am I getting fired?\"",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Responds in the channel without naming anyone, acknowledges the VP's legitimate concern about recurrence, and redirects to the postmortem as the place where that question gets answered",
+          "Follows up privately with the VP: explains that blame reduces reporting and learning, and commits to the concrete outcome the VP actually wants, which is preventing a repeat",
+          "Supports the engineer directly and promptly without making promises about employment that are not theirs to make, and involves them as a contributor to the postmortem, not as a subject of it",
+          "Focuses the postmortem on contributing factors: a destructive script with no dry run or confirmation, broad standing prod access, no soft delete or delayed purge, and a 14-hour restore",
+          "Produces action items with owners and dates: soft delete with a retention window, dry-run-by-default tooling, least-privilege or just-in-time access, and restore drills with a recovery-time target"
+        ],
+        "redFlags": [
+          "Names the engineer in the channel or the postmortem",
+          "Revokes the engineer's access as a punishment",
+          "Publicly rebukes the VP in the incident channel",
+          "Concludes \"human error\" with retraining as the fix",
+          "Overlooks the 14-hour restore time as a finding in its own right"
+        ],
+        "exemplar": "In the channel: \"Understood. Preventing a repeat is the goal. The postmortem will cover how a single command could delete production data and why recovery took 14 hours, with owners and dates. I'll have a draft by Thursday.\" No names.\n\nThen I message the engineer: \"This happened because a tool made a destructive mistake far too easy, and that is what the review will focus on. I'll talk to your manager today. I'd like your help writing up what happened, because you know the details best.\" I loop in their manager so the reassurance comes from the person who can give it.\n\nI talk to the VP privately the same day. If we name people, the next engineer who makes a mistake will hide it for an hour, and that hour is what turns an incident into a disaster. I tell her what she will get instead: a clear account of why the system allowed this, and the fixes.\n\nThe postmortem asks why a cleanup script deletes by prefix with no dry run or confirmation, why a junior engineer had standing delete rights in production, why there was no soft delete, and why the restore took 14 hours. Actions: dry-run by default with an explicit confirm flag, just-in-time production access, a 7-day delayed purge on the bucket, and quarterly restore drills with a 2-hour recovery target. Each has an owner and a date, and I bring the VP the list."
+      },
+      "explanation": "Blameless culture is tested under pressure from a senior leader in a public channel. The answer has to protect the individual without dismissing the VP, who has a legitimate goal (no recurrence) expressed in a damaging way. Strong answers move the VP conversation to private, give her a better outcome than a name, support the engineer (involving their manager), and find the system failures, including the 14-hour restore that most answers miss. Takeaway: blameless does not mean unaccountable; it means holding the system accountable, and showing leaders that this produces better fixes than blame does.",
+      "references": ["John Allspaw, \"Blameless PostMortems and a Just Culture\" (Etsy Code as Craft, 2012)", "Google, Site Reliability Engineering (2016), ch. 15 \"Postmortem Culture: Learning from Failure\""],
+      "tags": ["on-the-job", "interview"]
+    }
+  ]
+}

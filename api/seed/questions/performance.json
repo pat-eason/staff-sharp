@@ -1,0 +1,825 @@
+{
+  "file": "performance",
+  "questions": [
+    {
+      "id": "perf-offcpu-wallclock-01",
+      "domain": "performance",
+      "concepts": ["profiling"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "CPU profile looks unchanged while p99 doubles",
+      "prompt": "A Java checkout service's p99 went from 180 ms to 420 ms after a dependency upgrade. Pods sit at 22% CPU. A 60-second CPU flame graph captured during the slow period looks almost identical to last week's baseline. What is the most useful next profiling step?",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        { "id": "a", "text": "Capture a longer CPU profile at a higher sampling rate so the rare slow frames finally show up" },
+        { "id": "b", "text": "Capture a wall-clock or off-CPU profile that also samples blocked threads, and diff it against a baseline" },
+        { "id": "c", "text": "Turn on allocation profiling, because GC pressure is the usual cause of JVM tail latency" },
+        { "id": "d", "text": "Scale the deployment out so the CPU saturation the sampler is missing gets spread across more pods" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "An on-CPU sampler only records threads that are running. Sampling it harder still cannot see time spent waiting.",
+        "b": "Latency up with CPU flat means the time went somewhere off-CPU: locks, pool waits, I/O, sleeps. Wall-clock and off-CPU profiles show exactly that.",
+        "c": "Plausible, but GC work burns CPU and shows in GC logs cheaply. Jumping to allocation profiling skips the evidence that the time is off-CPU.",
+        "d": "At 22% CPU nothing is saturated. Adding pods spends money without explaining the regression."
+      },
+      "explanation": "On-CPU profilers sample running threads, so a request that spends 240 extra milliseconds blocked on a lock, a connection pool or a socket leaves no trace in them. When latency rises while CPU stays flat, switch to a wall-clock profiler (for example async-profiler in wall mode) or an off-CPU flame graph built from scheduler events, and compare against a baseline. The tempting move is to keep sampling CPU harder or guess at GC. Staff-level takeaway: first decide whether the time is on-CPU or off-CPU, then pick the profiler that can see it.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "perf-composite-index-order-01",
+      "domain": "performance",
+      "concepts": ["database-indexing"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Composite index column order for a tenant inbox query",
+      "prompt": "This query backs a tenant's inbox and runs 4,000 times per second on Postgres. Which single B-tree index serves it best?",
+      "context": "```sql\nSELECT id, total, created_at\nFROM orders\nWHERE tenant_id = $1\n  AND status = 'open'\n  AND created_at >= now() - interval '7 days'\nORDER BY created_at DESC\nLIMIT 50;\n```\n\n- `orders`: 400M rows, about 3,000 tenants\n- `status` has 5 values; `open` is about 2% of rows",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "(created_at, tenant_id, status)" },
+        { "id": "b", "text": "(tenant_id, status, created_at)" },
+        { "id": "c", "text": "(tenant_id, created_at, status)" },
+        { "id": "d", "text": "Three single-column indexes on tenant_id, status and created_at" },
+        { "id": "e", "text": "(tenant_id) INCLUDE (status, created_at)" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Leading with the range column means the scan walks every tenant's last 7 days and filters out almost all of the entries.",
+        "b": "Both equality columns first, then the range and sort column. The planner seeks straight to (tenant, open), reads entries already in created_at order and stops after 50.",
+        "c": "Close, and it does return rows in order, but it walks every status for the tenant and discards the 98% that are not open before it finds 50.",
+        "d": "A bitmap AND of three indexes loses the ordering, so it must fetch and sort every match before applying the LIMIT.",
+        "e": "Seeks to the tenant but then scans all of the tenant's rows and sorts them, because created_at is only a payload column."
+      },
+      "explanation": "The rule for composite B-tree indexes is equality predicates first, then the range or sort column. With `(tenant_id, status, created_at)` the matching entries form one contiguous run that is already sorted by `created_at`, so the plan is a backward index scan with no sort node, stopping after 50 entries. `(tenant_id, created_at, status)` is the tempting near-miss: it is ordered correctly but has to step over the non-open rows. Staff-level takeaway: order index columns by how the query constrains them (equality, then range or sort), not by cardinality folklore.",
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "perf-explain-misestimate-01",
+      "domain": "performance",
+      "concepts": ["query-optimization"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Nested loop chosen on a 1,000x row misestimate",
+      "prompt": "This listings query takes 10 seconds. Statistics were refreshed by autovacuum 10 minutes ago, and `pg_stats` estimates for `state`, `county` and `city` are each within 5% when filtered alone. What is the right fix?",
+      "context": "```sql\nSELECT l.id, p.url\nFROM listings l\nJOIN photos p ON p.listing_id = l.id AND p.is_primary\nWHERE l.state = 'TX' AND l.county = 'Travis' AND l.city = 'Austin';\n```\n\n```\nNested Loop  (cost=1.13..2104.80 rows=178 width=72) (actual time=0.091..9874.210 rows=186204 loops=1)\n  ->  Index Scan using listings_state_county_city_idx on listings l\n        (cost=0.56..318.71 rows=178 width=16) (actual time=0.052..201.344 rows=186204 loops=1)\n        Index Cond: ((state = 'TX') AND (county = 'Travis') AND (city = 'Austin'))\n  ->  Index Scan using photos_listing_id_idx on photos p\n        (cost=0.57..10.02 rows=1 width=64) (actual time=0.041..0.051 rows=1 loops=186204)\n        Index Cond: (listing_id = l.id)\n        Filter: is_primary\nPlanning Time: 0.412 ms\nExecution Time: 9921.007 ms\n```",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        { "id": "a", "text": "Run ANALYZE on listings with a higher default_statistics_target, because the row estimate is stale" },
+        { "id": "b", "text": "Create extended statistics (dependencies, mcv) on (state, county, city) and ANALYZE, so the planner stops multiplying correlated selectivities" },
+        { "id": "c", "text": "Replace photos_listing_id_idx with a composite (listing_id, is_primary) index so each inner loop is cheaper" },
+        { "id": "d", "text": "Set enable_nestloop = off in postgresql.conf so the planner is forced into a hash join" },
+        { "id": "e", "text": "Raise work_mem so the join can run in memory instead of spilling to disk" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Each column is already estimated well on its own. More samples per column do not fix the independence assumption across columns.",
+        "b": "City implies county implies state. Postgres multiplies the three selectivities as if independent and gets 178 rows instead of 186,204. Extended statistics teach it the dependency.",
+        "c": "Each inner probe already costs 0.05 ms. The problem is doing it 186,204 times, which a better inner index barely changes.",
+        "d": "A global switch fixes this one plan and degrades every query where a nested loop is the right choice.",
+        "e": "There is no hash or sort node in the plan to spill. work_mem is not involved."
+      },
+      "explanation": "Read the plan by comparing `rows=` estimates with actual rows: 178 estimated versus 186,204 actual on the outer side is a 1,000x miss, and a nested loop is only cheap when the outer side is small. Because per-column stats are accurate, the miss comes from combining them: the planner assumes predicates are independent and multiplies selectivities, but `city = 'Austin'` already implies the other two. `CREATE STATISTICS ... (dependencies, mcv) ON state, county, city FROM listings` followed by ANALYZE gives it the joint distribution, and it will pick a hash join. Staff-level takeaway: in EXPLAIN ANALYZE, find the lowest node where estimate and actual diverge; the bad join choice above it is a symptom.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "perf-index-only-heap-fetches-01",
+      "domain": "performance",
+      "concepts": ["database-indexing", "query-optimization"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Covering index that still reads the heap for every row",
+      "prompt": "You added a covering index so this per-account report could use an index-only scan. The plan says Index Only Scan, but it is barely faster than before. Why is it still reading the heap for nearly every row, and what fixes it?",
+      "context": "```sql\nCREATE INDEX CONCURRENTLY events_account_ts_cov\n  ON events (account_id, occurred_at) INCLUDE (kind, amount);\n```\n\n```\nIndex Only Scan using events_account_ts_cov on events\n    (cost=0.70..48211.40 rows=51022 width=24) (actual time=0.060..1840.550 rows=50318 loops=1)\n  Index Cond: ((account_id = 8812) AND (occurred_at >= '2026-11-01'))\n  Heap Fetches: 49907\n  Buffers: shared hit=2310 read=41877\n```\n\n`pg_stat_user_tables` for `events`: about 6,000 UPDATEs per second (status flips on recent rows), `n_dead_tup` 210M, last autovacuum 3 days ago, autovacuum settings at defaults.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        { "id": "a", "text": "INCLUDE columns live only in leaf pages, so the executor must recheck their values against the heap tuple" },
+        { "id": "b", "text": "Recently modified pages are not marked all-visible, so each row needs a heap visibility check; tune autovacuum for this table so it keeps up" },
+        { "id": "c", "text": "An index built CONCURRENTLY stays partially valid until the next ANALYZE, so the executor falls back to the heap" },
+        { "id": "d", "text": "The range condition on occurred_at prevents a true index-only scan, which Postgres only performs for equality lookups" },
+        { "id": "e", "text": "The planner misestimated the row count, so it chose the index-only path when a bitmap heap scan was cheaper" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "INCLUDE values are stored in the index and returned from it. They are never rechecked against the heap.",
+        "b": "An index-only scan can skip the heap only for pages the visibility map marks all-visible. Vacuum sets those bits, and autovacuum on this table is three days and 210M dead tuples behind.",
+        "c": "An invalid index is simply not used. Once CREATE INDEX CONCURRENTLY finishes it is valid; ANALYZE has nothing to do with it.",
+        "d": "Range conditions on an index column work fine with index-only scans.",
+        "e": "51,022 estimated versus 50,318 actual is an excellent estimate."
+      },
+      "explanation": "Index entries carry no MVCC visibility information, so Postgres can only answer from the index when the visibility map says every tuple on that heap page is visible to all transactions. `Heap Fetches: 49907` of 50,318 rows says almost no pages are marked all-visible, which fits a table taking 6,000 updates a second with autovacuum far behind. Fix the vacuum side: lower `autovacuum_vacuum_scale_factor` (or set an absolute threshold) and raise the cost limit for this table, and consider reducing churn (for example moving the hot status column to a narrow side table). Staff-level takeaway: an index-only scan is a promise that depends on vacuum, so a covering index on a hot-update table needs a vacuum plan too.",
+      "tags": ["gotcha"]
+    },
+    {
+      "id": "perf-pool-oversized-01",
+      "domain": "performance",
+      "concepts": ["connection-pooling"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Doubling the connection pool made timeouts worse",
+      "prompt": "Read the thread. What is the best reply?",
+      "context": "> **#payments-eng**\n> **dana:** We doubled HikariCP `maximumPoolSize` from 25 to 50 on all 60 pods yesterday to fix `Connection is not available, request timed out after 30000ms`. Today p99 query time on the primary went from 9 ms to 41 ms and the timeouts are back. The primary is a 16 vCPU Postgres at 95% CPU, `max_connections` = 3200. Should we go to 100?",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        { "id": "a", "text": "Yes. The timeouts show demand still exceeds pool supply, so raise the pool until the waits stop" },
+        { "id": "b", "text": "Cut total connections sharply (a handful per pod, or PgBouncer with a server pool near a small multiple of cores) and find what holds connections so long" },
+        { "id": "c", "text": "Add a read replica and point half of each pod's pool at it so the primary sees fewer connections" },
+        { "id": "d", "text": "Raise connectionTimeout from 30 s to 120 s so requests queue for a connection instead of failing" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "3,000 to 6,000 connections against 16 cores only moves the queue inside Postgres, where it costs context switches and lock contention.",
+        "b": "The database can only run about as many queries at once as it has cores. Extra connections make every query slower, which holds connections longer and causes more waits.",
+        "c": "Might help read-heavy traffic, but it leaves thousands of connections hammering a saturated primary and ignores why connections are held so long.",
+        "d": "Hides the failure behind 2-minute waits and lets more work pile up behind a saturated database."
+      },
+      "explanation": "60 pods x 50 = 3,000 potential connections on a 16-core server. Once active queries exceed what the cores can run, each query's service time grows (9 ms to 41 ms here), so each connection is held longer and the pools run dry again: a feedback loop. Size total active connections to the database, not per pod, at roughly a small multiple of cores, put PgBouncer in transaction mode in front if the app tier is wide, and go after the long holders: slow queries and transactions that stay open across remote calls. Staff-level takeaway: pool exhaustion is a symptom of connections held too long, and the fix is usually fewer connections, not more.",
+      "tags": ["on-the-job", "classic"]
+    },
+    {
+      "id": "perf-go-memlimit-oom-01",
+      "domain": "performance",
+      "concepts": ["memory-gc"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Go service OOMKilled with a healthy live heap",
+      "prompt": "A Go 1.22 search service runs in Kubernetes with a 2 GiB memory limit, default `GOGC=100` and no `GOMEMLIMIT`. Its live heap after each GC holds steady at about 1.1 GiB at peak (mostly an in-memory index). Pods get OOMKilled during traffic peaks. What is the most targeted fix?",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Set GOMEMLIMIT to about 1.8 GiB and keep GOGC, so the collector runs harder as the heap nears the limit" },
+        { "id": "b", "text": "Set GOGC=off and rely on the container memory limit to bound the heap" },
+        { "id": "c", "text": "Run runtime.GC() from a ticker every 5 seconds to keep the heap small between peaks" },
+        { "id": "d", "text": "Call debug.FreeOSMemory() after each request so memory returns to the OS promptly" },
+        { "id": "e", "text": "Raise GOGC to 200 so collections are less frequent and less disruptive during peaks" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "With GOGC=100 the heap target is about 2x the live heap, 2.2 GiB, which is over the limit. GOMEMLIMIT turns the limit into a soft target the GC respects.",
+        "b": "With no GOMEMLIMIT, GOGC=off disables collection entirely. The heap grows until the kernel kills the pod.",
+        "c": "Burns CPU on forced full collections and still lets the heap reach 2.2 GiB between ticks at peak.",
+        "d": "Forces a GC and scavenge on every request: huge CPU cost, and the pacer's target is unchanged.",
+        "e": "Raises the target to about 3x the live heap, which hits the limit sooner."
+      },
+      "explanation": "Go's pacer lets the heap grow to roughly `live x (1 + GOGC/100)` before the next cycle. With 1.1 GiB live and GOGC=100 that is about 2.2 GiB plus stacks and runtime overhead, so peaks cross the 2 GiB limit. `GOMEMLIMIT` (Go 1.19+) makes the GC collect more often as total runtime memory approaches the limit; leave headroom for non-heap memory. The caveat: if the live heap itself approaches the limit, the GC will thrash, so the limit is a guardrail, not a substitute for capacity. Staff-level takeaway: in containers, tell the runtime its memory budget instead of letting a proportional GC target overshoot it.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "perf-coordinated-omission-01",
+      "domain": "performance",
+      "concepts": ["load-testing", "tail-latency"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Load test p99 of 12 ms while production stalls for seconds",
+      "prompt": "A pre-launch load test report says the service is ready. What is the main flaw in how it measured latency?",
+      "context": "- Single load-generator node, 50 virtual users\n- Each user sends a request, waits for the response, then immediately sends the next one\n- Result: 1.2M requests, p50 4 ms, p99 12 ms, max 2,140 ms\n- The service had two ~2-second stalls during the run (a GC pause and a replica failover)\n- In production, p99 during comparable stalls is 600 to 900 ms",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        { "id": "a", "text": "During a stall the users stop sending, so requests that would have arrived are never issued; use a constant-arrival-rate generator and measure from each request's scheduled time" },
+        { "id": "b", "text": "50 virtual users is far below production concurrency; rerun with enough users to match production's in-flight request count" },
+        { "id": "c", "text": "The p99 was computed by averaging per-second percentiles rather than from one merged histogram of all samples" },
+        { "id": "d", "text": "The test ran against warm caches; flush caches before each run so the latency reflects cold-start behavior" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "This is coordinated omission: the load generator politely waits with the system, so the stall produces 50 slow samples instead of the roughly 25,000 that real independent users would have experienced.",
+        "b": "More closed-loop users raise throughput but still pause during a stall. The omission remains.",
+        "c": "A real pitfall, but nothing in the setup suggests it, and it would not explain a 50x gap at p99.",
+        "d": "Cache warmth affects averages and cold starts, not a missing tail during stalls."
+      },
+      "explanation": "At 50 users and about 4 ms per request the test ran at roughly 12,500 requests per second. A 2-second stall should hit about 25,000 requests that real users would have sent independently, each waiting up to 2 seconds. The closed loop recorded only the 50 in flight, so out of 1.2M samples the stall is invisible at p99. Use an open-model generator (constant arrival rate, for example wrk2 or k6 arrival-rate executors) and record latency from the intended start time. Staff-level takeaway: a load generator that waits for the system cannot measure how users experience the system waiting.",
+      "references": ["Gil Tene, \"How NOT to Measure Latency\" (conference talk)"],
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "perf-nagle-delayed-ack-01",
+      "domain": "performance",
+      "concepts": ["network"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Every RPC takes almost exactly 40 ms",
+      "prompt": "A homegrown RPC client over persistent TCP connections between two Linux hosts in the same rack shows a latency histogram tightly clustered at 40 ms. Server-side handling time is 0.4 ms. Another client library talking to the same server gets 0.6 ms. What is happening?",
+      "context": "```\nclient: write(fd, header, 12)     // frame header\nclient: write(fd, payload, 300)   // frame body\nserver: reads header, then waits for the full 312-byte frame before handling it\n\nlatency p50 40.2 ms  p90 40.4 ms  p99 40.9 ms\n```",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Nagle holds the second small write until the first is ACKed, and the server's delayed-ACK timer waits about 40 ms; coalesce into one write or set TCP_NODELAY" },
+        { "id": "b", "text": "TCP slow start restarts on the idle persistent connection, so each request waits an extra round trip for the window to open" },
+        { "id": "c", "text": "The server's epoll loop uses a 40 ms timeout, so it only notices new data on the next wakeup tick" },
+        { "id": "d", "text": "The server's accept backlog overflows, so connections are retried after the kernel's minimum SYN retransmission delay" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "Classic write-write-read. Nagle will not send the 300-byte segment while the 12-byte one is unacknowledged, and the server delays its ACK (Linux minimum about 40 ms) hoping to piggyback on a response it cannot send without the body.",
+        "b": "312 bytes fits easily inside the initial congestion window, and an extra round trip in the same rack is microseconds, not 40 ms.",
+        "c": "epoll returns as soon as a descriptor is readable. Its timeout only bounds how long it waits when nothing happens.",
+        "d": "These are persistent connections, and the SYN retransmission timeout is about 1 second, not 40 ms."
+      },
+      "explanation": "A latency distribution pinned to one exact value usually means a timer. Here two TCP optimizations deadlock briefly: Nagle's algorithm buffers small writes while unacknowledged data is outstanding, and the receiver's delayed ACK waits up to about 40 ms on Linux for data to piggyback on. The server needs the second segment before it can respond, so the delayed-ACK timer is what finally breaks the stall. Fix by writing the frame in one call (or with writev) and, for request/response protocols, setting TCP_NODELAY. Staff-level takeaway: when latency clusters at a suspiciously round number, look for a timer before looking for a slow component.",
+      "references": ["RFC 896 (Nagle's algorithm)", "RFC 1122, section 4.2.3.2 (delayed ACK)"],
+      "tags": ["classic", "gotcha"]
+    },
+    {
+      "id": "perf-handshake-per-call-01",
+      "domain": "performance",
+      "concepts": ["network", "latency-budgets"],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Cross-region partner call takes 335 ms for 15 ms of work",
+      "prompt": "Your service in us-east-1 calls a partner API in eu-west-1 over HTTPS (TLS 1.2). Round-trip time between the regions is 80 ms and the partner's server time is 15 ms, yet each call takes about 335 ms. The code builds a new HTTP client for every call. Which change gives the biggest latency win?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        { "id": "a", "text": "Reuse one long-lived HTTP client with keep-alive pooling so warm calls skip the TCP and TLS handshakes" },
+        { "id": "b", "text": "Upgrade the client and partner to TLS 1.3 so each new connection's handshake saves a round trip" },
+        { "id": "c", "text": "Enable gzip on request and response bodies to cut transfer time across the Atlantic" },
+        { "id": "d", "text": "Raise the client timeout so slow handshakes stop being retried by the HTTP library" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "A warm connection pays only the request round trip plus server time, about 95 ms instead of 335 ms.",
+        "b": "Saves one round trip (80 ms) per call, which helps, but still pays TCP and TLS setup on every request.",
+        "c": "Small JSON payloads are not bandwidth-bound; the cost is round trips.",
+        "d": "Nothing indicates retries. The 335 ms is fully explained by handshakes."
+      },
+      "explanation": "Do the round-trip arithmetic: TCP handshake 1 RTT (80 ms) + TLS 1.2 full handshake 2 RTTs (160 ms) + request and response 1 RTT (80 ms) + 15 ms server time = 335 ms. A pooled keep-alive connection removes the first three RTTs from every warm call, leaving about 95 ms. TLS 1.3 is a good second step for cold connections. Staff-level takeaway: across regions, latency is counted in round trips, so reuse connections before optimizing anything else.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "perf-serialize-once-01",
+      "domain": "performance",
+      "concepts": ["serialization", "caching"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Catalog endpoint burns CPU re-encoding the same JSON",
+      "prompt": "Pods serving the catalog endpoint run at 85% CPU and the team wants to double the fleet before a sale. What is the best first change?",
+      "context": "- `GET /v1/catalog` returns the whole storefront catalog: 9,000 items, about 1.8 MB of JSON, gzip-compressed on the way out\n- The catalog is rebuilt from the database into an in-memory object every 5 minutes\n- 2,400 requests per second across 12 pods\n- CPU profile: 46% JSON encoding, 21% gzip, 9% GC, the rest spread thin",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Encode and gzip the catalog once per rebuild, keep the bytes and an ETag in memory, and serve those bytes directly" },
+        { "id": "b", "text": "Swap in a faster JSON encoder that benchmarks two to three times quicker than the standard library" },
+        { "id": "c", "text": "Move the endpoint to Protobuf so encoding is cheaper and the payload is smaller" },
+        { "id": "d", "text": "Turn off response compression to recover the 21% of CPU spent in gzip" }
+      ],
+      "answer": ["a"],
+      "optionNotes": {
+        "a": "The output changes every 5 minutes but is recomputed 720,000 times in that window. Caching the encoded, compressed bytes removes about two thirds of CPU and most of the GC churn.",
+        "b": "Cuts the 46% roughly in half but keeps encoding per request and leaves gzip untouched.",
+        "c": "Requires every client to change and still encodes per request.",
+        "d": "Multiplies egress bytes several times and leaves the largest cost, encoding, in place."
+      },
+      "explanation": "The work is deterministic: the same object becomes the same bytes for 5 minutes. Encode and compress once when the catalog is rebuilt, serve the cached bytes with `Content-Encoding: gzip` and an ETag, and clients that send `If-None-Match` get a 304 with no body at all. That removes encoding, compression and their allocations (much of the 9% GC) from the request path. Faster encoders and binary formats are real wins, but they optimize work that does not need to happen. Staff-level takeaway: before making repeated work faster, ask whether it needs to be repeated at all.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "perf-planner-skips-index-01",
+      "domain": "performance",
+      "concepts": ["database-indexing", "query-optimization"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Why the planner chose a sequential scan",
+      "prompt": "Postgres 16, `users` table with 30M rows and plain B-tree indexes on `email`, `country` and `created_at`. Which of these queries explain a sequential scan where an engineer expected an index scan? Select all that apply.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "`WHERE lower(email) = lower($1)` with only the plain index on email" },
+        { "id": "b", "text": "`WHERE email LIKE '%@acme.com'` to find everyone at one company" },
+        { "id": "c", "text": "`WHERE country = 'US'` when 46% of rows have country US" },
+        { "id": "d", "text": "`WHERE created_at >= $1 ORDER BY created_at LIMIT 20` for the newest sign-ups" },
+        { "id": "e", "text": "`WHERE email = $1`, because a 30M-row table is too large for a B-tree lookup" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "The index stores email, not lower(email). An expression index on lower(email) (or a citext column) is needed.",
+        "b": "A leading wildcard gives the B-tree no prefix to seek on. A trigram index or a separate domain column fixes it.",
+        "c": "Not a bug: reading nearly half the table through random index lookups costs more than one sequential pass. The planner is right.",
+        "d": "Exactly what a created_at index is for: a range scan in order that stops after 20 rows.",
+        "e": "B-tree depth grows logarithmically. A 30M-row lookup is a handful of page reads."
+      },
+      "explanation": "The common reasons a B-tree index goes unused: the query wraps the column in a function or cast the index does not match, the pattern cannot be turned into a prefix range, or the predicate matches so many rows that a sequential scan is genuinely cheaper. Distinguish the bugs (the expression and the leading wildcard) from the planner being correct (the 46% predicate); forcing an index there would make the query slower. Staff-level takeaway: when the planner ignores an index, first ask whether the index can answer the predicate as written, then whether it should.",
+      "tags": ["interview", "classic"]
+    },
+    {
+      "id": "perf-use-saturation-01",
+      "domain": "performance",
+      "concepts": ["profiling"],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Spotting saturation signals with the USE method",
+      "prompt": "During a slowdown you walk the USE method (utilization, saturation, errors) across a Postgres host and the app tier in front of it. Which of these readings are saturation signals, as opposed to utilization or errors? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "CPU run queue length averaging three times the number of cores" },
+        { "id": "b", "text": "Average queue depth of 48 outstanding requests on the data volume" },
+        { "id": "c", "text": "App threads waiting an average of 120 ms to acquire a pooled database connection" },
+        { "id": "d", "text": "CPU busy at 78% averaged across all cores over five minutes" },
+        { "id": "e", "text": "0.4% of API responses returning HTTP 503" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Runnable threads waiting for a core is queued work: saturation.",
+        "b": "Requests queued at the device beyond what it is servicing: saturation.",
+        "c": "A software resource (the pool) with work queued for it: saturation, and often the earliest warning.",
+        "d": "Busy time is utilization. A five-minute average can also hide short bursts of saturation.",
+        "e": "That is the errors part of RED (rate, errors, duration), which describes the service, not a resource."
+      },
+      "explanation": "USE asks three questions of every resource: how busy it is (utilization), how much work is waiting for it (saturation), and whether it is failing (errors). Saturation is the one that explains latency, because waiting is latency, and it shows up as queues: run queues, device queues, pool waiters, backlogs. Pools, locks and thread pools count as resources too. RED (rate, errors, duration) complements it from the request side. Staff-level takeaway: utilization tells you a resource is busy; saturation tells you someone is waiting for it.",
+      "references": ["Brendan Gregg, Systems Performance (2nd ed.), chapter 2: the USE method"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "perf-batching-tradeoffs-01",
+      "domain": "performance",
+      "concepts": ["batching"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Size-or-time batching in an ingest writer",
+      "prompt": "An ingest service buffers events and writes them to Postgres with one multi-row INSERT when the buffer reaches 500 rows or 100 ms has passed since the first buffered event, whichever comes first. Traffic is about 300 events per second overnight and 40,000 per second at peak. Which statements are true? Select all that apply.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        { "id": "a", "text": "Overnight the timer always fires first and events wait up to 100 ms; at peak a batch fills about every 12.5 ms" },
+        { "id": "b", "text": "Throughput improves mainly because per-statement costs (round trip, parse, commit and WAL flush) are spread across 500 rows" },
+        { "id": "c", "text": "One row that violates a constraint can fail the whole INSERT, so the writer needs a way to isolate bad rows" },
+        { "id": "d", "text": "Raising the batch size to 5,000 would cut per-event write latency at peak because fewer statements are issued" },
+        { "id": "e", "text": "The 100 ms timer can be dropped, because the 500-row trigger alone already bounds how long an event waits" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "300 per second gives about 30 events per 100 ms window, never 500. At peak 40,000 / 500 = 80 batches per second.",
+        "b": "That is the whole point of batching: fixed per-operation costs are paid once per batch.",
+        "c": "A multi-row INSERT is atomic. Without splitting or per-row validation, one bad event blocks 499 good ones and retries loop forever.",
+        "d": "A 5,000-row batch takes about 125 ms to fill at peak, so events wait longer, and larger transactions hold locks and WAL longer.",
+        "e": "Overnight it would take about 1.7 seconds to collect 500 events. The timer is what bounds latency at low traffic."
+      },
+      "explanation": "Size-or-time batching trades latency for throughput. The size trigger controls behavior under load (amortizing per-statement cost), and the time trigger caps how long any event waits when traffic is light. Bigger batches push latency up even as throughput rises, and batches widen the blast radius of a single bad record, so the error path needs design too. Staff-level takeaway: every batching knob is a latency budget decision, so set the time cap from the latency target and the size cap from the throughput target.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "perf-tail-mitigations-01",
+      "domain": "performance",
+      "concepts": ["tail-latency"],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 4,
+      "title": "Cutting p99 on a 64-shard search fan-out",
+      "prompt": "A search API sends each query to 64 index shards in parallel and waits for all of them. Per-shard p99 is 25 ms but p99.9 is 180 ms because of GC pauses and segment merges. End-to-end p99 is 190 ms. Every shard has 3 replicas and the cluster has about 30% spare capacity. Which changes would meaningfully reduce end-to-end p99? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        { "id": "a", "text": "Hedge: if a shard has not answered by about its p95, send the same request to another replica and cancel the loser" },
+        { "id": "b", "text": "Return results after a 60 ms deadline when at least 62 of 64 shards answered, marking the response as partial" },
+        { "id": "c", "text": "Take a replica out of rotation while it runs segment merges, so queries go to replicas that are not merging" },
+        { "id": "d", "text": "Raise each shard call's timeout from 200 ms to 1 s so fewer queries fail when a shard is briefly slow" },
+        { "id": "e", "text": "On a shard timeout, retry immediately against the same replica, which usually recovers within milliseconds" }
+      ],
+      "answer": ["a", "b", "c"],
+      "optionNotes": {
+        "a": "Hedging at p95 costs about 5% extra load and turns a rare slow replica into a race between two, which collapses the tail.",
+        "b": "If the product accepts slightly incomplete results, a deadline caps latency directly.",
+        "c": "Removes a known source of variability from the request path rather than racing against it.",
+        "d": "Trades errors for even slower requests. The tail gets longer, not shorter.",
+        "e": "The same replica is probably still in its pause or merge. Immediate retries also add load exactly when the system is struggling."
+      },
+      "explanation": "With 64 parallel calls, a request is slow if any shard is slow, so the per-shard tail around p99.9 effectively becomes the end-to-end p99. You can shorten that tail in three ways: race it (hedged or tied requests to another replica, with cancellation and a budget), stop waiting for it (deadlines with partial results where the product allows), or remove its cause from the path (drain replicas during merges and GC-heavy work). Longer timeouts and same-replica retries make it worse. Staff-level takeaway: in a fan-out, you cannot average away the slowest dependency, so engineer around it.",
+      "references": ["Jeffrey Dean and Luiz Andre Barroso, \"The Tail at Scale\", Communications of the ACM, 2013"],
+      "tags": ["classic"]
+    },
+    {
+      "id": "perf-fanout-slow-prob-01",
+      "domain": "performance",
+      "concepts": ["tail-latency"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Chance a 100-way fan-out page is slow",
+      "prompt": "A page render fans out to 100 backend calls in parallel and waits for all of them. Each call independently has a 1% chance of taking longer than 200 ms. What percentage of page renders include at least one call slower than 200 ms?",
+      "language": null,
+      "estSeconds": 75,
+      "numeric": { "answer": 63.4, "unit": "percent", "fullCreditRatio": 1.1, "zeroCreditRatio": 1.6 },
+      "explanation": "P(no slow call) = 0.99^100 = e^(100 x ln 0.99) ≈ e^(-1.005) ≈ 0.366, so P(at least one slow) ≈ 1 - 0.366 = **63.4%**. A 1-in-100 slow call per backend now makes most pages slow: the median page render is a slow one. Running it backward: for 99% of pages to avoid any slow call, each call must be fast with probability 0.99^(1/100) ≈ 0.9999, so you need to manage each backend's p99.99. Staff-level takeaway: fan-out turns a dependency's rare tail into your common case, so set dependency SLOs at the percentile the fan-out width demands."
+    },
+    {
+      "id": "perf-latency-budget-chain-01",
+      "domain": "performance",
+      "concepts": ["latency-budgets"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 3,
+      "title": "Remaining budget for the hydration call",
+      "prompt": "The home feed API has a p99 target of 300 ms measured at the load balancer. You allocate budgets by summing each stage's p99 allocation (a deliberately conservative method), and reserve 10% of the total for network, load balancer and serialization overhead. The request flow is:\n\n1. Auth token check: 15 ms\n2. User profile lookup: 35 ms\n3. In parallel, waiting for all: ranking 120 ms, ads 90 ms, social graph 60 ms\n4. Post hydration: the call you are budgeting\n5. Response rendering: 20 ms\n\nHow many milliseconds of p99 budget remain for post hydration?",
+      "language": null,
+      "estSeconds": 120,
+      "numeric": { "answer": 80, "unit": "ms", "fullCreditRatio": 1.1, "zeroCreditRatio": 1.6 },
+      "explanation": "Overhead reserve: 10% of 300 = 30 ms. Sequential stages: 15 + 35 + 20 = 70 ms. The parallel stage costs its slowest member, 120 ms, not the 270 ms sum. 300 - 30 - 70 - 120 = **80 ms**. Summing p99s overstates the true p99 of the chain (stages are rarely all at their p99 at once), which is why it is a safe allocation method. Note also that within the parallel stage only the slowest member matters: shaving ranking from 120 to 90 ms frees 30 ms for everyone, while speeding up ads frees nothing. Staff-level takeaway: a latency budget is a negotiation tool, and the critical path through parallel stages is where the negotiable time lives."
+    },
+    {
+      "id": "perf-pool-littles-law-01",
+      "domain": "performance",
+      "concepts": ["connection-pooling"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Connections actually in use at peak",
+      "prompt": "At peak the order service handles 2,400 requests per second across 16 pods. Each request runs 3 queries one after another, and each query holds a pooled connection for 4 ms on average (the connection goes back to the pool between queries). On average, how many database connections are in use at once across the whole fleet?",
+      "language": null,
+      "estSeconds": 75,
+      "numeric": { "answer": 28.8, "unit": "connections", "fullCreditRatio": 1.2, "zeroCreditRatio": 2 },
+      "explanation": "Little's law: L = λ x W. Query arrival rate λ = 2,400 x 3 = 7,200 queries per second; each holds a connection for W = 0.004 s, so L = 7,200 x 0.004 = **28.8** connections in use on average, about 1.8 per pod. Size for bursts and p99 hold times rather than the average, so a pool of perhaps 5 to 10 per pod is generous, while a default of 50 per pod (800 total) would mostly sit idle and could overload the database if they all became active at once. Staff-level takeaway: Little's law turns pool sizing from guesswork into arithmetic on throughput and hold time."
+    },
+    {
+      "id": "perf-young-gc-rate-01",
+      "domain": "performance",
+      "concepts": ["memory-gc"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Young-generation collections per minute",
+      "prompt": "A JVM service handles 6,000 requests per second at peak. Allocation profiling shows about 400 KB allocated per request, almost all of it short-lived (DTOs, byte buffers, strings). The young generation's eden space is 1.2 GB. Roughly how many young-generation collections happen per minute at peak?",
+      "language": null,
+      "estSeconds": 75,
+      "numeric": { "answer": 120, "unit": "collections/minute", "fullCreditRatio": 1.25, "zeroCreditRatio": 2.5 },
+      "explanation": "Allocation rate = 6,000 x 400 KB = 2.4 GB per second. Eden fills every 1.2 / 2.4 = 0.5 s, so about 2 young collections per second, or **120 per minute**. Each one is a pause (short if little survives). Halving allocations per request halves the frequency, and a bigger eden spreads collections out without changing the total allocation work. Staff-level takeaway: allocation rate, not heap size, drives GC frequency, so per-request allocation is a first-class performance metric."
+    },
+    {
+      "id": "perf-flat-profile-regression-01",
+      "domain": "performance",
+      "concepts": ["profiling", "concurrency-models"],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "p99 quadrupled after a deploy but CPU profiles look the same",
+      "prompt": "After Tuesday's deploy, p99 of `GET /quotes` went from 140 ms to 610 ms. p50 barely moved (38 ms to 44 ms). CPU per pod is unchanged at about 35%, and a diff of CPU flame graphs before and after shows nothing new. The deploy bundled 23 commits, including a logging library upgrade, a new feature-flag SDK and a change to the retry policy for the pricing dependency. Walk through how you would find the cause.",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Mitigates first when impact warrants it (rollback or canary split), noting that this also confirms or rules out the deploy as the cause",
+          "Reads flat CPU plus a growing tail as time spent waiting off-CPU (locks, pools, I/O, retries, queueing) and switches to wall-clock or off-CPU profiling instead of more CPU profiles",
+          "Compares distributed traces of p99 requests before and after to find which span or in-process gap grew, rather than looking at averages",
+          "Checks saturation signals: connection pool wait time, executor queue depth, lock contention, GC pause logs",
+          "Turns the diff into specific, testable hypotheses (synchronous or locked log appender, flag SDK fetching over the network on the request path, serial retries against a slow dependency) and says what trace shape each predicts",
+          "Confirms by isolating one change under comparable load (flag toggle, canary, bisect) and verifies with before and after percentile histograms"
+        ],
+        "redFlags": [
+          "Keeps taking CPU profiles or adds pods before establishing where the time goes",
+          "Looks only at averages or p50",
+          "Reverts and closes the incident without identifying which change caused it",
+          "Guesses a cause from the commit list without any measurement to confirm it"
+        ],
+        "exemplar": "First, mitigate: p99 quadrupled, so if customers feel it I roll back or split traffic with a canary, which also confirms the deploy is the cause. Then diagnose. Flat CPU with a growing tail means requests are waiting, not computing, so more CPU profiles will not help. I pull traces for p99 requests from before and after and compare span breakdowns: which hop grew, or which gap between spans (an in-process wait) appeared? I check saturation: pool wait time, executor queue depth, lock contention, GC pause logs. Then I take a wall-clock profile (async-profiler in wall mode, or an off-CPU flame graph) on a slow pod and diff it against the old build.\n\nThe diff gives three suspects with different signatures. A logging upgrade that writes synchronously or takes a global lock shows threads parked in the appender. A flag SDK that fetches over the network on a cache miss shows an outbound HTTP span on the request path. A retry policy that retries a slow pricing call serially shows two or three pricing spans back to back, only on tail requests. I confirm by toggling one suspect at a time in the canary under the same traffic, compare p99 histograms, fix it, and add a latency regression check to the deploy pipeline."
+      },
+      "explanation": "Strong answers notice that tail latency moved while CPU and p50 did not, which points at waiting rather than computing, and pick tools that can see waiting: traces, wall-clock or off-CPU profiles, and saturation metrics. They turn the commit list into hypotheses with predicted signatures and confirm one by isolation. Staff-level takeaway: let the shape of the regression (tail, not median; wall time, not CPU) choose the instrument before you start guessing at commits."
+    },
+    {
+      "id": "perf-load-test-plan-01",
+      "domain": "performance",
+      "concepts": ["load-testing"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Design the go/no-go load test for a 6x peak",
+      "prompt": "Checkout must handle 6x its normal peak on Black Friday (normal peak is 1,500 requests per second, so the target is 9,000). Leadership wants a go/no-go in three weeks based on a load test. Describe the test you would run, how you would make its results trustworthy, and what result would make you say go.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Uses an open-model, constant-arrival-rate generator that records latency from each request's intended start time (avoiding coordinated omission), with histograms merged across generator nodes",
+          "Builds a realistic workload: endpoint mix and request shapes from production logs, and realistic cardinality of users, carts and SKUs so caches, hot rows and locks behave as in production",
+          "Runs against a production-like environment (same instance types, pool sizes, autoscaling and database size) and has an explicit plan for third-party dependencies such as the payment provider (agreed limits, or stubs with realistic latency and error rates)",
+          "Shapes the test in phases: step ramp past the target (for example to 1.5x target) to find the breaking point and the first resource to saturate, a multi-hour soak at target, and a spike test for autoscaling lag",
+          "Defines go criteria up front against SLOs: p99 and error rate at target with headroom, saturation metrics below thresholds, no degradation over the soak, plus a named bottleneck and the mitigation (load shedding, queueing, feature degradation) if traffic exceeds the plan"
+        ],
+        "redFlags": [
+          "A closed-loop test with a few virtual users that waits for each response",
+          "Load testing one endpoint or one test user and SKU",
+          "Reporting average latency or averaging percentiles across generators",
+          "Testing a smaller staging stack and extrapolating linearly",
+          "Sending 9,000 requests per second at the real payment provider without arranging it"
+        ],
+        "exemplar": "I'd agree the pass criteria with leadership before running anything: at 9,000 requests per second, p99 under the checkout SLO (say 800 ms), errors under 0.1%, no resource above about 70% saturation, and stable for a four-hour soak. I'd also want the measured breaking point to be at least 1.3x target.\n\nWorkload: replay the production endpoint mix and request shapes from logs, with realistic cardinality (hundreds of thousands of users, the real SKU distribution including a few hot items) so caches, hot rows and inventory locks behave honestly. The generator is open-model, a constant arrival rate across several nodes, records latency from the scheduled send time and merges histograms, so stalls are not hidden by coordinated omission.\n\nEnvironment: a production-sized stack with the same instance types, pool sizes, autoscaling policies and a database restored from a production snapshot. The payment provider gets a sandbox with agreed limits or a stub that injects realistic latency and errors.\n\nPhases: step ramp to 13,500 to find where and why it breaks, a soak at 9,000 to catch leaks and compaction, and a spike from 1,500 to 9,000 in a minute to measure autoscaling lag. The output is a go or no-go plus the first bottleneck and a load-shedding plan in case traffic beats the forecast."
+      },
+      "explanation": "The strongest answers treat the load test as an experiment whose result leadership will bet on: realistic traffic and data, an open arrival model that sees stalls, a production-like system, and pass criteria written down before the run. They also report the breaking point and its cause, not just a pass. Staff-level takeaway: a load test is only as trustworthy as its workload model and its measurement method, so design those first."
+    },
+    {
+      "id": "perf-rewrite-pushback-01",
+      "domain": "performance",
+      "concepts": ["latency-budgets", "algorithmic-complexity"],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Reviewing an RFC to rewrite a slow service in Rust",
+      "prompt": "A team lead posts an RFC proposing to rewrite the Node.js pricing service in Rust because \"Node is too slow\". p99 is 900 ms against a 300 ms SLO, and the team estimates two quarters of work. The RFC includes a microbenchmark showing Rust parsing JSON 6x faster than Node. You are the staff engineer reviewing it. What do you ask for, and how do you steer the decision?",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Asks for a breakdown of where p99 time actually goes (traces of slow requests plus CPU and event-loop-lag profiles) before choosing any fix",
+          "Applies budget or Amdahl reasoning: if most of the 900 ms is waiting on databases or downstream calls, a faster runtime can only shrink the remaining slice, so the microbenchmark does not answer the question",
+          "Names cheaper likely causes to rule out first and proposes a time-boxed investigation (N+1 queries, missing indexes, serial calls that could run in parallel, CPU work blocking the event loop, missing caching)",
+          "Sets explicit decision criteria for when a rewrite would be justified (for example a CPU-bound hot path that still dominates after fixes) and weighs it against cost: two quarters, migration risk, hiring and on-call skills",
+          "Offers incremental alternatives such as moving one CPU-bound component into a native module, a WASM module or a small separate service, with a strangler-style migration",
+          "Handles the people side: keeps the team owning the investigation, credits the real problem they found, and records the outcome in a decision record instead of vetoing"
+        ],
+        "redFlags": [
+          "Approves on the strength of a microbenchmark",
+          "Vetoes outright on language preference without data",
+          "Plans a big-bang rewrite with no incremental path",
+          "Makes the decision personal or a status contest instead of evidence-driven"
+        ],
+        "exemplar": "I'd start by agreeing with the problem: 900 ms against a 300 ms SLO is real and the team is right to push on it. Then I'd ask what the 900 ms is made of. I want traces of p99 requests broken down by span, a CPU profile, and event-loop lag measurements. JSON parsing 6x faster only matters if parsing is a large share of the p99; if 700 ms of it is waiting on Postgres and the inventory service, the best possible rewrite saves a fraction of the other 200 ms.\n\nI'd propose a two-week time box run by the same team: look for N+1 queries, missing indexes, serial downstream calls that could run in parallel, CPU-heavy work blocking the event loop, and cacheable lookups. Each of those is commonly a 2x to 10x tail win for days of work.\n\nThen we decide with criteria written down now: if after those fixes a CPU-bound hot path still dominates the p99, we move that piece, not the service, into a native module or a small Rust service behind the same API, and migrate traffic incrementally. Two quarters, a second language in on-call and the migration risk need that evidence to be worth it. I'd capture the outcome in an ADR so the decision rests on the data rather than on who argued hardest."
+      },
+      "explanation": "The core move is to separate the real problem (an SLO miss) from the proposed solution (a rewrite) and demand a time breakdown before committing two quarters. Most tail latency in services like this is I/O and architecture, which a faster runtime does not fix. The leadership part is steering with criteria and a time-boxed investigation the team owns, not a veto. Staff-level takeaway: make the team measure where the time goes before any rewrite, and agree up front what evidence would justify one."
+    },
+    {
+      "id": "perf-fanout-tail-design-01",
+      "domain": "performance",
+      "concepts": ["tail-latency"],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Hitting p99 on a 200-partition fan-out without tripling hardware",
+      "prompt": "Your query service fans every request out to 200 partitions (each with 3 replicas) and waits for all of them. Per-partition p50 is 8 ms, but per-partition p99.9 is 220 ms because of GC pauses and storage compactions. End-to-end p99 is 260 ms; the SLO is 150 ms. The cluster has about 25% spare capacity. Design a plan to meet the SLO without tripling hardware, and say how you would know it worked.",
+      "language": null,
+      "estSeconds": 840,
+      "rubric": {
+        "keyPoints": [
+          "Quantifies the amplification: with 200 parallel calls, 1 - 0.999^200 ≈ 18% of requests touch at least one call beyond the per-partition p99.9, and meeting an end-to-end p99 needs roughly the per-partition p99.995 under budget",
+          "Uses hedged or tied requests to another replica after a delay near the per-partition p95, with cancellation of the loser and an explicit hedge budget (around 5% extra load) that fits in the spare capacity",
+          "Reduces variability at the source: throttles or schedules compactions, tunes or isolates GC, and takes a replica out of rotation (or deprioritizes it) while it compacts",
+          "Reduces or tolerates fan-out: fewer, larger partitions per query or two-level aggregation, and deadline-based partial results with a completeness flag if the product accepts it",
+          "Measures the right things and rolls out safely: per-partition high-percentile histograms, end-to-end p99 and p99.9, hedge rate and added load, rolled out behind a flag with a canary"
+        ],
+        "redFlags": [
+          "Retries on timeout without a budget, amplifying load during slowdowns",
+          "Raises timeouts to reduce errors",
+          "Averages percentiles across partitions or assumes per-partition p99 equals end-to-end p99",
+          "Proposes only more hardware"
+        ],
+        "exemplar": "Start with the math. With 200 parallel calls, the request is as slow as its slowest partition. 1 - 0.999^200 ≈ 18%, so nearly one request in five hits at least one partition past its p99.9, which is why end-to-end p99 (260 ms) sits above the per-partition p99.9 (220 ms). To hold 150 ms at p99, each partition must be under about 150 ms at roughly its p99.995. Shaving the median is pointless; we have to cut the rare slow calls.\n\nFirst, race the tail: hedge each partition call to a second replica if it has not answered by about its p95 (maybe 15 ms), cancel the loser, and cap hedges at 5% of calls. Pauses are rarely correlated across replicas, so the hedge almost always wins. Second, remove the cause: rate-limit compactions, and have a replica stop accepting queries (or get deprioritized by the router) while it compacts or is in a long GC. Third, if product agrees, set a 120 ms deadline and return results from at least 198 of 200 partitions with a completeness flag.\n\nInstrument per-partition latency histograms at p99.9 and above, end-to-end p99 and p99.9, hedge rate and extra load. Roll out hedging behind a flag on 5% of traffic, compare, then widen."
+      },
+      "explanation": "Great answers quantify why fan-out makes the rare per-partition tail the common end-to-end case, then attack it three ways: race it (hedging with a budget), remove it (manage compaction and GC so a busy replica leaves the path), and stop waiting for it (deadlines and partial results). They budget the extra load and measure the high percentiles directly. Staff-level takeaway: at high fan-out, design for the per-call p99.99, because that is what your users see as p99.",
+      "references": ["Jeffrey Dean and Luiz Andre Barroso, \"The Tail at Scale\", Communications of the ACM, 2013"]
+    },
+    {
+      "id": "perf-memory-growth-offheap-01",
+      "domain": "performance",
+      "concepts": ["memory-gc"],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Worker RSS climbs to OOM while the JS heap stays flat",
+      "prompt": "A Node.js 20 image-metadata worker's RSS climbs from 450 MB to 1.9 GB over about 6 hours, and the pod is OOMKilled at its 2 GiB limit. Throughout, `process.memoryUsage().heapUsed` plateaus at about 380 MB, while `external` and `arrayBuffers` grow steadily. A restart buys another 6 hours. How do you investigate, and what are the likely causes?",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Reads the split correctly: the V8 heap is flat, so the growth is outside it (Buffers and ArrayBuffers, native addon memory, or allocator fragmentation), and raising --max-old-space-size will not help",
+          "Names concrete suspects: small Buffer slices that keep large parent buffers alive, unclosed zlib or image-processing streams, a native library cache (for example libvips under sharp), unbounded job concurrency holding large buffers, glibc malloc fragmentation across threads",
+          "Proposes discriminating experiments: correlate growth with jobs processed, heap snapshot diffs looking for Buffer or ArrayBuffer retainers with large external size, try jemalloc or MALLOC_ARENA_MAX, disable the native cache, replay a job sample locally",
+          "Fixes and guards: bound concurrency, copy slices that must be retained, destroy or close streams, cap native caches, and alert on RSS versus heap split before the OOM rather than relying on restarts"
+        ],
+        "redFlags": [
+          "Raising --max-old-space-size",
+          "Scheduling restarts as the fix",
+          "Hunting for a JavaScript closure leak without looking at the heap versus external split",
+          "Increasing the pod memory limit and moving on"
+        ],
+        "exemplar": "The numbers already narrow it down: heapUsed is flat at 380 MB while external and arrayBuffers grow, so this is not a classic JavaScript object leak. The memory lives outside the V8 heap, in Buffers, native addon allocations, or the C allocator, and raising --max-old-space-size will change nothing.\n\nLikely causes in an image worker: retaining a small slice of a large Buffer (the slice keeps the whole parent alive), streams from zlib or the image library that are never destroyed on error paths, the image library's own native cache (libvips under sharp keeps an operation cache), job concurrency that is not bounded so large buffers pile up, and glibc malloc fragmentation when many threads allocate large blocks.\n\nTo tell them apart, I'd plot RSS and external against jobs processed and job size. Heap snapshots still help: Buffer wrappers are small JS objects, but the snapshot shows their retainers and external size, and diffing two snapshots shows which code holds them. Then quick A/B runs on a replayed job sample: sharp.cache(false), jemalloc via LD_PRELOAD or MALLOC_ARENA_MAX=2, and a hard concurrency cap. Whichever flattens the curve is the cause. The fix follows from it, and I'd add a dashboard and alert on the RSS-to-heap gap so the next leak is caught before the OOM."
+      },
+      "explanation": "The key observation is the split between heap and external memory, which rules out the usual heap-leak workflow and points at buffers, native code or the allocator. Good answers list concrete suspects for an image workload and design cheap experiments that discriminate between them. Staff-level takeaway: always break memory into runtime heap, runtime-managed off-heap and native or allocator memory before choosing a tool."
+    },
+    {
+      "id": "perf-regression-triage-order-01",
+      "domain": "performance",
+      "concepts": ["profiling"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Order the steps for investigating a latency regression",
+      "prompt": "An alert fires: p99 latency for a core API is up 3x since this morning, with no outage. Put these investigation steps in the order you would take them.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        { "id": "1", "text": "Confirm and scope the regression with request metrics: which endpoints, percentiles, regions and start time" },
+        { "id": "2", "text": "Correlate the start time with changes: deploys, flag flips, config pushes, traffic mix, dependency incidents" },
+        { "id": "3", "text": "Check utilization and saturation of the service's resources and its dependencies" },
+        { "id": "4", "text": "Capture traces and on-CPU and off-CPU profiles of slow requests on an affected instance" },
+        { "id": "5", "text": "Form one hypothesis and test it in isolation with a canary revert, flag toggle or reproduction" },
+        { "id": "6", "text": "Verify the fix by comparing percentile histograms before and after under comparable load" }
+      ],
+      "explanation": "Scope first so you know what you are chasing, then ask what changed, because most regressions follow a change. A quick resource saturation sweep (USE) tells you whether this is a capacity problem or a code-path problem before you spend time profiling. Profiles and traces of slow requests produce a specific hypothesis, which you test in isolation and verify under comparable load. Jumping straight to profiling skips the cheap step that solves most regressions. Staff-level takeaway: work from broad and cheap (metrics, change logs) to narrow and expensive (profiles, experiments)."
+    },
+    {
+      "id": "perf-latency-numbers-order-01",
+      "domain": "performance",
+      "concepts": ["network", "latency-budgets"],
+      "skill": "recall",
+      "type": "ordering",
+      "difficulty": 1,
+      "title": "Order these operations from fastest to slowest",
+      "prompt": "Order these operations from fastest to slowest on typical modern server hardware and networks.",
+      "language": null,
+      "estSeconds": 60,
+      "items": [
+        { "id": "1", "text": "L1 cache reference" },
+        { "id": "2", "text": "Uncontended mutex lock and unlock" },
+        { "id": "3", "text": "Main memory (DRAM) reference" },
+        { "id": "4", "text": "Network round trip within one datacenter" },
+        { "id": "5", "text": "Random seek on a spinning hard disk" },
+        { "id": "6", "text": "Network round trip from US East to Western Europe" }
+      ],
+      "explanation": "Rough magnitudes: L1 cache about 1 ns; uncontended mutex about 15 to 25 ns; DRAM about 100 ns; a same-datacenter round trip about 100 to 500 microseconds; a hard disk seek about 5 to 10 ms; a transatlantic round trip about 70 to 90 ms. Each step is one to three orders of magnitude, which is why a single extra cross-region round trip outweighs almost any amount of in-process optimization. Staff-level takeaway: know these orders of magnitude cold, because they decide where a latency budget actually goes."
+    },
+    {
+      "id": "perf-n-plus-one-report-01",
+      "domain": "performance",
+      "concepts": ["n-plus-one"],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Order report that times out every Monday",
+      "prompt": "This weekly orders report is fast in staging and times out in production on Mondays, when about 40,000 orders have accumulated since the last run. Each database round trip is about 1 ms. Find the bug.",
+      "language": null,
+      "estSeconds": 150,
+      "code": {
+        "ts": "export async function recentOrdersReport(db: Db, since: Date): Promise<OrderRow[]> {\n  const orders = await db.query<Order>(\n    \"SELECT id, customer_id, total_cents FROM orders WHERE created_at >= $1\",\n    [since],\n  );\n  const rows: OrderRow[] = [];\n  for (const o of orders) {\n    const [customer] = await db.query<Customer>( //!issue:1\n      \"SELECT id, name, tier FROM customers WHERE id = $1\", //!issue:1\n      [o.customer_id], //!issue:1\n    ); //!issue:1\n    rows.push({ orderId: o.id, customer: customer.name, tier: customer.tier, total: o.total_cents });\n  }\n  return rows;\n}",
+        "go": "func RecentOrdersReport(ctx context.Context, db *sql.DB, since time.Time) ([]OrderRow, error) {\n\torders, err := loadOrders(ctx, db, since)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tout := make([]OrderRow, 0, len(orders))\n\tfor _, o := range orders {\n\t\tvar c Customer\n\t\terr := db.QueryRowContext(ctx, //!issue:1\n\t\t\t\"SELECT id, name, tier FROM customers WHERE id = $1\", o.CustomerID). //!issue:1\n\t\t\tScan(&c.ID, &c.Name, &c.Tier) //!issue:1\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tout = append(out, OrderRow{OrderID: o.ID, Customer: c.Name, Tier: c.Tier, Total: o.TotalCents})\n\t}\n\treturn out, nil\n}",
+        "rust": "pub async fn recent_orders_report(pool: &PgPool, since: DateTime<Utc>) -> sqlx::Result<Vec<OrderRow>> {\n    let orders: Vec<Order> =\n        sqlx::query_as(\"SELECT id, customer_id, total_cents FROM orders WHERE created_at >= $1\")\n            .bind(since)\n            .fetch_all(pool)\n            .await?;\n\n    let mut rows = Vec::with_capacity(orders.len());\n    for o in &orders {\n        let c: Customer = sqlx::query_as(\"SELECT id, name, tier FROM customers WHERE id = $1\") //!issue:1\n            .bind(o.customer_id) //!issue:1\n            .fetch_one(pool) //!issue:1\n            .await?; //!issue:1\n        rows.push(OrderRow { order_id: o.id, customer: c.name, tier: c.tier, total: o.total_cents });\n    }\n    Ok(rows)\n}",
+        "csharp": "public async Task<List<OrderRow>> RecentOrdersReport(DateTime since, CancellationToken ct)\n{\n    var orders = await _db.Orders\n        .Where(o => o.CreatedAt >= since)\n        .AsNoTracking()\n        .ToListAsync(ct);\n\n    var rows = new List<OrderRow>(orders.Count);\n    foreach (var o in orders)\n    {\n        var customer = await _db.Customers //!issue:1\n            .AsNoTracking() //!issue:1\n            .FirstAsync(c => c.Id == o.CustomerId, ct); //!issue:1\n        rows.Add(new OrderRow(o.Id, customer.Name, customer.Tier, o.TotalCents));\n    }\n    return rows;\n}",
+        "java": "@Transactional(readOnly = true)\npublic List<OrderRow> recentOrdersReport(Instant since) {\n    List<Order> orders = orderRepository.findByCreatedAtGreaterThanEqual(since);\n    List<OrderRow> rows = new ArrayList<>(orders.size());\n    for (Order o : orders) {\n        Customer c = customerRepository.findById(o.getCustomerId()) //!issue:1\n            .orElseThrow(); //!issue:1\n        rows.add(new OrderRow(o.getId(), c.getName(), c.getTier(), o.getTotalCents()));\n    }\n    return rows;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "One customer query per order inside the loop (N+1): 40,000 sequential round trips, about 40 seconds of pure latency",
+          "fix": "Fetch customers in one query: JOIN customers in the orders query, or collect distinct customer ids and run a single `WHERE id = ANY($1)` (or `IN`) lookup, then map results in memory. In ORMs, use an explicit join or eager fetch."
+        }
+      ],
+      "explanation": "The loop issues one query per order, so cost scales with the number of orders times the round-trip time: 40,000 x 1 ms is 40 seconds before the database does any real work. In staging, with a few hundred orders, the same code takes a fraction of a second, which is why N+1 bugs survive review. One JOIN, or one batched lookup of distinct customer ids, makes it two round trips regardless of volume. Staff-level takeaway: watch for any query inside a loop over query results, and track query count per request as a metric so N+1 shows up before production volume does.",
+      "tags": ["classic", "interview"]
+    },
+    {
+      "id": "perf-quadratic-contains-01",
+      "domain": "performance",
+      "concepts": ["algorithmic-complexity"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Nightly contact sync slows down far faster than data grows",
+      "prompt": "A nightly job imports new contacts from the CRM. A year ago it took 2 minutes. The data has since grown about 4x (now 1.2M exported contacts and 1.6M known IDs), and the job takes over 30 minutes while pinning one CPU core. The CRM and database calls each finish in seconds. Find the bug.",
+      "language": null,
+      "estSeconds": 150,
+      "code": {
+        "ts": "export async function syncContacts(crm: CrmClient, repo: ContactRepo): Promise<number> {\n  const exported: Contact[] = await crm.exportContacts();\n  const knownIds: string[] = await repo.allExternalIds();\n  const fresh: Contact[] = [];\n  for (const c of exported) {\n    const id = c.externalId.trim().toLowerCase();\n    if (!knownIds.includes(id)) { //!issue:1\n      fresh.push(c);\n    }\n  }\n  await repo.insertMany(fresh);\n  return fresh.length;\n}",
+        "go": "func SyncContacts(ctx context.Context, crm CRMClient, repo ContactRepo) (int, error) {\n\texported, err := crm.ExportContacts(ctx)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tknownIDs, err := repo.AllExternalIDs(ctx) // []string\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tvar fresh []Contact\n\tfor _, c := range exported {\n\t\tid := strings.ToLower(strings.TrimSpace(c.ExternalID))\n\t\tif !slices.Contains(knownIDs, id) { //!issue:1\n\t\t\tfresh = append(fresh, c)\n\t\t}\n\t}\n\treturn len(fresh), repo.InsertMany(ctx, fresh)\n}",
+        "rust": "pub async fn sync_contacts(crm: &CrmClient, repo: &ContactRepo) -> anyhow::Result<usize> {\n    let exported: Vec<Contact> = crm.export_contacts().await?;\n    let known_ids: Vec<String> = repo.all_external_ids().await?;\n    let mut fresh = Vec::new();\n    for c in exported {\n        let id = c.external_id.trim().to_lowercase();\n        if !known_ids.contains(&id) { //!issue:1\n            fresh.push(c);\n        }\n    }\n    let n = fresh.len();\n    repo.insert_many(fresh).await?;\n    Ok(n)\n}",
+        "csharp": "public async Task<int> SyncContactsAsync(CancellationToken ct)\n{\n    List<Contact> exported = await _crm.ExportContactsAsync(ct);\n    List<string> knownIds = await _repo.AllExternalIdsAsync(ct);\n    var fresh = new List<Contact>();\n    foreach (var c in exported)\n    {\n        var id = c.ExternalId.Trim().ToLowerInvariant();\n        if (!knownIds.Contains(id)) //!issue:1\n            fresh.Add(c);\n    }\n    await _repo.InsertManyAsync(fresh, ct);\n    return fresh.Count;\n}",
+        "java": "public int syncContacts() {\n    List<Contact> exported = crm.exportContacts();\n    List<String> knownIds = repo.allExternalIds();\n    List<Contact> fresh = new ArrayList<>();\n    for (Contact c : exported) {\n        String id = c.externalId().trim().toLowerCase(Locale.ROOT);\n        if (!knownIds.contains(id)) { //!issue:1\n            fresh.add(c);\n        }\n    }\n    repo.insertMany(fresh);\n    return fresh.size();\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Membership test is a linear scan of a list inside a loop, making the job O(n x m): about a trillion string comparisons at current volume",
+          "fix": "Build a hash set of known ids once (Set, map[string]struct{}, HashSet) and test membership in O(1), or push the anti-join into the database (insert with ON CONFLICT DO NOTHING, or a staging table and NOT EXISTS)."
+        }
+      ],
+      "explanation": "The tell is in the prompt: data grew 4x but runtime grew about 16x, the signature of quadratic work. Each of 1.2M exported contacts scans a list of 1.6M ids (about half of it on average for hits, all of it for misses), which is on the order of 10^12 comparisons, all on one core. A hash set makes each lookup constant time and the whole job linear; the database can also do the anti-join itself. Staff-level takeaway: when runtime grows faster than input, look for a linear operation hiding inside a loop before blaming I/O.",
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "perf-blocking-io-event-loop-01",
+      "domain": "performance",
+      "concepts": ["concurrency-models"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "One slow file read delays every connected client",
+      "prompt": "A notification gateway process serves about 20,000 connected clients, and every outbound notification it delivers goes through the code below. Templates live on a network file system. Whenever that file system's latency spikes to about 200 ms, delivery latency for every client on the process jumps together, not just for the message being rendered. Find the bug.",
+      "language": null,
+      "estSeconds": 240,
+      "code": {
+        "ts": "import { readFileSync } from \"node:fs\";\nimport { WebSocketServer } from \"ws\";\n\nconst wss = new WebSocketServer({ port: 8080 });\n\nwss.on(\"connection\", (socket, req) => {\n  const userId = authenticate(req);\n  socket.on(\"message\", (raw) => {\n    const msg = JSON.parse(raw.toString()) as Notify;\n    const tpl = readFileSync(`/mnt/templates/${msg.template}.hbs`, \"utf8\"); //!issue:1\n    const body = render(tpl, msg.vars);\n    socket.send(JSON.stringify({ to: userId, body }));\n  });\n});",
+        "go": "// run is the single goroutine that owns all client connections and delivers messages.\nfunc (h *Hub) run() {\n\tfor {\n\t\tselect {\n\t\tcase c := <-h.register:\n\t\t\th.clients[c.userID] = c\n\t\tcase c := <-h.unregister:\n\t\t\tdelete(h.clients, c.userID)\n\t\tcase msg := <-h.outbound:\n\t\t\ttpl, err := os.ReadFile(filepath.Join(\"/mnt/templates\", msg.Template+\".tmpl\")) //!issue:1\n\t\t\tif err != nil {\n\t\t\t\tlog.Printf(\"template %s: %v\", msg.Template, err)\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tbody := render(string(tpl), msg.Vars)\n\t\t\tif c, ok := h.clients[msg.To]; ok {\n\t\t\t\tselect {\n\t\t\t\tcase c.send <- body:\n\t\t\t\tdefault:\n\t\t\t\t\tclose(c.send)\n\t\t\t\t\tdelete(h.clients, msg.To)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rust": "// Single dispatcher task: every outbound notification for this process passes through here.\npub async fn dispatch(mut rx: mpsc::Receiver<Notify>, clients: Arc<DashMap<UserId, mpsc::Sender<String>>>) {\n    while let Some(msg) = rx.recv().await {\n        let path = format!(\"/mnt/templates/{}.hbs\", msg.template);\n        let tpl = match std::fs::read_to_string(&path) { //!issue:1\n            Ok(t) => t,\n            Err(e) => {\n                tracing::warn!(%path, error = %e, \"template read failed\");\n                continue;\n            }\n        };\n        let body = render(&tpl, &msg.vars);\n        if let Some(tx) = clients.get(&msg.to) {\n            let _ = tx.try_send(body);\n        }\n    }\n}",
+        "csharp": "// Single dispatcher loop: every outbound notification for this process passes through here.\npublic async Task DispatchAsync(ChannelReader<Notify> inbound, CancellationToken ct)\n{\n    await foreach (var msg in inbound.ReadAllAsync(ct))\n    {\n        var path = Path.Combine(\"/mnt/templates\", msg.Template + \".hbs\");\n        string tpl;\n        try\n        {\n            tpl = File.ReadAllText(path); //!issue:1\n        }\n        catch (IOException ex)\n        {\n            _log.LogWarning(ex, \"Template {Template} read failed\", msg.Template);\n            continue;\n        }\n        var body = Render(tpl, msg.Vars);\n        if (_clients.TryGetValue(msg.To, out var client))\n            client.Outbound.Writer.TryWrite(body);\n    }\n}",
+        "java": "public final class NotifyHandler extends SimpleChannelInboundHandler<Notify> {\n    private final ClientRegistry clients;\n\n    NotifyHandler(ClientRegistry clients) {\n        this.clients = clients;\n    }\n\n    @Override\n    protected void channelRead0(ChannelHandlerContext ctx, Notify msg) throws IOException {\n        Path path = Path.of(\"/mnt/templates\", msg.template() + \".hbs\");\n        String tpl = Files.readString(path); //!issue:1\n        String body = Templates.render(tpl, msg.vars());\n        Channel target = clients.channelFor(msg.to());\n        if (target != null && target.isActive()) {\n            target.writeAndFlush(body);\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Synchronous file read from a network file system on the shared event loop or dispatcher, so one slow read stalls delivery for every client it serves",
+          "fix": "Keep templates in memory (load at startup, refresh on change or with a TTL) so the hot path does no I/O. If a read is unavoidable, make it non-blocking or move it off the loop (fs.promises, tokio::fs or spawn_blocking, File.ReadAllTextAsync, a separate executor in Netty, a worker goroutine) with a timeout."
+        }
+      ],
+      "explanation": "Each runtime here multiplexes many clients over a small number of threads or a single loop: Node's event loop, a Netty event loop, a single hub goroutine, a single dispatcher task or loop. A synchronous read from a network file system blocks that shared thread, so every other client's messages queue behind it, which is why all clients slow down together when the file system does. Making the read async or offloading it fixes the stall, but the better fix is to not do I/O per message at all: templates change rarely and belong in memory. Staff-level takeaway: on any shared loop, a blocking call is a latency incident for everyone on that loop, so keep blocking I/O off it and out of the hot path.",
+      "tags": ["on-the-job", "gotcha"]
+    },
+    {
+      "id": "perf-hot-path-encoder-01",
+      "domain": "performance",
+      "concepts": ["algorithmic-complexity", "memory-gc"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review the access-log batch encoder on the ingest hot path",
+      "prompt": "This function runs on the log-ingest hot path: each node calls it about 60 times a second with batches of about 5,000 access-log lines (around 150 bytes each), and the nodes are CPU-bound with high GC time. Review it for performance problems.",
+      "language": null,
+      "estSeconds": 360,
+      "code": {
+        "ts": "const ALLOWED_KEYS = [\"method\", \"path\", \"status\", \"bytes\", \"ua\", \"region\"];\n\n// Turns a batch of raw access-log lines into the newline-delimited body we POST to the indexer.\nexport function encodeBatch(lines: string[]): Buffer {\n  let body = Buffer.alloc(0);\n  for (const line of lines) {\n    const pair = new RegExp(\"([a-z_]+)=([^ ]+)\", \"g\"); //!issue:1\n    const allowed = new Set(ALLOWED_KEYS); //!issue:3\n    const kept: string[] = [];\n    for (const m of line.matchAll(pair)) {\n      if (allowed.has(m[1])) kept.push(`${m[1]}=${m[2]}`);\n    }\n    kept.sort();\n    body = Buffer.concat([body, Buffer.from(kept.join(\"&\") + \"\\n\")]); //!issue:2\n  }\n  return body;\n}",
+        "go": "var allowedKeys = []string{\"method\", \"path\", \"status\", \"bytes\", \"ua\", \"region\"}\n\n// EncodeBatch turns a batch of raw access-log lines into the newline-delimited body we POST to the indexer.\nfunc EncodeBatch(lines []string) string {\n\tbody := \"\"\n\tfor _, line := range lines {\n\t\tpair := regexp.MustCompile(`([a-z_]+)=([^ ]+)`) //!issue:1\n\t\tallowed := map[string]bool{} //!issue:3\n\t\tfor _, k := range allowedKeys { //!issue:3\n\t\t\tallowed[k] = true //!issue:3\n\t\t} //!issue:3\n\t\tvar kept []string\n\t\tfor _, m := range pair.FindAllStringSubmatch(line, -1) {\n\t\t\tif allowed[m[1]] {\n\t\t\t\tkept = append(kept, m[1]+\"=\"+m[2])\n\t\t\t}\n\t\t}\n\t\tsort.Strings(kept)\n\t\tbody += strings.Join(kept, \"&\") + \"\\n\" //!issue:2\n\t}\n\treturn body\n}",
+        "rust": "const ALLOWED_KEYS: [&str; 6] = [\"method\", \"path\", \"status\", \"bytes\", \"ua\", \"region\"];\n\n/// Turns a batch of raw access-log lines into the newline-delimited body we POST to the indexer.\npub fn encode_batch(lines: &[String]) -> String {\n    let mut body = String::new();\n    for line in lines {\n        let pair = Regex::new(r\"([a-z_]+)=([^ ]+)\").unwrap(); //!issue:1\n        let allowed: HashSet<&str> = ALLOWED_KEYS.iter().copied().collect(); //!issue:3\n        let mut kept: Vec<String> = pair\n            .captures_iter(line)\n            .filter(|c| allowed.contains(&c[1]))\n            .map(|c| format!(\"{}={}\", &c[1], &c[2]))\n            .collect();\n        kept.sort();\n        body = format!(\"{}{}\\n\", body, kept.join(\"&\")); //!issue:2\n    }\n    body\n}",
+        "csharp": "private static readonly string[] AllowedKeys = { \"method\", \"path\", \"status\", \"bytes\", \"ua\", \"region\" };\n\n// Turns a batch of raw access-log lines into the newline-delimited body we POST to the indexer.\npublic static string EncodeBatch(IReadOnlyList<string> lines)\n{\n    var body = \"\";\n    foreach (var line in lines)\n    {\n        var pair = new Regex(\"([a-z_]+)=([^ ]+)\", RegexOptions.Compiled); //!issue:1\n        var allowed = new HashSet<string>(AllowedKeys); //!issue:3\n        var kept = pair.Matches(line)\n            .Where(m => allowed.Contains(m.Groups[1].Value))\n            .Select(m => $\"{m.Groups[1].Value}={m.Groups[2].Value}\")\n            .OrderBy(kv => kv, StringComparer.Ordinal)\n            .ToList();\n        body += string.Join(\"&\", kept) + \"\\n\"; //!issue:2\n    }\n    return body;\n}",
+        "java": "private static final List<String> ALLOWED_KEYS = List.of(\"method\", \"path\", \"status\", \"bytes\", \"ua\", \"region\");\n\n// Turns a batch of raw access-log lines into the newline-delimited body we POST to the indexer.\npublic static String encodeBatch(List<String> lines) {\n    String body = \"\";\n    for (String line : lines) {\n        Pattern pair = Pattern.compile(\"([a-z_]+)=([^ ]+)\"); //!issue:1\n        Set<String> allowed = new HashSet<>(ALLOWED_KEYS); //!issue:3\n        List<String> kept = new ArrayList<>();\n        Matcher m = pair.matcher(line);\n        while (m.find()) {\n            if (allowed.contains(m.group(1))) {\n                kept.add(m.group(1) + \"=\" + m.group(2));\n            }\n        }\n        Collections.sort(kept);\n        body += String.join(\"&\", kept) + \"\\n\"; //!issue:2\n    }\n    return body;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Regex is built and compiled for every line instead of once, roughly 300,000 compilations per second per node",
+          "fix": "Hoist the pattern to a module-level constant or static (a package var with regexp.MustCompile, LazyLock or once_cell for Regex, a static readonly Regex, a static final Pattern) and reuse it."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "The batch body is rebuilt by copying the whole accumulator for every line, so encoding a batch is O(n^2) in bytes copied",
+          "fix": "Append into a growable buffer (collect parts and join once, strings.Builder, String::push_str or write!, StringBuilder) or stream lines straight into the request body; pre-size it from the line count if possible."
+        },
+        {
+          "id": "3",
+          "severity": "minor",
+          "summary": "The allowed-key set is reallocated for every line even though it never changes",
+          "fix": "Build the set once at module or class load and reuse it; with six keys a static switch or sorted array is fine too."
+        }
+      ],
+      "explanation": "The critical issue is the accumulator: every line copies the entire body built so far, so a 5,000-line batch of about 150-byte lines copies roughly 5,000^2 / 2 x 150 bytes, nearly 2 GB per batch, which explains both the CPU and the GC time. Next, the regex is constructed per line, around 300,000 times a second per node; compiling is far more expensive than matching (C#'s RegexOptions.Compiled makes it even worse by generating code each time). The per-line set allocation is small but pure waste on a hot path. Staff-level takeaway: on a hot path, hoist everything invariant out of the loop and make sure accumulation is amortized linear, because both mistakes look harmless at test sizes.",
+      "tags": ["on-the-job"]
+    },
+    {
+      "id": "perf-unbounded-fanout-01",
+      "domain": "performance",
+      "concepts": ["concurrency-models", "network"],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review the album thumbnail resolver",
+      "prompt": "This code backs `GET /albums/:id/thumbnails`. It resolves a signed thumbnail URL for every photo in an album by calling the internal media service over HTTPS. Most albums have about 20 photos; the largest have 30,000. Review it for performance and resilience problems.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "import { Agent } from \"undici\";\n\nexport async function thumbnailUrls(photoIds: string[], signal: AbortSignal): Promise<string[]> {\n  return Promise.all( //!issue:1\n    photoIds.map(async (id) => { //!issue:1\n      const res = await fetch(`${MEDIA_URL}/v1/thumbnails/${id}`, { //!issue:2\n        dispatcher: new Agent({ keepAliveTimeout: 10_000 }), //!issue:3\n      });\n      if (!res.ok) throw new Error(`media ${res.status} for ${id}`);\n      const { url } = (await res.json()) as { url: string };\n      return url;\n    }),\n  );\n}",
+        "go": "func ThumbnailURLs(ctx context.Context, photoIDs []string) ([]string, error) {\n\turls := make([]string, len(photoIDs))\n\tg := new(errgroup.Group) //!issue:1\n\tfor i, id := range photoIDs {\n\t\tg.Go(func() error { //!issue:1\n\t\t\tclient := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 4}} //!issue:3\n\t\t\treq, err := http.NewRequest(http.MethodGet, mediaURL+\"/v1/thumbnails/\"+id, nil) //!issue:2\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tresp, err := client.Do(req)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tdefer resp.Body.Close()\n\t\t\tif resp.StatusCode != http.StatusOK {\n\t\t\t\treturn fmt.Errorf(\"media %d for %s\", resp.StatusCode, id)\n\t\t\t}\n\t\t\tvar body struct {\n\t\t\t\tURL string `json:\"url\"`\n\t\t\t}\n\t\t\tif err := json.NewDecoder(resp.Body).Decode(&body); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\turls[i] = body.URL\n\t\t\treturn nil\n\t\t})\n\t}\n\treturn urls, g.Wait()\n}",
+        "rust": "pub async fn thumbnail_urls(photo_ids: &[String]) -> Result<Vec<String>, reqwest::Error> {\n    let calls = photo_ids.iter().map(|id| async move { //!issue:1\n        let client = reqwest::Client::new(); //!issue:3\n        let resp = client //!issue:2\n            .get(format!(\"{MEDIA_URL}/v1/thumbnails/{id}\")) //!issue:2\n            .send() //!issue:2\n            .await? //!issue:2\n            .error_for_status()?;\n        let body: Thumb = resp.json().await?;\n        Ok::<_, reqwest::Error>(body.url)\n    });\n    futures::future::try_join_all(calls).await //!issue:1\n}",
+        "csharp": "public async Task<string[]> ThumbnailUrlsAsync(IReadOnlyList<string> photoIds, CancellationToken ct)\n{\n    var calls = photoIds.Select(async id => //!issue:1\n    {\n        using var http = new HttpClient { BaseAddress = _mediaBase }; //!issue:3\n        var thumb = await http.GetFromJsonAsync<Thumb>($\"v1/thumbnails/{id}\"); //!issue:2\n        return thumb!.Url;\n    });\n    return await Task.WhenAll(calls); //!issue:1\n}",
+        "java": "public List<String> thumbnailUrls(List<String> photoIds) throws Exception {\n    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) { //!issue:1\n        List<Future<String>> futures = new ArrayList<>();\n        for (String id : photoIds) {\n            futures.add(executor.submit(() -> { //!issue:1\n                HttpClient http = HttpClient.newHttpClient(); //!issue:3\n                HttpRequest req = HttpRequest.newBuilder(URI.create(mediaUrl + \"/v1/thumbnails/\" + id)).GET().build(); //!issue:2\n                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());\n                if (resp.statusCode() != 200) {\n                    throw new IOException(\"media \" + resp.statusCode() + \" for \" + id);\n                }\n                return mapper.readValue(resp.body(), Thumb.class).url();\n            }));\n        }\n        List<String> urls = new ArrayList<>(futures.size());\n        for (Future<String> f : futures) {\n            urls.add(f.get());\n        }\n        return urls;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Unbounded fan-out: one request for a large album launches up to 30,000 concurrent calls, exhausting sockets and memory and flooding the media service for every other caller",
+          "fix": "Bound in-flight calls per request (a semaphore, errgroup SetLimit, buffer_unordered or buffered, Parallel.ForEachAsync with MaxDegreeOfParallelism) to something like 16 to 32, and better still use a batch endpoint that resolves hundreds of ids per call and paginate large albums."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "No timeout or cancellation on each call: the caller's context, signal or token is ignored, so one slow call holds the whole response and work continues after the client has gone",
+          "fix": "Propagate the request's deadline (NewRequestWithContext, pass the AbortSignal, pass the CancellationToken, set a request timeout) and set a per-call timeout well inside the endpoint's latency budget."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "A new HTTP client and connection pool is created for every call, so no connection is reused: every call pays TCP and TLS handshakes and leaves sockets in TIME_WAIT",
+          "fix": "Create one long-lived client (or agent, transport) per process, configured with keep-alive and sensible pool limits, and share it across calls."
+        }
+      ],
+      "explanation": "The critical issue is unbounded concurrency. A typical album makes 20 calls, so it looks fine in testing, but a 30,000-photo album opens 30,000 simultaneous requests: ephemeral ports and file descriptors run out, memory spikes, and the media service sees a burst that slows every other tenant. Bound concurrency per request, and prefer a batch endpoint. The fresh client per call compounds it: every request does a TCP and TLS handshake and the pool is thrown away, which is the opposite of what keep-alive is for. Missing cancellation means abandoned requests keep consuming all of that. Staff-level takeaway: any fan-out over caller-controlled input needs an explicit concurrency limit, a shared connection pool and a deadline, or the largest customer becomes your load test.",
+      "tags": ["on-the-job", "classic"]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+/* The chronograph sits in the corner of a timed session. */
+.watch-dock {
+  position: fixed; right: clamp(12px, 2.4vw, 32px); bottom: clamp(12px, 2.4vw, 28px); z-index: 50;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  filter: drop-shadow(0 24px 30px rgba(0, 6, 13, 0.55));
+}
+.sw { --sw-size: 230px; width: max-content; display: flex; flex-direction: column; align-items: center; gap: 4px; user-select: none; }
+.sw svg { display: block; overflow: visible; width: var(--sw-size); height: auto; }
+.sw-pusher { cursor: pointer; outline: none; }
+.sw-pusher:focus-visible rect:last-of-type { stroke: var(--accent-hi); stroke-width: 2; }
+.sw-pusher:hover rect { filter: brightness(1.08); }
+@keyframes sw-warn { 50% { opacity: 0.25; } }
+.sw-warn { animation: sw-warn 1s steps(2, start) infinite; }
+
+.sw-readout {
+  display: inline-flex; align-items: baseline; gap: 8px; padding: 6px 14px; border-radius: 999px; margin-top: -6px;
+  background: linear-gradient(180deg, #03101d, #082340);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.8), inset 0 0 0 1px rgba(134, 174, 211, 0.18), 0 1px 0 rgba(254, 255, 250, 0.14);
+}
+.sw-state { font: 700 10px var(--font-head); letter-spacing: 0.16em; text-transform: uppercase; color: var(--navy-300); }
+.is-paused .sw-state { color: var(--accent-hi); }
+.sw-time { font: 600 18px var(--font-mono); color: var(--porcelain); font-variant-numeric: tabular-nums; text-shadow: 0 0 10px rgba(188, 212, 234, 0.35); }
+.sw-readout.warn .sw-time { color: #ffc1a5; text-shadow: 0 0 12px var(--accent-glow); }
+.sw-hint { font-size: 11px; color: var(--text-faint); }
+
+@media (max-width: 700px) {
+  .watch-dock { right: 8px; bottom: 8px; }
+  .watch-dock .sw { --sw-size: 150px; }
+}
+
+.sw.is-mini { width: auto; }
+.sw.is-mini .sw-readout { margin-top: 0; }
+.sw-fold { display: inline-flex; align-items: baseline; gap: 8px; border: 0; background: none; padding: 0; cursor: pointer; color: inherit; font: inherit; }
+.sw-chevron { font-size: 10px; color: var(--navy-300); }
+.sw-mini-toggle {
+  width: 30px; height: 30px; border-radius: 50%; border: 0; cursor: pointer; align-self: center; font-size: 11px; color: var(--navy);
+  background: radial-gradient(circle at 35% 25%, #fff, #c9d0d6 70%, #8f979e);
+  box-shadow: inset 0 1px 0 #fff, 0 0 0 1px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+.sw-mini-toggle:active { transform: scale(0.94); }
+.sw.is-mini .sw-readout { align-items: center; padding: 5px 12px 5px 6px; }

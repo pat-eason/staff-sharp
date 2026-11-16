@@ -1,0 +1,1352 @@
+{
+  "file": "execution",
+  "questions": [
+    {
+      "id": "exe-monday-first-hour-01",
+      "domain": "execution",
+      "concepts": [
+        "prioritization",
+        "context-switching"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "The one clean block on a Monday morning",
+      "prompt": "It is 08:55 on Monday. You have one uninterrupted block from 09:00 to 10:45, then meetings until 13:00. Given the inbox below, what is the best use of that block?",
+      "context": "**Inbox and Slack, 08:55**\n\n- `#inc-2291` (sev-2): \"Search p99 at 4.2 s. IC: Dana. Mitigated by rollback at 08:40, monitoring.\" You are not on call and nobody has paged you.\n- **11:00 design review:** 18-page doc migrating job processing from RabbitMQ to SQS. You are the required approver. You have not opened it. Eight people are invited.\n- **VP of Engineering (DM):** \"quick question, could we drop Kafka entirely and use SQS everywhere? no rush, sometime this week\"\n- **Procurement:** observability contract renewal. They need your sign-off on the usage tier by **17:00 today** or the quote goes up 22%. You estimate 30 minutes to check ingestion numbers.\n- **15:00:** 1:1 with your mentee.\n- 41 unread messages across 9 channels.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Skim the incident channel for two minutes, send the VP a one-line reply with when you will answer, then spend the block reading and commenting on the design doc; do the vendor sign-off after lunch"
+        },
+        {
+          "id": "b",
+          "text": "Work through all 41 unread messages first so nothing urgent is missed, then use whatever time remains to skim the design doc before 11:00"
+        },
+        {
+          "id": "c",
+          "text": "Join the incident bridge and help Dana chase the root cause, since search used to be your area and the rollback may not hold"
+        },
+        {
+          "id": "d",
+          "text": "Do the vendor sign-off first because it has the only hard deadline today, then answer the VP's Kafka question properly while it is fresh"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "The 11:00 review is the earliest commitment, eight people's time depends on you having read the doc, and this block is your only chance to do it. The vendor task has a 17:00 deadline and fits after lunch.",
+        "b": "Unread volume is not priority. A 41-message sweep eats the only focus block and leaves you reviewing an 18-page doc cold.",
+        "c": "The incident is mitigated, has an IC and has not asked for you. Joining uninvited adds noise; root cause can wait for the review.",
+        "d": "17:00 is a hard deadline but not the nearest one. The VP said \"this week\"; a holding reply costs one minute and a full answer costs your only block."
+      },
+      "explanation": "Sort by when each item actually bites and what it costs others if you are unprepared. The design review at 11:00 is the nearest commitment, and walking into it unread wastes eight people's hour. The vendor task has a later hard deadline and a known 30-minute cost, so it slots into the afternoon. The VP needs acknowledgement with a date, not an essay. The incident has an owner and is mitigated, and the unread count is not a priority signal. Staff takeaway: spend scarce focus time on the commitment that is both nearest and most expensive to do badly, and turn everything else into a small, dated acknowledgement.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-fourth-project-ask-01",
+      "domain": "execution",
+      "concepts": [
+        "saying-no",
+        "prioritization"
+      ],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "A fourth project that \"shouldn't be much\"",
+      "prompt": "Your director sends the message below. What is the best response?",
+      "context": "**Director (DM):** \"Can you also take point on the SSO migration? Shouldn't be much, mostly coordination. Security wants it kicked off this month.\"\n\nYour current load:\n- Tech lead, payments ledger rewrite (launch in 6 weeks), about 60% of your time\n- Author, API versioning RFC (in review), about 20%\n- Advisor to the on-call tooling effort, about 15%",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Say yes and absorb it with longer days until the ledger launches, since security work is important and you do not want to look unhelpful"
+        },
+        {
+          "id": "b",
+          "text": "Reply that you are at capacity and cannot take anything else on until the ledger launches in six weeks"
+        },
+        {
+          "id": "c",
+          "text": "Lay out your current load and offer options: defer SSO until after the ledger, hand the RFC to a senior engineer so you can lead SSO, or only run the kickoff; ask which matters most"
+        },
+        {
+          "id": "d",
+          "text": "Accept the SSO work and quietly drop your advisory role on on-call tooling, since nobody tracks advisor time closely"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Hidden overcommitment. The cost shows up later as a slipped ledger launch or burnout, and your director never got to weigh it.",
+        "b": "Accurate but closes the conversation. It gives the director nothing to decide and no help with a real problem.",
+        "c": "Makes the tradeoff visible and hands the decision to the person who owns priorities, with concrete options.",
+        "d": "Silently reprioritizing someone else's expectations erodes trust when they find out."
+      },
+      "explanation": "The staff move is \"yes, and here is what gives\", not yes or no. Showing current allocation turns an invisible capacity problem into a priority decision your director can make. Offering options (defer, swap, or a reduced scope like kickoff only) keeps you helpful while protecting the ledger launch. A flat no is defensible but unhelpful; a silent yes or a silent drop both hide costs. Staff takeaway: say no by making the tradeoff explicit and letting the priority owner choose.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-reliability-mandate-01",
+      "domain": "execution",
+      "concepts": [
+        "ambiguity"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "\"Make the platform more reliable\" with no metric attached",
+      "prompt": "At quarterly planning your VP gives you one goal: \"make the platform more reliable this quarter.\" No metric, no budget, no named teams. What is the strongest first move?",
+      "context": "Last quarter's incidents (14 total):\n\n| Cause | Count | Customer minutes lost |\n| --- | --- | --- |\n| Bad deploy or config push | 9 | 61% |\n| Database failover | 3 | 27% |\n| Third-party outage | 2 | 12% |\n\nNo SLOs are defined. Teams deploy with a script that pushes to all pods at once.",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        {
+          "id": "a",
+          "text": "Start a multi-quarter program to move to multi-region active-active, since regional redundancy is the most complete answer to reliability"
+        },
+        {
+          "id": "b",
+          "text": "Write a one-pager defining reliability as SLOs on the top user journeys, show change-related incidents drive 61% of lost minutes, propose progressive delivery as the first bet, and get the VP to agree the target"
+        },
+        {
+          "id": "c",
+          "text": "Ask the VP to specify exactly which metric and target they want before committing to any work, so you are not graded on the wrong thing"
+        },
+        {
+          "id": "d",
+          "text": "Ask every team to submit their top reliability ideas, then fund the five most popular so the effort has broad buy-in"
+        }
+      ],
+      "answer": [
+        "b"
+      ],
+      "optionNotes": {
+        "a": "Expensive, slow, and aimed at failures that caused a small share of the pain. Most incidents were self-inflicted changes, which multi-region does not fix.",
+        "b": "Turns ambiguity into a concrete, data-backed proposal the VP can accept or adjust, aimed at the biggest contributor.",
+        "c": "Bounces the ambiguity back up. Resolving it is the job; the VP is expecting you to propose the definition.",
+        "d": "Popularity is not impact. Five unrelated bets spread thin and cannot be measured against a shared target."
+      },
+      "explanation": "Vague mandates are an invitation to define the problem. The data already says most customer impact came from changes, so a measurable definition (SLOs on key journeys) plus a targeted first bet (canaries, staged rollout, config validation) is both credible and fast. Getting the VP to agree on the target before staffing means you are graded on something you chose with them. Staff takeaway: resolve ambiguity by proposing a measurable definition and a first bet grounded in data, then get it ratified.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-blocked-on-api-01",
+      "domain": "execution",
+      "concepts": [
+        "cross-team-dependencies",
+        "unblocking"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Your launch needs an API the other team can't build in time",
+      "prompt": "Your Checkout team needs a new quote endpoint from the Pricing team to launch. Pricing's tech lead is friendly but says it is \"next quarter\", seven weeks after your launch date, because their whole quarter is committed to a regulatory deadline. What do you do?",
+      "context": "- You need one endpoint: `POST /quotes` returning line-item prices with tax for a cart.\n- Pricing owns all price and tax logic; three other teams consume it.\n- The regulatory deadline carries fines if missed. Leadership has publicly backed it.\n- Two of your engineers have worked in the Pricing codebase before.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Escalate to both VPs now with the revenue at stake, and ask them to move the quote endpoint ahead of Pricing's regulatory work"
+        },
+        {
+          "id": "b",
+          "text": "Have your team implement quote and tax calculation inside Checkout for launch, and plan to migrate to Pricing's API once it ships"
+        },
+        {
+          "id": "c",
+          "text": "Agree the endpoint contract with Pricing's lead now, offer one of your engineers to build it in their repo under their review, and build Checkout against a stub meanwhile"
+        },
+        {
+          "id": "d",
+          "text": "Move your launch by seven weeks and tell stakeholders the delay is caused by a dependency outside your team's control"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Escalating against a fine-bearing deadline that leadership backs will almost certainly fail, and burns goodwill with a team you depend on.",
+        "b": "Duplicates price and tax logic. Divergent pricing between Checkout and the other three consumers is a correctness and finance problem, and \"migrate later\" rarely happens.",
+        "c": "Respects their constraint (no Pricing capacity), keeps ownership where it belongs, and removes the capacity bottleneck. The stub keeps your team moving in parallel.",
+        "d": "Accepts the delay without trying the cheaper options, and the framing quietly blames another team."
+      },
+      "explanation": "When the owning team agrees on the design but lacks capacity, contributing the work under their review (inner-source) is usually the highest-leverage unblock: ownership and correctness stay with Pricing, and capacity comes from you. Agreeing the contract first lets your team build against a stub and contract tests, so the real endpoint is a swap, not an integration project. Escalation is the right tool when priorities are genuinely unresolved, not when the other team has a legitimately higher one. Staff takeaway: unblock a capacity problem with capacity and a clear contract before you reach for escalation.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-glue-mentee-promo-01",
+      "domain": "execution",
+      "concepts": [
+        "glue-work"
+      ],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Mentee's promo stalls on \"unclear technical scope\"",
+      "prompt": "Your mentee, a senior engineer, spent the last six months on work that kept the team running. The promotion committee's feedback was \"impact is real but technical scope is unclear.\" In your 1:1 they ask what to do. What is the best advice?",
+      "context": "What they did:\n- Ran every incident review and tracked action items to closure\n- Rewrote onboarding docs; new hires now open a first PR in 3 days instead of 11\n- Fixed the release process: lead time from merge to production went from 5 days to 1\n- Coordinated weekly with QA and two partner teams",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        {
+          "id": "a",
+          "text": "Drop all coordination work immediately and take only feature tickets for two quarters, so the next packet is purely technical"
+        },
+        {
+          "id": "b",
+          "text": "Keep doing what they are doing, because good managers eventually notice impact and the committee will catch up next cycle"
+        },
+        {
+          "id": "c",
+          "text": "Write the work up as measured outcomes, get the manager to agree explicitly how it counts, hand off or rotate the recurring coordination, and own one technically deep project end to end"
+        },
+        {
+          "id": "d",
+          "text": "Ask the manager to move them into a technical program manager role so the title matches the kind of work they are already doing"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Abruptly dropping the work breaks the team and wastes six months of real impact that could be documented.",
+        "b": "Hoping to be noticed is how glue work stays invisible. The committee already told them what is missing.",
+        "c": "Makes the existing impact legible, gets explicit calibration, frees time by rotating recurring tasks, and adds the missing technical evidence.",
+        "d": "Changes their career track to fit an evaluation gap rather than closing it. That may be right for some people, but it is not what they asked for."
+      },
+      "explanation": "Glue work is real impact that evaluation systems often miss. The fix has three parts: make it legible (numbers like 11 to 3 days and 5 to 1 day, written down), get explicit agreement from the manager on how it counts at the next level, and rebalance by turning recurring coordination into a rotation while owning a technically deep piece of work. The release-process improvement is likely already a strong technical story if framed well. Staff takeaway: glue work needs to be measured, named and calibrated with the manager, and balanced with owned technical scope.",
+      "references": [
+        "Tanya Reilly, \"Being Glue\" (talk and essay, 2019)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-date-under-uncertainty-01",
+      "domain": "execution",
+      "concepts": [
+        "planning"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "A launch date for the board deck, with big unknowns",
+      "prompt": "Your PM needs a launch date for a partner integration to put in Friday's board deck. Two big unknowns remain. What do you give them?",
+      "context": "- Partner API docs are incomplete; the auth model is unclear (OAuth or signed requests).\n- Sandbox access arrives in about one week.\n- If auth is OAuth with the flow you expect, you estimate 6 weeks. If it is something custom, closer to 11.",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "A single date based on the 6-week estimate padded by 50%, so there is a safety margin and the board sees one clear number"
+        },
+        {
+          "id": "b",
+          "text": "No date yet; explain that any number before the sandbox is available would be a guess and you will provide one later"
+        },
+        {
+          "id": "c",
+          "text": "A 6 to 11 week range that names the auth unknown, plus a commitment to narrow it to a firm date within two weeks after a sandbox spike"
+        },
+        {
+          "id": "d",
+          "text": "The 6-week date the PM is hoping for, with a plan to quietly re-plan once the sandbox is available and the auth model is known"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Nine weeks falls short of the 11-week case, and padding hides the actual risk from the people deciding on it.",
+        "b": "Withholding a range when you have one is unhelpful; the PM still has to put something in front of the board.",
+        "c": "Honest about uncertainty, names what drives it, and commits to when it will shrink.",
+        "d": "Committing to the optimistic case sets up a public slip in front of the board."
+      },
+      "explanation": "Estimates under uncertainty should be ranges tied to named unknowns, with a date when the range will narrow. That gives the PM something true to present (\"6 to 11 weeks, firm date by the 28th\") and makes the biggest risk visible. Padding a point estimate hides the risk; refusing to estimate pushes the problem onto the PM; optimistic dates create the slip you will have to explain later. Staff takeaway: give a range, name its drivers, and commit to when and how it will shrink.",
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "exe-launch-blocker-01",
+      "domain": "execution",
+      "concepts": [
+        "launch-readiness"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Which open item turns the go/no-go into a no-go",
+      "prompt": "It is the go/no-go review for moving order history to a new datastore on Thursday. Which open item, on its own, should make this a no-go?",
+      "context": "| # | Open item |\n| --- | --- |\n| 1 | Runbook for the new datastore is 80% written; on-call training is scheduled for Wednesday |\n| 2 | Load test reached 1.6x peak against a 2x target. At 1.6x, system p99 was flat and CPU was 35%; the load generator itself was CPU-bound |\n| 3 | Cutover disables writes to the legacy table. Rollback plan says \"point reads back at legacy\". It has never been rehearsed, and nothing copies writes made after cutover back to legacy |\n| 4 | Two dashboards are still titled `v2-experimental` |\n| 5 | Support macros referencing the old order page are not updated |",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Item 1: on-call will be operating a new datastore with an incomplete runbook during its first production week"
+        },
+        {
+          "id": "b",
+          "text": "Item 2: the launch criteria said 2x peak, and shipping below an agreed criterion undermines the whole review process"
+        },
+        {
+          "id": "c",
+          "text": "Item 3: rollback would silently lose every order written after cutover, so the launch is effectively a one-way door"
+        },
+        {
+          "id": "d",
+          "text": "Item 5: support agents will send customers to a page that no longer exists, which turns a quiet launch into tickets"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "A real gap, but it closes before Thursday and does not make failure unrecoverable.",
+        "b": "The criterion was not met because the load generator saturated, not the system. Flat p99 at 35% CPU is strong headroom evidence; rerun with distributed load before Thursday, but it is not a blocker on its own.",
+        "c": "Rollback that drops writes is worse than no rollback: when you need it, it causes data loss. An unrehearsed rollback for a one-way data change is the classic launch blocker.",
+        "d": "Customer-facing friction, cheap to fix, and recoverable."
+      },
+      "explanation": "A launch readiness review asks: if this goes wrong, can we get back safely? Item 3 says no. Rolling back would point reads at a table missing every post-cutover order, which is data loss, so the team would be forced to fix forward under pressure. That makes it a blocker until reverse replication (or dual-write in both directions) exists and the rollback has been rehearsed. The other items are gaps to close but are recoverable or have evidence that the risk is small. Staff takeaway: in go/no-go, weigh items by reversibility and blast radius, not by how badly they miss a checklist line.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-status-meeting-01",
+      "domain": "execution",
+      "concepts": [
+        "meetings"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "A 14-person weekly sync that decides nothing",
+      "prompt": "You inherit a weekly 60-minute \"platform sync\" with 14 attendees. Each team reads out its status in turn; decisions are rarely made and several people visibly multitask. What change helps most?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "Shorten it to 45 minutes and ask each team to keep its status read-out under three minutes"
+        },
+        {
+          "id": "b",
+          "text": "Move status to a written update due Monday, keep a short meeting only for items flagged as needing discussion, and cancel it when nothing is flagged"
+        },
+        {
+          "id": "c",
+          "text": "Introduce a cameras-on, laptops-closed norm so people are actually present and engaged in the discussion"
+        },
+        {
+          "id": "d",
+          "text": "Rotate the facilitator each week so every team has ownership of the meeting and feels invested in it"
+        }
+      ],
+      "answer": [
+        "b"
+      ],
+      "optionNotes": {
+        "a": "Same format, slightly less time. Status read-outs are still the wrong use of 14 people synchronously.",
+        "b": "Separates information sharing (async, readable in two minutes) from discussion and decisions (synchronous, small, agenda-driven).",
+        "c": "Treats the symptom. People multitask because most of the meeting is irrelevant to them.",
+        "d": "Changes who runs a meeting whose format is the problem."
+      },
+      "explanation": "Status is broadcast information and is cheaper to write and read than to recite to a room. Synchronous time is for discussion, decisions and conflict. Moving status async and keeping a short, agenda-driven slot (cancelled when empty) saves most of 14 person-hours a week and makes the remaining meeting worth attending. Staff takeaway: give every recurring meeting a decision-making purpose, and move pure status to writing.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-fragmented-calendar-01",
+      "domain": "execution",
+      "concepts": [
+        "context-switching",
+        "meetings"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "21 meetings a week and a design doc that never moves",
+      "prompt": "Your calendar has 21 meetings spread across five days, so your longest free stretch is 75 minutes. A design doc due in two weeks has not progressed in three weeks. What is the most sustainable fix?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "Write the doc in the evenings for the next two weeks, when Slack is quiet and there are no meetings on the calendar"
+        },
+        {
+          "id": "b",
+          "text": "Decline every meeting for the next two weeks so you can finish the doc, then go back to your normal schedule"
+        },
+        {
+          "id": "c",
+          "text": "Move recurring meetings into two or three afternoons, block several 3-hour focus slots a week as busy, and add an office-hours slot for ad hoc asks"
+        },
+        {
+          "id": "d",
+          "text": "Break the doc into 30-minute tasks so each one fits into the gaps between meetings and progress becomes steady"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Works once, costs you sustainably, and leaves the calendar problem in place for the next doc.",
+        "b": "Overcorrects: some of those meetings are your job, and you return to the same fragmentation afterwards.",
+        "c": "Fixes the structure: meetings batched together, protected deep-work blocks, and a predictable place for interruptions.",
+        "d": "Design work needs sustained context. Thirty-minute fragments spend most of each slot reloading the problem."
+      },
+      "explanation": "The issue is fragmentation, not meeting count. Deep work like a design doc needs multi-hour blocks; scattered 30-minute gaps are mostly spent switching context. Batching meetings onto specific afternoons and defending focus blocks (with an office-hours slot so people still have a way to reach you) is a structural fix you can keep. Staff takeaway: protect maker time by shaping the calendar, not by heroics or by refusing to meet.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-add-engineers-late-01",
+      "domain": "execution",
+      "concepts": [
+        "project-rescue"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Four extra engineers, three weeks before launch",
+      "prompt": "Your project launches in three weeks and is behind. Your director offers four engineers from another team for the rest of the project. What is the best use of the offer?",
+      "context": "- Team: 4 engineers.\n- Critical path: payment provider integration. Only Ravi knows the provider's API; the provider's certification test is booked for the start of week 2.\n- Off the critical path: reporting dashboard (well specified), UI polish tickets, an end-to-end test suite that nobody has had time to write.\n- Ravi currently spends about 40% of his time on code review and answering questions about the reporting work.",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        {
+          "id": "a",
+          "text": "Accept all four and split the provider integration across them so the critical path finishes faster before certification"
+        },
+        {
+          "id": "b",
+          "text": "Decline all of them, since adding people to a late project only makes it later because of onboarding overhead"
+        },
+        {
+          "id": "c",
+          "text": "Accept one or two for the well-isolated work (reporting, UI polish, test suite) with a different reviewer, so Ravi can spend his time on the provider path"
+        },
+        {
+          "id": "d",
+          "text": "Accept all four and have them shadow Ravi for the first week so the provider knowledge is no longer concentrated in one person"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "The critical path is the work with the most context and only one expert. Splitting it across newcomers multiplies Ravi's coordination load before certification.",
+        "b": "An oversimplified reading of Brooks's law. Help on isolated, low-context work can shorten the project, especially when it frees the bottleneck person.",
+        "c": "Uses new people where onboarding cost is low and buys back the bottleneck person's time for the critical path.",
+        "d": "Spreading knowledge is a good long-term goal, but doing it in the final three weeks consumes the expert's time exactly when the critical path needs it."
+      },
+      "explanation": "Late projects get later when new people need the attention of the people on the critical path. Here the constraint is Ravi's time, and 40% of it goes to off-path work. Adding one or two people to well-specified, isolated tasks, reviewed by someone other than Ravi, frees the bottleneck without adding onboarding load to it. Staff takeaway: when rescuing a project, add help where it relieves the constraint, not where the work looks biggest.",
+      "references": [
+        "Frederick P. Brooks Jr., The Mythical Man-Month, ch. 2 \"The Mythical Man-Month\""
+      ],
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-risk-register-useful-01",
+      "domain": "execution",
+      "concepts": [
+        "risk-management"
+      ],
+      "skill": "recall",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "What makes a risk register change outcomes",
+      "prompt": "Your program has a risk register that nobody has opened since kickoff. You are rebuilding it so it actually changes decisions. Which properties should it have? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Each risk has one named owner, a person rather than a team, who is responsible for watching it"
+        },
+        {
+          "id": "b",
+          "text": "Each risk has a trigger or leading indicator that tells you it is starting to materialize"
+        },
+        {
+          "id": "c",
+          "text": "Risks are reviewed on a fixed cadence, such as the weekly project sync, and re-rated or closed"
+        },
+        {
+          "id": "d",
+          "text": "It lists every conceivable risk, however unlikely, so that nothing can be said to have been missed"
+        },
+        {
+          "id": "e",
+          "text": "Risks are ranked by likelihood alone, because that keeps the list simple to sort and discuss"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Without a named person, a risk belongs to everyone and so to nobody.",
+        "b": "A trigger turns a worry into something observable, which is what lets you act early.",
+        "c": "A register that is not reviewed decays into a compliance artifact within weeks.",
+        "d": "Exhaustive lists bury the five risks that matter under fifty that do not.",
+        "e": "Likelihood without impact ranks a likely cosmetic issue above an unlikely data-loss event."
+      },
+      "explanation": "A useful risk register is short, owned and alive. Each entry needs a person who watches it, an observable trigger, and a mitigation or contingency, and the whole list needs regular review where risks are re-rated or retired. Rank by likelihood and impact together, and keep it to the risks worth discussing. Staff takeaway: a risk without an owner, a trigger and a review cadence is just a worry written down.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "exe-slip-signals-01",
+      "domain": "execution",
+      "concepts": [
+        "project-rescue",
+        "planning"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Is this project actually slipping?",
+      "prompt": "You join a six-month project in month four as a technical advisor. Which observations are strong evidence that it is slipping and needs intervention now? Select all that apply.",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        {
+          "id": "a",
+          "text": "Three workstreams have reported \"90% done\" in each of the last four weekly updates"
+        },
+        {
+          "id": "b",
+          "text": "End-to-end integration between the two new services has not been attempted and is planned for the final two weeks"
+        },
+        {
+          "id": "c",
+          "text": "The burn-up chart shows completed work rising, but total scope has grown 35% since kickoff with no change to the date"
+        },
+        {
+          "id": "d",
+          "text": "Velocity dropped 30% last sprint, a sprint that included a company holiday and two engineers on planned leave"
+        },
+        {
+          "id": "e",
+          "text": "Pull requests now average 14 review comments, up from 9, since a new engineer joined the team last month"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Percent-complete that stops moving means the remaining work is unknown or harder than reported.",
+        "b": "Integration is where hidden assumptions surface; leaving it to the end puts the biggest unknown at the point with no slack.",
+        "c": "Scope growth without a date change is a slip in progress, even if the team is working hard.",
+        "d": "Explained by known, planned absences. Watch next sprint, but this is not evidence of a problem.",
+        "e": "More review comments around a new hire is normal onboarding, and can even be a healthy sign."
+      },
+      "explanation": "Real slip signals are structural: progress that has stopped converging (stuck at 90%), risk deferred to the end (late integration), and scope that grows while the date stays fixed. Noise looks like a bad metric with a known, temporary cause. Staff takeaway: look for stalled convergence, deferred integration and silent scope growth, and do not chase metric dips you can already explain.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-flag-service-mvp-01",
+      "domain": "execution",
+      "concepts": [
+        "scoping"
+      ],
+      "skill": "design",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Scoping the MVP of an internal feature-flag service",
+      "prompt": "You are scoping the first release of an internal feature-flag service. Which items belong in the MVP? Select all that apply.",
+      "context": "- **Goal:** three pilot teams can safely gate risky launches in production by the end of the quarter.\n- **Team:** 2 engineers, 10 weeks.\n- **Pilot teams:** all run Go and TypeScript services.\n- **Security policy:** every production configuration change must be attributable to a person.\n- **Targeting needs:** pilots want percentage rollouts and an allowlist of internal accounts.",
+      "language": null,
+      "estSeconds": 105,
+      "options": [
+        {
+          "id": "a",
+          "text": "Go and TypeScript server SDKs that fall back to a coded default when the flag service is unreachable"
+        },
+        {
+          "id": "b",
+          "text": "A per-flag kill switch that takes effect across all services within a few seconds"
+        },
+        {
+          "id": "c",
+          "text": "An audit log recording who changed which flag, from what value to what value, and when"
+        },
+        {
+          "id": "d",
+          "text": "A visual rule builder for targeting by user attributes, geography, device type and custom segments"
+        },
+        {
+          "id": "e",
+          "text": "SDKs for Java, Python, Ruby and Rust so every team in the company can adopt it on day one"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "The flag service must not become a new single point of failure for the services it protects.",
+        "b": "Gating risky launches means being able to turn them off quickly. This is the core value.",
+        "c": "Required by the security policy, and invaluable in incident review. Cheap to build early, painful to retrofit.",
+        "d": "Pilots need percentages and an allowlist. A general rule builder is weeks of work for needs nobody has yet.",
+        "e": "No pilot team uses these languages. Each SDK is ongoing maintenance and belongs after the pilot proves value."
+      },
+      "explanation": "An MVP is the smallest thing that delivers the goal safely for the named users. Here that means SDKs for the pilots' languages that fail safe, a fast kill switch, and the audit trail the policy requires. A general targeting UI and extra languages are adoption features for later. Staff takeaway: scope an MVP from the goal, the first users and the hard constraints, and cut anything that serves users you do not have yet.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-monday-inbox-order-01",
+      "domain": "execution",
+      "concepts": [
+        "prioritization"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Sequence a Monday that starts with a page",
+      "prompt": "It is 08:30 on Monday. Put your day's work in the order you should do it.",
+      "context": "- **08:31 page from the incident commander:** sev-2, payment webhooks failing for about 4% of merchants. Your team's service is the suspect and the IC asked for you by name.\n- **Procurement:** technical sign-off on a vendor renewal, due **12:00 today**, about 30 minutes of work.\n- **VP (DM):** \"quick question, should we be worried about our Postgres version going end-of-life?\" No deadline given.\n- **14:00 design review:** you are the required approver and have not read the doc.\n- **Slack:** about 30 unread pings across channels.\n- **16:00:** recurring 1:1 with your mentee.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        {
+          "id": "1",
+          "text": "Join the sev-2 bridge and work the webhook failures until mitigated or handed off"
+        },
+        {
+          "id": "2",
+          "text": "Complete the vendor renewal sign-off before noon"
+        },
+        {
+          "id": "3",
+          "text": "Send the VP a short holding reply with the day you will answer properly"
+        },
+        {
+          "id": "4",
+          "text": "Read and comment on the design doc before the 14:00 review"
+        },
+        {
+          "id": "5",
+          "text": "Triage the Slack backlog in one batch"
+        },
+        {
+          "id": "6",
+          "text": "Hold the 16:00 mentee 1:1 as planned rather than bumping it"
+        }
+      ],
+      "explanation": "Customer impact where you are specifically needed comes first. The vendor sign-off has the nearest hard deadline with a real cost. The VP gets a one-minute acknowledgement with a date, which you could reasonably send before the vendor task (or from the incident channel during a lull); both orders are fine. The design doc must be read before 14:00. Slack is batched rather than allowed to fragment the day, and the 1:1 stays put because repeatedly bumping a mentee teaches them they are the first thing to go. Staff takeaway: order by impact and deadline, acknowledge cheaply, batch the noise, and protect the commitments to people that are easiest to sacrifice.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-rescue-sequence-01",
+      "domain": "execution",
+      "concepts": [
+        "project-rescue"
+      ],
+      "skill": "lead",
+      "type": "ordering",
+      "difficulty": 4,
+      "title": "Rescue a project slipping three weeks before launch",
+      "prompt": "You are asked to take over a project three weeks before its committed launch. The team privately estimates seven more weeks of work. Put your first moves in order.",
+      "language": null,
+      "estSeconds": 150,
+      "items": [
+        {
+          "id": "1",
+          "text": "Spend the first two days with the team building ground truth: what is done, in progress, unstarted and blocked"
+        },
+        {
+          "id": "2",
+          "text": "Identify the critical path to the launch-defining outcome and the scope that is not on it"
+        },
+        {
+          "id": "3",
+          "text": "Take stakeholders concrete options (cut named scope to hold the date, or move the date for full scope) with a recommendation, and get a decision"
+        },
+        {
+          "id": "4",
+          "text": "Publish the re-baselined plan and make one place the source of truth for status"
+        },
+        {
+          "id": "5",
+          "text": "Run a short daily critical-path blocker review and clear blockers the same day"
+        },
+        {
+          "id": "6",
+          "text": "After launch, run a blameless retro on why the slip went unseen for so long"
+        }
+      ],
+      "explanation": "You cannot rescue what you have not measured, so ground truth comes first, and it comes from the engineers, not the status deck. The critical path shows what the launch really needs and what can be cut. Stakeholders then choose between scope and date with real options; doing that before you understand the work produces another plan that slips. Only after a decision is there a plan worth publishing and a loop worth running daily. Some leaders run the blocker loop from day one in parallel, which is reasonable for an obviously stuck item, but it should not replace re-baselining. Staff takeaway: in a rescue, get the truth, find the critical path, force the scope-or-date decision, then drive execution tightly.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-reliability-sequence-01",
+      "domain": "execution",
+      "concepts": [
+        "ambiguity",
+        "planning"
+      ],
+      "skill": "design",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Turn a vague reliability mandate into a plan",
+      "prompt": "Your VP's only instruction is \"make the platform more reliable.\" Put the steps for turning that into a funded plan in order.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        {
+          "id": "1",
+          "text": "Pull two quarters of incidents, pages and customer-reported outages"
+        },
+        {
+          "id": "2",
+          "text": "Agree with stakeholders on SLOs for the top user journeys, with targets"
+        },
+        {
+          "id": "3",
+          "text": "Rank incident causes by their contribution to SLO burn"
+        },
+        {
+          "id": "4",
+          "text": "Write a one-page proposal with two or three bets, their cost and expected SLO impact, and get sign-off and staffing"
+        },
+        {
+          "id": "5",
+          "text": "Execute the first bet and report progress monthly against the SLOs"
+        }
+      ],
+      "explanation": "Data first makes the definition conversation concrete (\"checkout errors cost us 40% of lost minutes\"), though starting with the SLO conversation and then pulling data is a reasonable swap. Ranking causes only makes sense once you know what you are measuring against. The proposal comes after the analysis so its bets are tied to measurable impact, and execution reports against the same SLOs that justified it. Staff takeaway: ambiguity is resolved by measurement, a shared definition, and a small number of bets tied to that definition.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-launch-sequence-01",
+      "domain": "execution",
+      "concepts": [
+        "launch-readiness"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Launch readiness for a new API version",
+      "prompt": "Put the launch readiness activities for a new public API version in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        {
+          "id": "1",
+          "text": "Agree launch criteria and owners (SLO targets, rollback plan, on-call coverage) at kickoff"
+        },
+        {
+          "id": "2",
+          "text": "Load-test at projected peak plus headroom and exercise key failure modes"
+        },
+        {
+          "id": "3",
+          "text": "Rehearse the rollback in staging and time it"
+        },
+        {
+          "id": "4",
+          "text": "Hold the go/no-go review against the agreed criteria"
+        },
+        {
+          "id": "5",
+          "text": "Roll out in stages (1%, 10%, 50%, 100%) with predefined abort thresholds"
+        },
+        {
+          "id": "6",
+          "text": "Hold a post-launch review after a week of production traffic"
+        }
+      ],
+      "explanation": "Criteria agreed at kickoff turn go/no-go into a check rather than a negotiation under deadline pressure. Load and failure testing come before the rollback rehearsal in most plans, but the two can run in parallel or in either order. Both must finish before go/no-go, which is pointless without their evidence. The staged rollout is the last line of defence, and the post-launch review captures what the process missed. Staff takeaway: decide what \"ready\" means early so the go/no-go is a measurement, not a debate.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "exe-premortem-steps-01",
+      "domain": "execution",
+      "concepts": [
+        "risk-management"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 1,
+      "title": "Run a pre-mortem for a migration kickoff",
+      "prompt": "You are facilitating a pre-mortem at the kickoff of a database migration. Put the steps in order.",
+      "language": null,
+      "estSeconds": 75,
+      "items": [
+        {
+          "id": "1",
+          "text": "Set the frame: \"It is three months after launch and this project failed. What happened?\""
+        },
+        {
+          "id": "2",
+          "text": "Everyone silently writes failure reasons on their own for about ten minutes"
+        },
+        {
+          "id": "3",
+          "text": "Share reasons round-robin, one at a time, and cluster duplicates"
+        },
+        {
+          "id": "4",
+          "text": "Rate the clusters by likelihood and impact"
+        },
+        {
+          "id": "5",
+          "text": "Give each top risk an owner and a mitigation or trigger in the risk register"
+        },
+        {
+          "id": "6",
+          "text": "Revisit the register at each project milestone"
+        }
+      ],
+      "explanation": "Imagining that failure has already happened makes it acceptable to name uncomfortable risks. Silent individual writing before discussion prevents anchoring on the most senior voice. Round-robin sharing surfaces quiet participants' ideas, clustering reduces noise, and rating focuses effort. Owners and triggers turn the output into action, and revisiting keeps it alive. Staff takeaway: a pre-mortem only works if people write independently first and the top risks leave the room with owners.",
+      "references": [
+        "Gary Klein, \"Performing a Project Premortem,\" Harvard Business Review, September 2007"
+      ],
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "exe-unblock-sequence-01",
+      "domain": "execution",
+      "concepts": [
+        "unblocking",
+        "cross-team-dependencies"
+      ],
+      "skill": "lead",
+      "type": "ordering",
+      "difficulty": 4,
+      "title": "Unblock a team waiting on another team's API",
+      "prompt": "A team you advise is blocked on an API another team owns, and it is not yet on that team's roadmap. Put your moves in order.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        {
+          "id": "1",
+          "text": "Pin down the minimal capability actually needed (one endpoint, its fields, its latency), not the full wish list"
+        },
+        {
+          "id": "2",
+          "text": "Meet the owning team's tech lead to understand their constraints and roadmap"
+        },
+        {
+          "id": "3",
+          "text": "Agree the API contract in writing, including error semantics"
+        },
+        {
+          "id": "4",
+          "text": "Build against a stub with contract tests, and offer engineers to help build the real thing"
+        },
+        {
+          "id": "5",
+          "text": "If it is still unscheduled at an agreed checkpoint, escalate jointly with the other tech lead, framed as a tradeoff for both managers"
+        },
+        {
+          "id": "6",
+          "text": "When the real API lands, run the contract tests against it and remove the stub"
+        }
+      ],
+      "explanation": "A small, precise ask is much easier to say yes to, so define it first. Talking to the owning team before proposing a contract shows you what they can absorb. A written contract lets both sides work in parallel, and the stub plus an offer of engineers removes the most common reasons for \"not this quarter\". Escalation comes late and jointly: two leads presenting a tradeoff get a decision, while a unilateral escalation gets a defensive team. Some people define the contract before the first meeting; that is fine as long as it is presented as a draft. Staff takeaway: shrink the ask, agree the contract, offer capacity, and escalate only jointly, with a tradeoff.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-estimate-sequence-01",
+      "domain": "execution",
+      "concepts": [
+        "planning"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Estimate a project with one big unknown",
+      "prompt": "You are asked for a delivery estimate for a project that depends on an unfamiliar third-party search engine. Put the estimation steps in order.",
+      "language": null,
+      "estSeconds": 105,
+      "items": [
+        {
+          "id": "1",
+          "text": "Decompose the work into milestones, each with a demoable outcome"
+        },
+        {
+          "id": "2",
+          "text": "Rate each milestone's uncertainty and identify the biggest unknown"
+        },
+        {
+          "id": "3",
+          "text": "Run a time-boxed spike on the biggest unknown"
+        },
+        {
+          "id": "4",
+          "text": "Estimate each milestone as a range (likely and pessimistic) using what the spike taught you"
+        },
+        {
+          "id": "5",
+          "text": "Commit to a date range with explicit assumptions and a checkpoint for narrowing it"
+        },
+        {
+          "id": "6",
+          "text": "Re-estimate at each milestone and publish changes as soon as they are known"
+        }
+      ],
+      "explanation": "Decomposition exposes where the uncertainty lives; you cannot target a spike until you know which piece is riskiest. The spike buys information that turns the widest range into a narrower one, so estimating afterwards is cheaper and more honest. Commitment is a range with stated assumptions, and re-estimating at milestones keeps stakeholders from being surprised late. Teams sometimes give a rough range before the spike to unblock planning, which is fine if it is labelled provisional. Staff takeaway: spend estimation effort on reducing the biggest unknown, then commit to a range that narrows on a schedule.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "exe-delegate-sequence-01",
+      "domain": "execution",
+      "concepts": [
+        "delegation"
+      ],
+      "skill": "lead",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Hand a workstream to a senior engineer",
+      "prompt": "You are delegating the data-migration workstream of your project to a senior engineer who has not led one before. Put the steps in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        {
+          "id": "1",
+          "text": "Pick a workstream that stretches them but is recoverable if it goes wrong"
+        },
+        {
+          "id": "2",
+          "text": "Explain why it matters, what success looks like and the constraints, but not how to do it"
+        },
+        {
+          "id": "3",
+          "text": "Agree which decisions they make alone, which they bring to you, and a check-in cadence"
+        },
+        {
+          "id": "4",
+          "text": "Have them write the plan, then review it and probe the risks rather than rewriting it"
+        },
+        {
+          "id": "5",
+          "text": "Step back: stay available, review at checkpoints, and resist taking over"
+        },
+        {
+          "id": "6",
+          "text": "Credit them by name in the launch announcement and in their promotion evidence"
+        }
+      ],
+      "explanation": "Good delegation hands over the outcome, not a task list. Choosing recoverable work makes it safe to let them own it. Context and success criteria come before decision rights, because the boundaries only make sense once the goal is clear. Having them write the plan builds ownership; your review adds judgment without taking it back. Stepping back is the hardest part, and public credit is what makes delegation pay off for their career. Staff takeaway: delegate outcomes with clear decision rights and checkpoints, then get out of the way and give credit.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-fourth-project-reply-01",
+      "domain": "execution",
+      "concepts": [
+        "saying-no"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Write the reply to the fourth-project request",
+      "prompt": "Your skip-level asks you to lead a fourth project. Write the reply you would send, and say briefly what you would do before sending it.",
+      "context": "**Skip-level (DM, Tuesday 16:40):** \"Hey, we need someone senior to drive the data residency work for the EU expansion. Legal wants a plan by end of month. You're the obvious person. Can you take it?\"\n\nYour current commitments:\n- Tech lead, search re-architecture (beta in 5 weeks), about 55%\n- Co-author, org-wide incident process RFC, about 15%\n- Mentoring two senior engineers toward staff, about 10%\n- Interviewing, about 10%\n\nYour manager is on leave until Monday.",
+      "language": null,
+      "estSeconds": 420,
+      "rubric": {
+        "keyPoints": [
+          "Acknowledges the request and that data residency for the EU launch matters, without an automatic yes",
+          "Makes current load visible in concrete terms (what you own, rough time share, the 5-week search beta) rather than just saying \"I'm busy\"",
+          "Offers at least two concrete options with their costs, such as pausing the RFC or interviewing, scoping to the end-of-month plan only, or nominating a mentee to lead with you advising",
+          "Gives a recommendation instead of leaving all the thinking to the skip-level",
+          "Asks for a decision with a date, and keeps the manager in the loop (copies them or flags it for Monday) rather than routing around them"
+        ],
+        "redFlags": [
+          "Unconditional yes that silently puts the search beta at risk",
+          "A flat no with no alternatives or help offered",
+          "Accepting and quietly dropping mentoring or the RFC without telling anyone",
+          "Negotiating a reprioritization with the skip-level while cutting the absent manager out entirely"
+        ],
+        "exemplar": "**Before sending:** check whether the end-of-month deliverable is a plan or an implementation, and whether either mentee has relevant context.\n\n**Reply:** \"Thanks for thinking of me. EU residency is important and I'd like to help. Here's where I am: I'm leading the search re-architecture (beta in 5 weeks, about half my time), co-writing the incident RFC, mentoring two engineers toward staff, and interviewing. Taking on residency fully would put the search beta at risk.\n\nThree options:\n1. **I write the end-of-month plan** (about 2 weeks at 30%) by pausing interviewing and handing the RFC to my co-author, then hand execution to an owner.\n2. **Priya leads, I advise.** She's ready for a cross-team project and has worked with Legal. I'd review the plan and stay on call for the hard calls.\n3. **I take it fully after the search beta**, which means the plan lands about 3 weeks after Legal's date.\n\nI'd recommend option 2, with option 1 as a fallback. Can we decide by Thursday? I'll loop in [manager] so they can confirm the tradeoff on Monday.\""
+      },
+      "explanation": "Strong answers treat this as a priority decision, not a personal yes or no. They make the cost visible (the search beta), offer options that include a growth opportunity for someone else, recommend one, ask for a dated decision, and keep the absent manager informed. Weak answers either absorb the work silently or refuse without helping. Staff takeaway: a good no is a set of priced options with a recommendation, delivered to the person who owns the priority.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-scheduler-ambiguity-01",
+      "domain": "execution",
+      "concepts": [
+        "ambiguity",
+        "scoping"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "\"Someone should figure out what to do with Cronos\"",
+      "prompt": "Your manager asks if you want to take on the problem below. There is no budget, no team and no deadline. Describe how you would approach your first six weeks and what you would deliver at the end of them.",
+      "context": "- **Cronos:** a homegrown job scheduler built in 2017. Runs about 1,900 scheduled jobs for 30 teams.\n- Its authors have all left. No team owns it; platform on-call \"sort of\" handles it.\n- Three incidents last quarter: a leader-election bug ran 400 jobs twice (one of them sent duplicate invoices), a disk filled on the single metadata host, and a silent stall delayed nightly reports by 9 hours.\n- At an all-hands the CTO said, \"someone should figure out what to do with Cronos.\"\n- Several engineers have already proposed migrating to Temporal, Argo Workflows or a managed cloud scheduler on Slack, each with a different favourite.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Establishes the facts before choosing a tool: an inventory of the 1,900 jobs (owner, schedule, criticality, idempotency, last success), failure rates, and incident cost",
+          "Secures a sponsor and explicit ownership (who owns Cronos while the decision is made, and who will fund the outcome), so the CTO's comment becomes a named mandate",
+          "Takes cheap, reversible risk reduction early, such as alerting on stalls, fixing the disk and single-host risk, adding ownership tags, deleting dead jobs, and making the duplicate-invoice job idempotent",
+          "Frames the decision as options (harden in place, migrate to a specific replacement, or a hybrid that moves critical jobs first) with cost, risk and migration path for each, using inventory data rather than preference",
+          "Delivers a written decision doc with a recommendation, a phased plan and a staffing ask by week six, with explicit checkpoints along the way"
+        ],
+        "redFlags": [
+          "Picking Temporal, Argo or a managed scheduler in week one before knowing what the jobs are",
+          "Proposing a big-bang migration of all 1,900 jobs",
+          "Doing it alone without a sponsor or an agreed owner, so the work evaporates when attention moves on",
+          "Ignoring the immediate risk (duplicate side effects, single metadata host) while the long-term study runs"
+        ],
+        "exemplar": "**Weeks 1 to 2: facts and ownership.** Ask the CTO (via my manager) to sponsor this, so it is a mandate rather than a side quest, and agree that platform on-call owns Cronos in the interim. Script an inventory of all 1,900 jobs: owner, schedule, last success, runtime, side effects, idempotent or not. I expect a long tail of dead jobs and a few dozen critical ones.\n\n**Weeks 2 to 3: stop the bleeding.** Alert on stalls and missed runs, fix the metadata disk and single-host risk, delete or disable jobs with no owner after a published grace period, and make the invoice job idempotent. All cheap and reversible.\n\n**Weeks 3 to 5: options.** Compare (a) harden in place, (b) migrate to one named replacement, and (c) hybrid: move the critical, side-effecting jobs first and let the long tail follow or die. Score each on cost, risk, migration effort and operating burden, using the inventory rather than Slack preferences. Review with the engineers who proposed tools so they are part of the decision.\n\n**Week 6: decision doc.** Recommendation, phased plan, staffing ask and success metrics (missed-run rate, duplicate-run rate, jobs with owners). The sponsor decides."
+      },
+      "explanation": "This is an ownerless, ambiguous problem with a live risk. Strong answers turn a remark at an all-hands into a sponsored mandate, gather facts before choosing a tool, reduce immediate risk cheaply, and finish with a decision document rather than a migration already in progress. Weak answers jump to a favourite replacement or try to boil the ocean. Staff takeaway: when handed a vague problem, get a sponsor, measure it, stop the bleeding, and deliver a decision rather than an opinion.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-slip-status-update-01",
+      "domain": "execution",
+      "concepts": [
+        "project-rescue"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Tell the VP and Sales the launch will slip",
+      "prompt": "Write the status update you would send to the VP of Engineering and the Head of Sales today.",
+      "context": "- Launch of the CRM sync feature is committed to Sales for **Nov 30**. Two enterprise deals reference it.\n- Yesterday, testing against the partner's production-like environment showed their API rate limit is 10 requests/second per tenant, not the 100 in their docs.\n- At 10 rps, initial sync for a large customer (about 2M records) would take more than 2 days. A batching redesign using the partner's bulk endpoint would take about 3 weeks.\n- Small customers (under 50k records) sync within an hour at the current rate.\n- One of the two deals is a small customer; the other has about 1.5M records.",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Leads with the bottom line in the first one or two lines: Nov 30 is at risk for large customers, plus the proposed path",
+          "States the cause in one factual sentence (partner rate limit is 10x lower than documented) without blaming the partner or the team",
+          "Offers concrete options with tradeoffs, for example launching Nov 30 for customers under 50k records and large customers about 3 weeks later, versus moving the whole launch",
+          "Makes a recommendation and ties it to the two named deals (the small one can proceed on time; the large one needs a conversation now)",
+          "Asks for a specific decision or action by a date, and says when the next update comes and how confident the new date is"
+        ],
+        "redFlags": [
+          "Burying the news under background or a long technical narrative",
+          "Vague wording such as \"some delays\" with no new date or options",
+          "Promising to hold Nov 30 for everyone through heroics",
+          "Blaming the partner's docs or a specific engineer"
+        ],
+        "exemplar": "**Subject: CRM sync: Nov 30 holds for small customers; large customers need about 3 more weeks**\n\n**Bottom line:** We can launch on Nov 30 for customers under 50k records. Customers above that need a redesign that adds about 3 weeks (target Dec 21, medium confidence).\n\n**Why:** Testing yesterday showed the partner's API allows 10 requests/second per tenant, not the documented 100. At that rate a 2M-record initial sync takes more than 2 days. Switching to their bulk endpoint fixes it.\n\n**Options:**\n1. *(Recommended)* Launch Nov 30 for small customers, large customers Dec 21. Deal A (small) proceeds as planned. Deal B (1.5M records) gets an early-access date of Dec 21.\n2. Hold the whole launch to Dec 21. Simpler messaging, but delays Deal A for no technical reason.\n\n**What I need:** Sales, can you check with Deal B by Friday whether Dec 21 works for them? I need the go-ahead on option 1 by Thursday to keep Nov 30.\n\n**Next update:** Monday, after a two-day spike on the bulk endpoint, with a firmer date."
+      },
+      "explanation": "Bad-news updates succeed when the reader can act on them in 30 seconds: bottom line first, cause in a sentence, options with a recommendation, a specific ask with a deadline, and when they will hear next. Segmenting by customer size here turns a slip into a partial on-time launch. Staff takeaway: deliver slips early, with the bottom line first and options attached, so leaders make a decision instead of absorbing a surprise.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-glue-work-visibility-01",
+      "domain": "execution",
+      "concepts": [
+        "glue-work",
+        "delegation"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Your own glue work reads as \"great collaborator\"",
+      "prompt": "Your review says the work below is valued but asks for \"more technical leadership.\" How do you make the work you have done visible, and how do you rebalance the next two quarters without leaving the teams that depend on you stranded?",
+      "context": "Your last three quarters as a staff engineer:\n- Coordinated the cross-team move from REST polling to webhooks across 5 teams; it shipped on time\n- Ran the architecture review rota and reviewed 31 design docs\n- Unblocked about two cross-team disputes a month, mostly over API ownership\n- Wrote the deprecation playbook that three other migrations now follow\n\nYour manager's review: \"A great collaborator who makes everyone around them better. We'd like to see more technical leadership next cycle.\"",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Rewrites the past work as technical outcomes with evidence: for example the webhook move as an architectural decision with measured effects (polling load removed, latency), and the playbook as reused technical direction",
+          "Has an explicit calibration conversation with the manager about what \"technical leadership\" means at this level and whether this work counts, rather than guessing",
+          "Turns recurring glue into named, shared structures (a review rota with others, a documented escalation path for API ownership disputes) instead of personal heroics",
+          "Hands off pieces as growth opportunities for others, with credit, so teams are not stranded",
+          "Chooses one technically deep, owned bet for the next two quarters, ideally growing out of the glue work (for example authoring the API ownership model those disputes keep revealing)",
+          "Keeps a running record (decision log, brag doc, published RFCs) so impact is visible as it happens, not reconstructed at review time"
+        ],
+        "redFlags": [
+          "Abruptly stopping all coordination so things break",
+          "Resenting the feedback silently and doing more of the same",
+          "Assuming the manager or committee will notice without written evidence",
+          "Treating glue work as inherently non-technical and discarding it from the narrative"
+        ],
+        "exemplar": "First, re-tell the last three quarters as technical leadership, because much of it was. The webhook migration was an architectural change I drove across five teams: write it up with the numbers (polling traffic removed, event latency, incidents avoided). The deprecation playbook is technical direction three migrations now follow. Then book a calibration conversation: \"Here is what I did and its impact. Which parts count as technical leadership at this level, and what would you want to see more of?\" I want that definition in writing.\n\nSecond, make the glue structural. Turn the architecture review rota into a rotation with two other senior engineers, and publish an API-ownership escalation path so disputes don't default to me. Hand the next migration's coordination to a senior engineer as a stretch project, with me advising and giving them credit.\n\nThird, take one deep bet: the recurring ownership disputes point to a missing API ownership and versioning model. I'd author that RFC and lead the first implementation, which uses everything I learned from the glue work.\n\nThroughout, keep a decision log and a brag doc so the next review is not an archaeology project."
+      },
+      "explanation": "Glue work is often under-credited because it is narrated as helpfulness rather than as outcomes. The best answers reframe it with evidence, calibrate explicitly with the manager, make recurring glue structural so it does not depend on one person, delegate with credit, and pick a deep bet that grows out of what the glue work revealed. Staff takeaway: make glue work visible as outcomes, turn it into shared structure, and pair it with technical work you clearly own.",
+      "references": [
+        "Tanya Reilly, \"Being Glue\" (talk and essay, 2019)",
+        "Tanya Reilly, The Staff Engineer's Path (O'Reilly, 2022)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-payments-readiness-review-01",
+      "domain": "execution",
+      "concepts": [
+        "launch-readiness"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Readiness review for a payment processor switch",
+      "prompt": "Design the launch readiness review for this migration. What must be demonstrably true before you say go, and how would you structure the rollout?",
+      "context": "- Moving card payments from Processor A to Processor B to save about 0.3% per transaction.\n- Peak: about 18,000 transactions per hour. Black Friday is in 5 weeks and is 4x normal peak.\n- Card tokens must be migrated from A's vault to B's vault (a one-time bulk export arranged with both processors).\n- The payment service already has a routing layer that picks a processor per request.\n- Finance reconciles daily against processor settlement files.",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Requires a tested, fast rollback: routing traffic back to Processor A per merchant or cohort within minutes, rehearsed, with tokens still valid at A during the transition",
+          "Requires proof of correctness and no double charges: idempotency keys honoured end to end, and a shadow or limited live period where B's settlement files reconcile with the internal ledger",
+          "Defines a staged rollout by percentage or merchant cohort with predefined abort thresholds on payment-specific metrics (authorization success rate versus the A baseline, decline-code mix, latency), not just 5xx rate",
+          "Addresses Black Friday explicitly: either finish the ramp with a safe margin before a change freeze, or defer the cutover until after the peak; load-test B's real limits at 4x peak",
+          "Assigns named owners for each criterion and covers operations: runbooks, on-call trained on B, processor escalation contacts, PCI and token-migration verification"
+        ],
+        "redFlags": [
+          "A big-bang cutover of all traffic at once",
+          "Ramping to 100% in the week before Black Friday",
+          "Measuring success only by error rate while ignoring authorization rate and declines",
+          "A checklist with no owners and no evidence attached to each line"
+        ],
+        "exemplar": "**Go criteria (each with an owner and evidence):**\n1. **Rollback:** the routing layer can send any cohort back to A within 5 minutes; rehearsed in production with internal test merchants. Tokens remain usable at A until 30 days after 100%.\n2. **Correctness:** idempotency keys flow to B; a two-week live period at 1% shows the ledger reconciling with B's settlement files to the cent, with zero duplicate captures.\n3. **Token migration:** 100% of active tokens verified at B by test authorizations on a sample, and a fallback to A for any token missing at B.\n4. **Capacity:** B confirms rate limits in writing; we load-test at 4x peak against B's certification environment.\n5. **Operations:** runbook, on-call training, B escalation contacts, PCI sign-off.\n\n**Rollout:** 1% then 5%, 25%, 50% by merchant cohort, low-risk merchants first, with at least 48 hours at each step. Abort if authorization rate drops more than 0.5 points below A's baseline for the same cohort, if the decline mix shifts, or if p99 exceeds 1.5 s.\n\n**Black Friday:** change freeze starts 10 days before. If we are not at 50% with clean reconciliation by then, we hold and finish after the peak. Saving 0.3% is not worth a Black Friday outage."
+      },
+      "explanation": "Payments readiness centres on reversibility, money correctness and the calendar. Strong answers demand a rehearsed rollback, reconciliation evidence, cohort-based ramps with payment-specific abort metrics, and an explicit decision about Black Friday. Weak answers treat it like a stateless service deploy. Staff takeaway: for high-stakes migrations, define go criteria as evidence with owners, and let the business calendar shape the rollout.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-dc-exit-risk-register-01",
+      "domain": "execution",
+      "concepts": [
+        "risk-management"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Build the risk register for a data center exit",
+      "prompt": "You are the technical lead for this program. Build the initial risk register (your top five or six risks, each with how you would watch and respond to it) and describe how you would run the register over the nine months.",
+      "context": "- The data center lease ends in **9 months**. Extending it requires 6 months' notice and costs about $400k per quarter.\n- 140 services remain; 38 have no clear owning team.\n- Two Postgres clusters (14 TB and 9 TB) back the billing and order systems.\n- Several request paths make 40+ service-to-service hops, tuned for sub-millisecond LAN latency.\n- Product teams have full roadmaps; the migration is staffed by 6 platform engineers plus \"help from product teams\".\n- Finance expects cloud costs to replace data center costs, not add to them.",
+      "language": null,
+      "estSeconds": 840,
+      "rubric": {
+        "keyPoints": [
+          "Names specific, program-relevant risks rather than generic ones, covering most of: the hard deadline, the 38 unowned services, the large-database cutovers, latency-sensitive chatty call paths split across the data center and cloud, product-team capacity, and double-running cost",
+          "Gives each risk a single owner, a likelihood and impact rating, and a leading indicator, such as migrated services versus plan, unowned services count, replication lag in rehearsals, or cross-site p99",
+          "Pairs mitigations with contingencies, especially treating the 6-month extension notice as a decision point at month 3 with explicit go/no-go criteria",
+          "Defines the operating rhythm: weekly review in the program sync, monthly review with the sponsor, escalation thresholds, and adding risks as they surface",
+          "Seeds and refreshes the register with a pre-mortem, and uses migration waves or rehearsals to retire risks with evidence"
+        ],
+        "redFlags": [
+          "Generic entries like \"timeline risk\" or \"resource risk\" with no trigger or owner",
+          "Missing the lease-extension notice deadline as a key decision point",
+          "Treating the register as a kickoff artifact that is never revisited",
+          "Assuming product teams will donate capacity without an agreed commitment"
+        ],
+        "exemplar": "**Register (owner, rating, indicator, response):**\n1. **Miss the lease date** (program lead; high impact). Indicator: services migrated versus plan. Contingency: at **month 3** (the extension notice deadline) decide go or extend, using criteria agreed with Finance now, such as at least 50% migrated and both databases rehearsed.\n2. **Unowned services stall** (platform EM; high likelihood). Indicator: unowned count, currently 38. Mitigation: ownership assigned by month 1 or the service is scheduled for decommission; platform migrates the rest as-is.\n3. **Database cutover overruns** (data lead; high impact). Indicator: replication lag and cutover time in rehearsals. Mitigation: logical replication, two rehearsals per cluster, cutover windows booked early.\n4. **Latency regression on split call paths** (architect; medium). Indicator: cross-site p99 in a canary. Mitigation: move tightly coupled call graphs together as one wave, mapped from tracing data.\n5. **Product-team capacity doesn't appear** (sponsor; high likelihood). Indicator: committed versus delivered engineer-weeks. Mitigation: written quarterly commitments per team, escalate after one missed sprint.\n6. **Double-running cost** (finance partner; medium). Indicator: monthly combined spend versus forecast. Mitigation: decommission racks as waves complete.\n\n**Rhythm:** seed with a pre-mortem; review weekly in the program sync; monthly with the sponsor; any risk going red triggers an escalation within 48 hours."
+      },
+      "explanation": "Senior risk management means specific risks, measurable early warnings and decision points before options expire. The lease-extension notice is the critical one: it turns a hard deadline into a decision you can make at month 3 with data. Strong answers also catch the people risks (unowned services, borrowed capacity), not just the technical ones. Staff takeaway: a risk register earns its keep through owners, leading indicators and pre-agreed contingency triggers, reviewed on a rhythm.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-overwhelmed-mentee-01",
+      "domain": "execution",
+      "concepts": [
+        "saying-no",
+        "delegation"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 2,
+      "title": "Coach a mentee who says yes to everything",
+      "prompt": "Your mentee opens your 1:1 with the message below. How do you use the 30 minutes?",
+      "context": "**Mentee:** \"I said yes to helping three other teams with their Kafka setups, I'm in two working groups, and my own feature is a week late. My manager hasn't said anything yet. I don't know how to say no without seeming unhelpful.\"",
+      "language": null,
+      "estSeconds": 360,
+      "rubric": {
+        "keyPoints": [
+          "Has the mentee list every commitment and rank them against their team's goals, and recommends confirming that ranking with their manager",
+          "Addresses the late feature now: they should tell their manager about the delay and the cause themselves, before the manager raises it",
+          "Gives a concrete way to say no or not now, with an alternative (\"I can't pair this sprint; here's the runbook, and I can review your config on Thursday\")",
+          "Helps them exit or step back from at least one commitment explicitly, such as leaving a working group or turning one-on-one Kafka help into a shared doc or office hours",
+          "Agrees a follow-up so the behaviour change sticks"
+        ],
+        "redFlags": [
+          "Going to the other teams and saying no on the mentee's behalf",
+          "Advising them to work longer hours to fit it all in",
+          "Generic advice like \"set boundaries\" with no concrete next step",
+          "Telling them to stop helping other teams entirely"
+        ],
+        "exemplar": "I'd start by acknowledging that being the person people ask is a strength, then make the load concrete. We list everything on a page: their feature, three Kafka asks, two working groups, with rough hours each. We rank them against their team's goals; the feature is clearly first.\n\nThen two actions this week. First, they tell their manager today: \"My feature is a week behind because I took on Kafka help for three teams. Here's my plan to get back on track.\" Better that it comes from them. Second, they practise one \"not now\" message together: \"I can't pair on your setup this sprint, but here's the doc I wrote for team X, and I can review your config Thursday afternoon.\" Three bespoke Kafka helps become one shared doc plus a weekly office hour.\n\nThey also pick one working group to step back from, telling the organiser explicitly rather than quietly fading out.\n\nWe end by agreeing to check in next week on how the conversations went."
+      },
+      "explanation": "Mentees who over-commit usually need permission, a ranking and a script, not a lecture. The best coaching makes the load visible, fixes the immediate trust risk (the late feature) by having them raise it first, gives them words for a helpful no, turns repeated one-to-one help into something reusable, and follows up. Staff takeaway: teach saying no as offering a better alternative, and help people practise it on a real case.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-sso-deal-mvp-01",
+      "domain": "execution",
+      "concepts": [
+        "scoping"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Scope the MVP that closes an enterprise deal",
+      "prompt": "Sales says the deal below closes only if you ship enterprise identity by Jan 15. Your roadmap has six months of identity work. Scope what you would ship for Jan 15 and how you would make sure it is the right cut.",
+      "context": "- **Customer:** 4,000 seats; their IT team uses Okta.\n- **Their security questionnaire** requires SSO for all users and automatic deprovisioning when someone leaves.\n- **Your full identity roadmap (6 months):** SAML and OIDC, support for 5 IdPs, SCIM provisioning (users and groups), just-in-time provisioning, group-to-role mapping, a self-serve admin UI, audit exports.\n- **Team:** 3 engineers for 8 weeks.\n- Sales has not yet put you in touch with the customer's IT team.",
+      "language": null,
+      "estSeconds": 540,
+      "rubric": {
+        "keyPoints": [
+          "Talks to the customer's IT team early (through Sales) to confirm hard requirements for Jan 15 versus later, rather than scoping from the Sales summary",
+          "Scopes to SAML with Okta only, plus SCIM user deactivation (and creation if required), because deprovisioning is an explicit requirement; defers OIDC, other IdPs, groups and the self-serve UI",
+          "Replaces the admin UI with an internal ops tool or a configuration-by-support process for the first customer",
+          "Builds the MVP on the same data model and interfaces the full roadmap will use, so it is an early slice rather than a one-off fork",
+          "Writes down the in-scope and out-of-scope list and gets Sales and the customer to agree, plus plans for security review and an end-to-end test with the customer's Okta tenant before Jan 15"
+        ],
+        "redFlags": [
+          "Trying to compress the full six-month roadmap into eight weeks",
+          "A hardcoded customer-specific fork that will have to be rewritten",
+          "Committing to Jan 15 before confirming requirements with the customer",
+          "Dropping deprovisioning, which the questionnaire explicitly requires"
+        ],
+        "exemplar": "First, I'd ask Sales for a 30-minute call with the customer's IT lead this week. The questionnaire names SSO and deprovisioning; I want to confirm whether groups, JIT or audit exports are needed at signing or can follow.\n\nAssuming it confirms the summary, the Jan 15 cut is:\n- **SAML 2.0 with Okta**, enforced for all users of that tenant.\n- **SCIM 2.0 Users** for create, update and deactivate; deactivation revokes sessions within minutes. No groups yet; roles are assigned in-app.\n- **Configuration by our support team** through an internal admin endpoint, not a self-serve UI.\n- **Audit:** log SSO and SCIM events in the existing audit table.\n\nDeferred: OIDC, other IdPs, SCIM groups, JIT, role mapping, self-serve UI, exports.\n\nIt is built on the identity model the roadmap needs (tenant IdP configuration, external identity links), so each deferred item extends it rather than replacing it. I'd write the scope down, get Sales and the customer to confirm it, book security review for week 5, and run an end-to-end test against their Okta tenant in week 6, leaving two weeks of buffer."
+      },
+      "explanation": "Deal-driven MVPs fail by either overbuilding or hacking. The right cut comes from the customer's actual requirements (here, SSO plus deprovisioning with one IdP), built as the first slice of the real architecture, with scope agreed in writing and an early test against the customer's own setup. Staff takeaway: scope a deadline MVP from verified customer requirements, and build it as the first slice of the long-term design, not a fork.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "exe-interrupt-shield-01",
+      "domain": "execution",
+      "concepts": [
+        "context-switching"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "A team drowning in interrupts",
+      "prompt": "You are the staff engineer on the team below. Design how the team should handle interrupts so engineers get focus time and other teams still get help.",
+      "context": "- Platform team: 7 engineers. They own the CI system, the internal developer portal and the Kubernetes base images.\n- Each engineer gets around 20 to 25 Slack questions a day from other teams, through DMs and four channels.\n- Pages: about 6 a week, handled by whoever notices first.\n- Median cycle time per ticket doubled over two quarters.\n- Team survey: \"I can't get two uninterrupted hours\" (6 of 7).",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Introduces a rotating interrupt role (weekly goalie or on-duty) that handles all inbound questions and pages, so the rest of the team is shielded",
+          "Funnels inbound requests into a single intake channel or form with a published response expectation, and redirects DMs there",
+          "Measures and categorizes interrupts for a few weeks, then removes the top sources with docs, self-service, better error messages or alert tuning",
+          "Makes the rotation sustainable: the person on duty has no sprint commitments, it is credited as real work, and there is a clear handoff",
+          "Defines success metrics (interrupts per engineer, focus blocks per week, cycle time, requester response time) and reviews them"
+        ],
+        "redFlags": [
+          "Telling engineers to mute Slack and ignore other teams",
+          "The staff engineer becoming the permanent shield personally",
+          "Adding a rotation without reducing the sources of interrupts",
+          "No measurement, so nobody can tell whether it worked"
+        ],
+        "exemplar": "**1. One door.** Create a single `#platform-help` channel with a short request template (what you're trying to do, what you tried, link to logs). Pin it in the four old channels and politely redirect DMs. Publish the expectation: first response within 2 working hours.\n\n**2. A weekly goalie.** One engineer per week owns the channel and the pager. They carry no sprint tickets; their job is to answer, triage into tickets, and fix small things. Everyone else is shielded and can ignore the channel. Handoff happens at a 15-minute Monday sync with open items.\n\n**3. Remove the sources.** The goalie tags every request by category for four weeks. I expect a few categories to dominate (say, flaky CI, image-pinning questions, portal permissions). Each top category gets a fix: a doc, a self-service command, a better CI error message, or alert tuning to remove noisy pages.\n\n**4. Measure.** Track interrupts per non-goalie engineer (target near zero), focus blocks, cycle time and requester response time. Review monthly.\n\nI would take a goalie week myself early on to model it, but not own it permanently."
+      },
+      "explanation": "Interrupts are a system problem: concentrate them on one rotating person, give them one door, and then use the data from that rotation to remove the sources. Without measurement and source reduction, a rotation just moves the pain around. Staff takeaway: protect maker time by routing interrupts through a rotation and a single intake, then eliminate their top causes.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "exe-conflicting-vps-01",
+      "domain": "execution",
+      "concepts": [
+        "prioritization"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Two VPs, one team, two \"top priorities\"",
+      "prompt": "Your manager asks you for a recommendation on the situation below. What do you recommend, and how do you get the conflict resolved?",
+      "context": "- You are the staff engineer on a 6-person developer platform team.\n- **VP Product** wants self-serve preview environments by March for a launch where 40 product engineers need to test against production-like data.\n- **VP Infrastructure** wants a 20% cloud spend reduction by March. Your team owns the Kubernetes clusters, which are 55% of spend.\n- Both have told your manager their item is \"the team's top priority for Q1.\"\n- Rough sizing: preview environments about 4 engineer-months; cost program about 5 engineer-months. The team has about 15 engineer-months in Q1 after on-call and support.\n- Preview environments, if built naively, would raise cloud spend.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Does the math and notices that both items fit in raw capacity (about 9 of 15 engineer-months), so the real conflict is about how the goals interact and about risk, not simple capacity",
+          "Identifies the coupling: naive preview environments work against the cost goal, so designs such as ephemeral environments with TTLs, scale-to-zero, shared clusters or spot nodes turn the two goals from conflicting into aligned",
+          "Asks what each VP actually needs by March (for example, preview environments for the launch's 40 engineers rather than the whole org; a 20% run-rate reduction rather than every initiative finished), and sequences to deliver early value to both",
+          "Escalates the residual conflict to the common leader (CTO or equivalent) with a written tradeoff and a recommendation, rather than the team silently choosing or quietly doing both badly",
+          "Defines checkpoints and metrics for both goals and a pre-agreed rule for what gives if either slips"
+        ],
+        "redFlags": [
+          "Picking the louder or more senior VP without making the tradeoff explicit",
+          "Splitting the team 50/50 with nobody agreeing to the reduced scope on each",
+          "Overcommitting to everything and relying on overtime",
+          "Avoiding the conversation and letting the VPs discover the conflict in March"
+        ],
+        "exemplar": "First, the numbers: 4 plus 5 engineer-months against about 15 available, so this is not a pure capacity problem. The real risk is that the two goals pull against each other: preview environments built naively add spend.\n\n**Recommendation:** do both, designed together, with one clear tie-break.\n- **Cost first in weeks 1 to 4:** rightsizing, spot nodes for stateless workloads, and cluster autoscaler tuning. These are usually the fastest wins and also lower the cost base preview environments will run on.\n- **Preview environments from week 3:** ephemeral, per-PR, with a 24-hour TTL, scale-to-zero and spot nodes, scoped first to the 40 launch engineers. They are designed to stay inside a fixed cost budget that counts toward the 20% target.\n- **Tie-break:** if we slip, the launch's preview environments win until March 1, because a missed launch date is harder to recover than a cost target missed by a month. That is my recommendation, not my decision.\n\n**Resolution:** I'd write this as a one-page tradeoff and ask my manager to review it with both VPs and the CTO together, so the tie-break is agreed by the person who outranks the conflict rather than discovered in March. Then we report monthly on both: preview environment adoption and cost run-rate."
+      },
+      "explanation": "Conflicting top priorities are rarely solved by choosing a side. The strongest answers check whether the conflict is real (here, capacity is fine, but the goals interact), redesign so the goals reinforce each other, scope each to what is actually needed by the deadline, and push the remaining tradeoff to the common leader in writing with a recommendation. Staff takeaway: dissolve priority conflicts with design and scoping where you can, and escalate the residual tradeoff explicitly to whoever owns both priorities.",
+      "tags": [
+        "on-the-job",
+        "interview"
+      ]
+    }
+  ]
+}

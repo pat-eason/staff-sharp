@@ -1,0 +1,1311 @@
+{
+  "file": "delivery",
+  "questions": [
+    {
+      "id": "del-ci-critical-path-01",
+      "domain": "delivery",
+      "concepts": [
+        "ci-cd",
+        "build-systems"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Shaving the right minutes off a 31-minute pipeline",
+      "prompt": "Your team's PR pipeline takes 31 minutes and engineers are batching changes to avoid it. Using the stage timings below, which single change cuts the most wall-clock time from a typical PR run?",
+      "context": "```\nstage            needs          duration  notes\ninstall          -              2m        lockfile cache hits 97%\nlint+typecheck   install        7m\nunit-tests       install        12m       single job, 2,400 tests\ndocker-build     install        19m       Dockerfile: COPY . . then npm ci; no layer cache\ne2e              docker-build   10m       runs against the built image\n```\nlint, unit-tests and docker-build already run in parallel.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Shard the unit tests across four runners so they finish in about 3 minutes"
+        },
+        {
+          "id": "b",
+          "text": "Copy only the lockfile before `npm ci` in the Dockerfile and enable a registry-backed layer cache"
+        },
+        {
+          "id": "c",
+          "text": "Move e2e to a nightly job and keep only unit tests as the merge gate"
+        },
+        {
+          "id": "d",
+          "text": "Run lint, typecheck and unit tests on runners with twice the CPU"
+        }
+      ],
+      "answer": [
+        "b"
+      ],
+      "optionNotes": {
+        "a": "Unit tests are not on the critical path (install 2 + docker 19 + e2e 10 = 31). Sharding them saves zero wall-clock minutes.",
+        "b": "Docker build is on the critical path. With the dependency layer cached it drops to roughly 5 minutes, and the run becomes about 17 minutes (2 + 5 + 10, with unit tests finishing at 14 in parallel).",
+        "c": "Saves 10 minutes but removes the only gate that exercises the real image, trading speed for escaped defects. Option b saves more without losing coverage.",
+        "d": "Speeds up jobs that already finish before docker-build, so the critical path is unchanged."
+      },
+      "explanation": "CI time is a critical-path problem. The longest chain is install → docker-build → e2e (31 minutes), and docker-build is slow because `COPY . .` before `npm ci` invalidates the dependency layer on every commit and there is no layer cache. Fixing layer ordering and caching takes it from 19 to about 5 minutes and the pipeline to about 17. Sharding or faster runners for off-path jobs feel productive but change nothing, and dropping e2e buys less time while removing a safety net.\n\nTakeaway: before optimizing any CI stage, draw the dependency graph and attack only what sits on the critical path.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-flag-delete-outage-01",
+      "domain": "delivery",
+      "concepts": [
+        "feature-flags"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Deleting a fully rolled-out flag caused an outage",
+      "prompt": "A flag that had been at 100% for nine months was deleted from the flag service as part of a cleanup. Within minutes, settlement throughput fell 90%. Which process change most directly prevents this class of incident?",
+      "context": "```\n# settlement-worker (still deployed)\nif flags.bool(\"fast_settlement\", default=False):\n    settle_via_stream(batch)\nelse:\n    settle_via_legacy_batch_api(batch)   # dependency degraded since spring\n\n14:02 flag-service: flag fast_settlement deleted by jlee\n14:03 sdk: flag fast_settlement not found, serving default=false (x 18,442)\n```",
+      "language": null,
+      "estSeconds": 100,
+      "options": [
+        {
+          "id": "a",
+          "text": "Require two approvals for any flag deletion in the flag service UI"
+        },
+        {
+          "id": "b",
+          "text": "Alert on-call whenever a flag is deleted so it can be restored quickly"
+        },
+        {
+          "id": "c",
+          "text": "Remove the code reference first, deploy everywhere, confirm zero evaluations for a period, then delete the flag"
+        },
+        {
+          "id": "d",
+          "text": "Change the SDK so every flag defaults to `true` when it cannot be found"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Approvers see the flag service, not the code. Neither reviewer would know a worker still branches on it.",
+        "b": "Shortens the outage but does not prevent it, and restoring the flag with the right targeting under pressure is its own risk.",
+        "c": "Making the winning path unconditional in code removes the dependency on the flag before the flag disappears. Zero evaluations proves no deployed binary still asks.",
+        "d": "The safe default depends on the flag. For a new risky feature `false` is correct; a global `true` default would turn half-built features on."
+      },
+      "explanation": "The flag was 100% on, but the code still contained both branches and a default that pointed at a nine-month-old path. Deleting the flag silently reverted every worker to that path. The safe order is code first: delete the dead branch, deploy to every service that evaluates the flag (including workers and batch jobs people forget), watch the flag service's evaluation count drop to zero, and only then archive the flag. Approval gates and alerts operate on the wrong artifact.\n\nTakeaway: a flag is retired when no running code evaluates it, so remove the code before you remove the flag.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "del-canary-baseline-01",
+      "domain": "delivery",
+      "concepts": [
+        "progressive-delivery",
+        "testing-in-production"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Canary analysis that fails healthy releases at random",
+      "prompt": "Automated canary analysis has failed four of the last six releases of `catalog-api`. Each time, a re-run passed with no code change. What is the most likely flaw, and the fix?",
+      "context": "```\ncanary-analysis  release=v812  duration=10m\n  population      pods  uptime   p99_ms  cpu_util  5xx_rate\n  production      60    6d 4h    182     41%       0.11%\n  canary (v812)   2     11m      239     49%       0.12%\n  verdict: FAIL  (p99 +31% > threshold 20%)\n```\nThe service is a JVM app with an in-process cache that takes about 15 minutes to warm.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "The threshold is too strict for p99; raise it to 40% so normal variance stops failing releases"
+        },
+        {
+          "id": "b",
+          "text": "The canary gets too little traffic; route 25% of requests to it so the p99 estimate is stable"
+        },
+        {
+          "id": "c",
+          "text": "It compares fresh pods to a warm fleet; also deploy a same-size baseline of the current version and compare canary to baseline"
+        },
+        {
+          "id": "d",
+          "text": "The bake time is too short for seasonality; compare against the same hour last week instead of live production"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Hides the noise and also hides real 30% regressions. The comparison is biased, not just noisy.",
+        "b": "Raises the blast radius of a bad release, and the canary pods are still cold and still compared to a six-day-old fleet.",
+        "c": "A baseline created at the same moment has the same cold JIT, cold cache and small-sample noise, so the only systematic difference left is the code.",
+        "d": "Week-over-week data adds traffic-mix noise and still compares cold pods with warm ones."
+      },
+      "explanation": "The canary is 11 minutes old with a cold JIT and cache, and only 2 pods produce its p99; the production population is 60 pods that have been warm for six days. Any fresh deployment, even of the same code, will look worse. The standard fix is a baseline cohort: spin up the current version with the same pod count at the same time, send it the same traffic share, and compare canary against baseline rather than against the long-running fleet. A longer bake helps warm-up, but equal-age, equal-size cohorts are what make the comparison fair.\n\nTakeaway: a canary verdict is only as good as its control group, so compare like with like before you tune thresholds.",
+      "references": [
+        "Netflix Technology Blog, Automated Canary Analysis at Netflix with Kayenta (2018)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-hotfix-trunk-first-01",
+      "domain": "delivery",
+      "concepts": [
+        "release-management",
+        "trunk-based-development"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "A fixed bug came back in the next release",
+      "prompt": "Your team practices trunk-based development and cuts a short-lived `release/*` branch from trunk every two weeks. An engineer fixed a production bug by committing directly to `release/2026.22` and shipped it. The bug reappeared in `release/2026.23`. Which policy prevents this?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "Land every fix on trunk first, then cherry-pick it onto the release branch"
+        },
+        {
+          "id": "b",
+          "text": "Merge each release branch back into trunk after it ships"
+        },
+        {
+          "id": "c",
+          "text": "Freeze trunk until the release branch has been in production for a week"
+        },
+        {
+          "id": "d",
+          "text": "Stop cutting release branches and hotfix by deploying trunk HEAD"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Trunk always contains the fix, so every future release branch inherits it. The cherry-pick to the release branch is the exception, not the source of truth.",
+        "b": "Works sometimes but drags release-only commits (version bumps, reverts) into trunk, causes conflicts, and depends on someone remembering.",
+        "c": "Blocks every team for a week and still does not put the fix on trunk.",
+        "d": "Ships two weeks of unreleased trunk changes as an emergency fix, which is a much bigger change than the hotfix."
+      },
+      "explanation": "With release branches cut from trunk, the branch is disposable and trunk is the source of truth. A fix made only on the release branch never reaches trunk, so the next cut regresses. Trunk-first then cherry-pick (sometimes called upstream first) guarantees the fix propagates and keeps the release branch a strict subset of trunk.\n\nTakeaway: fixes flow from trunk to release branches, never the other way round.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "del-cic-invalid-index-01",
+      "domain": "delivery",
+      "concepts": [
+        "database-migrations"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "CREATE INDEX CONCURRENTLY failed halfway",
+      "prompt": "A migration building an index on a 600M-row Postgres table failed, and now every re-run of the migration fails too. What should you do?",
+      "context": "```\n=> CREATE INDEX CONCURRENTLY idx_orders_customer_id ON orders (customer_id);\nERROR:  canceling statement due to statement timeout\n\n=> \\d orders\n...\n    \"idx_orders_customer_id\" btree (customer_id) INVALID\n\n# re-run\nERROR:  relation \"idx_orders_customer_id\" already exists\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Change the migration to `CREATE INDEX CONCURRENTLY IF NOT EXISTS` so it passes on the next deploy"
+        },
+        {
+          "id": "b",
+          "text": "Run `REINDEX INDEX idx_orders_customer_id` to finish building the existing index"
+        },
+        {
+          "id": "c",
+          "text": "`DROP INDEX CONCURRENTLY` the invalid index, then rebuild it with the statement timeout lifted for that session"
+        },
+        {
+          "id": "d",
+          "text": "Leave it; autovacuum will validate the index in the background and the planner will start using it"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "The migration goes green but the index stays INVALID: never used for queries, yet still updated on every write to the table.",
+        "b": "A plain REINDEX blocks writes to the table for the whole rebuild, which on a hot 600M-row table is an outage.",
+        "c": "This is the documented recovery: remove the invalid index without blocking writes, then retry the concurrent build with a timeout long enough to finish.",
+        "d": "Nothing validates an invalid index automatically. It stays invalid until dropped or rebuilt."
+      },
+      "explanation": "A failed concurrent build leaves an INVALID index behind. The planner ignores it, but inserts and updates still maintain it, so it costs write throughput and blocks the migration from re-running. Drop it with `DROP INDEX CONCURRENTLY`, then rerun the build in a session with `statement_timeout` raised (and outside a transaction block, since concurrent builds cannot run in one). Postgres 12+ also offers `REINDEX INDEX CONCURRENTLY`; the non-concurrent REINDEX here is the trap. Add a post-migration check that fails CI when any index has `indisvalid = false`.\n\nTakeaway: online index builds can fail in a half-done state, so your migration tooling must detect and clean up invalid indexes, not just retry.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "del-semver-major-01",
+      "domain": "delivery",
+      "concepts": [
+        "versioning"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 1,
+      "title": "Which change to an internal client library is a major bump",
+      "prompt": "`@acme/billing-client` is at 3.4.2 and used by 40 services. Which change in the next release requires 4.0.0 under semantic versioning?",
+      "language": null,
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "Add a new exported function `refundPartial()`"
+        },
+        {
+          "id": "b",
+          "text": "Add an optional `timeoutMs` field to the options object that defaults to the current behavior"
+        },
+        {
+          "id": "c",
+          "text": "Add a required method `onRetry()` to the exported `BillingHooks` interface that consuming services implement"
+        },
+        {
+          "id": "d",
+          "text": "Mark `chargeLegacy()` as deprecated in its doc comment"
+        },
+        {
+          "id": "e",
+          "text": "Fix tax rounding so results match the documented behavior"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "New public API that is backward compatible: minor.",
+        "b": "Optional, defaulted addition: minor.",
+        "c": "Every service implementing `BillingHooks` stops compiling until it adds the method. Additions are breaking when consumers implement the type rather than just call it.",
+        "d": "Semver treats a deprecation as a minor release; removal later is the major.",
+        "e": "Bringing behavior in line with the documented contract is a patch, though a consumer-visible change deserves a release note."
+      },
+      "explanation": "Semver is about the contract consumers depend on. Adding a method to an interface you only call is harmless, but adding one to an interface consumers implement breaks every implementation. That is the one major change here; the rest are additive (minor) or a bug fix toward documented behavior (patch).\n\nTakeaway: ask which side of the interface consumers sit on, because an addition that is safe for callers can break implementers.",
+      "references": [
+        "Semantic Versioning 2.0.0 (semver.org)"
+      ],
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "del-blue-green-shared-db-01",
+      "domain": "delivery",
+      "concepts": [
+        "progressive-delivery",
+        "backward-compatibility"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Blue/green rollback that made the outage worse",
+      "prompt": "The team flipped back to blue to roll back a bad green release, and blue immediately started failing every request. Which practice would have kept the rollback safe?",
+      "context": "```\n13:40 migrate (v42): ALTER TABLE orders RENAME COLUMN status TO state;\n14:00 router: traffic blue(v41) -> green(v42)\n14:20 alert: green 5xx 7% (unrelated pricing bug)\n14:22 router: traffic green(v42) -> blue(v41)\n14:22 blue: ERROR column \"status\" does not exist (x 9,310/min)\n```\nBlue and green share one Postgres database.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Use a canary rollout instead of blue/green so only a fraction of traffic sees v42"
+        },
+        {
+          "id": "b",
+          "text": "Snapshot the database before cutover and restore it when rolling back"
+        },
+        {
+          "id": "c",
+          "text": "Make pre-cutover schema changes additive only, compatible with both v41 and v42, and drop old columns after blue is retired"
+        },
+        {
+          "id": "d",
+          "text": "Run migrations after the cutover so blue is never exposed to the new schema"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "A canary shares the same database, so the rename would break the old version's pods just the same.",
+        "b": "Restoring loses every order written since the snapshot and takes far longer than a router flip.",
+        "c": "Expand before cutover, contract after: add `state`, write both, read with fallback, and drop `status` only once v41 can never run again.",
+        "d": "Green would then serve traffic against a schema it does not expect until the migration finishes."
+      },
+      "explanation": "Blue/green makes the stateless tier instantly reversible, but the database is shared state that does not flip back. A rename is a contract change that the old version cannot survive, so the moment traffic returned to blue it broke. Schema changes must be expand-only while both colors can serve, with the contract step deferred until the old version is gone for good.\n\nTakeaway: a deployment strategy only gives you a rollback if every piece of shared state stays compatible with the version you would roll back to.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-dora-target-gaming-01",
+      "domain": "delivery",
+      "concepts": [
+        "developer-experience"
+      ],
+      "skill": "lead",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Deployment frequency became an OKR and got gamed",
+      "prompt": "Your VP of Engineering made deployment frequency a per-team OKR. Within two weeks one team's deploy count quadrupled; their lead time and change failure rate did not move, and most new deploys are config-only no-ops. As the staff engineer asked to weigh in, what do you recommend?",
+      "context": "> **VP Eng:** Starting Q1 every team owns an OKR of 10+ deploys/week. Teams below that get flagged in quarterly review.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Exclude config-only deploys from the count so the metric reflects real changes"
+        },
+        {
+          "id": "b",
+          "text": "Replace deploy count with PRs merged per engineer, which is harder to inflate"
+        },
+        {
+          "id": "c",
+          "text": "Track all four DORA metrics as team-level trends for finding bottlenecks, pairing speed with stability, and drop them as review targets"
+        },
+        {
+          "id": "d",
+          "text": "Benchmark every team against the DORA elite thresholds and rank them publicly each quarter"
+        }
+      ],
+      "answer": [
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Patches this one exploit; the next one (splitting PRs into trivial deploys) follows, because the metric is still a target with consequences.",
+        "b": "Moves the target down to individuals, which is easier to game and punishes reviewing, mentoring and other glue work.",
+        "c": "DORA metrics describe the capability of a delivery system. Read together, speed and stability point at what to fix; used as a quota, they get gamed.",
+        "d": "DORA's performance clusters describe survey populations; ranking teams with very different systems against them invites the same gaming and kills trust."
+      },
+      "explanation": "Once a measure becomes a target with consequences, people optimize the number rather than the outcome (Goodhart's law), and that is exactly what happened. DORA's four keys (deployment frequency, lead time for changes, change failure rate, time to restore) are useful as a set, at team or service level, to find where delivery is constrained: long lead time from slow review, high failure rate from weak testing, and so on. Pair throughput with stability, look at trends, and turn findings into investment; do not tie them to reviews.\n\nTakeaway: use delivery metrics to diagnose the system, never as quotas for the people inside it.",
+      "references": [
+        "Forsgren, Humble and Kim, Accelerate (IT Revolution, 2018)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-remote-cache-hermetic-01",
+      "domain": "delivery",
+      "concepts": [
+        "build-systems",
+        "monorepo-tooling"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Remote cache served code generated by the wrong protoc",
+      "prompt": "A production image contained protobuf code generated by protoc 3.21, although the repo standardized on protoc 25. CI never ran that version. What is the root cause, and the fix?",
+      "context": "```\n# BUILD (codegen rule)\ngenrule(\n  name = \"ledger_pb\",\n  srcs = [\"ledger.proto\"],\n  outs = [\"ledger_pb.go\"],\n  cmd  = \"protoc --go_out=$(@D) $(SRCS)\",\n)\n\n# .bazelrc\nbuild --incompatible_strict_action_env\nbuild --remote_cache=grpcs://cache.internal  # read+write from CI and workstations\n\n# CI image:        /usr/local/bin/protoc  (25.1)\n# dev workstation: /usr/local/bin/protoc  (3.21, installed by hand)\n```",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "The cache entry went stale; add a TTL to the remote cache and flush it after toolchain upgrades"
+        },
+        {
+          "id": "b",
+          "text": "The rule uses an undeclared host tool, so protoc's version is not in the cache key; make protoc a declared, pinned input and let only CI write to the cache"
+        },
+        {
+          "id": "c",
+          "text": "Strict action env hid the developer's PATH; remove the flag so each machine's PATH becomes part of the action key"
+        },
+        {
+          "id": "d",
+          "text": "Developers skipped the toolchain setup docs; add a pre-commit check that asserts the local protoc version"
+        }
+      ],
+      "answer": [
+        "b"
+      ],
+      "optionNotes": {
+        "a": "Flushing removes this bad entry, but the next workstation with a different protoc will upload another one under the same key.",
+        "b": "The action key covers declared inputs, command line and env. protoc from PATH is none of those, so different binaries produce the same key. A pinned, declared toolchain makes the key honest, and CI-only writes stop untrusted machines poisoning shared results.",
+        "c": "Putting the PATH string in the key still says nothing about which binary sits at that path, and it destroys cache hit rates across machines.",
+        "d": "Relies on every person keeping their machine right forever; the build system should make the wrong tool impossible to pick up."
+      },
+      "explanation": "Remote caching is only safe for hermetic actions: the output must be a pure function of the declared inputs. This genrule shells out to whatever `protoc` is on PATH. Strict action env makes PATH identical across machines (good for hit rates), so the CI and workstation actions hash the same while running different compilers. The workstation built first, uploaded its result, and CI reused it. The fix is to bring protoc in as a pinned, checksummed dependency referenced by label, so its digest is part of the key, and to make workstations read-only clients of the remote cache.\n\nTakeaway: any input the build system cannot see is a cache-poisoning bug waiting for a second machine.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "del-iac-incident-drift-01",
+      "domain": "delivery",
+      "concepts": [
+        "infrastructure-as-code"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Terraform wants to undo the weekend's incident fix",
+      "prompt": "During a Saturday incident, on-call resized the primary database in the cloud console to stop CPU saturation. On Monday an unrelated PR's plan shows the change below. What should happen before anyone applies?",
+      "context": "```\n# module.orders_db.aws_db_instance.primary will be updated in-place\n  ~ resource \"aws_db_instance\" \"primary\" {\n      ~ instance_class = \"db.r6g.4xlarge\" -> \"db.r6g.2xlarge\"\n        # (41 unchanged attributes hidden)\n    }\n```",
+      "language": null,
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "Apply it; the code is the source of truth and out-of-band changes should not survive"
+        },
+        {
+          "id": "b",
+          "text": "Run `terraform apply -refresh-only` so the state records the new size, then apply the PR"
+        },
+        {
+          "id": "c",
+          "text": "Add `ignore_changes = [instance_class]` to the resource so console resizes are never reverted"
+        },
+        {
+          "id": "d",
+          "text": "Block the apply, merge a PR that sets the size deliberately in code, then apply the original PR"
+        }
+      ],
+      "answer": [
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Reverts the fix that ended the incident, and resizing a primary database triggers a restart or failover in the middle of Monday traffic.",
+        "b": "Refresh-only updates state, but the config still says 2xlarge, so the next plan proposes exactly the same downgrade.",
+        "c": "Hides this drift and all future drift on that attribute, so the code permanently stops describing reality.",
+        "d": "Codifying the change, or consciously deciding to revert it in a maintenance window, makes code and reality agree before any apply."
+      },
+      "explanation": "Drift after an incident is expected; the break-glass change was right. What matters is reconciling it on purpose. The code must be updated to describe the size you actually want, reviewed like any change, and applied, before an unrelated apply silently reverts it. Refresh-only and ignore_changes both look like reconciliation but leave config and reality disagreeing. Follow up with a rule that console changes made during incidents get a codifying PR within a day, and scheduled drift detection that pages the owner.\n\nTakeaway: drift is resolved by changing the code deliberately, not by letting the next apply decide for you.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-event-breaking-changes-01",
+      "domain": "delivery",
+      "concepts": [
+        "backward-compatibility",
+        "versioning"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 3,
+      "title": "Which event changes break existing consumers",
+      "prompt": "The orders team publishes `OrderPlaced` JSON events to Kafka for 14 consuming teams. Consumers ignore unknown fields but decode enums strictly (an unknown value throws). Which proposed changes are breaking for existing consumers? Select all that apply.",
+      "language": null,
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Add an optional `giftMessage` string field"
+        },
+        {
+          "id": "b",
+          "text": "Make `shippingAddress` null for digital-only orders (it was always present before)"
+        },
+        {
+          "id": "c",
+          "text": "Add `PARTIALLY_PAID` to the `paymentStatus` enum"
+        },
+        {
+          "id": "d",
+          "text": "Change `totalAmount` from integer cents (`1234`) to a decimal string (`\"12.34\"`)"
+        },
+        {
+          "id": "e",
+          "text": "Publish a new `OrderGiftWrapped` event type on a separate topic"
+        }
+      ],
+      "answer": [
+        "b",
+        "c",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Consumers ignore unknown fields, so a new optional field is safe.",
+        "b": "Relaxing a guarantee breaks readers: code that dereferences an always-present field now hits null.",
+        "c": "With strict enum decoding, the first event carrying the new value throws in every consumer. Adding enum values is only safe once readers tolerate unknowns.",
+        "d": "Both the type and the unit change; consumers either fail to parse or silently mis-read amounts.",
+        "e": "Existing consumers do not subscribe to the new topic, so nothing changes for them."
+      },
+      "explanation": "For a producer, backward compatibility means every event you emit is still readable by every deployed consumer. Additions are safe only when readers tolerate them: unknown fields here, but not unknown enum values. Narrowing what a producer promises (an always-present field becoming nullable) or changing a field's type or unit breaks readers even though the schema still looks similar. A schema registry compatibility check catches type changes, but semantic changes like units and optionality need a contract review.\n\nTakeaway: judge an event change by what deployed readers assume, not by whether the schema diff looks additive.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "del-testing-in-prod-safeguards-01",
+      "domain": "delivery",
+      "concepts": [
+        "testing-in-production"
+      ],
+      "skill": "apply",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Safe ways to test a new checkout in production",
+      "prompt": "A team wants confidence in a rewritten checkout service before customers depend on it, and staging cannot reproduce production's data and traffic. Which practices are sound ways to test in production? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Synthetic tenants flagged as such and excluded from billing, analytics, emails and fraud models"
+        },
+        {
+          "id": "b",
+          "text": "Mirror live requests to the new service with payments and emails stubbed out, and diff its responses offline"
+        },
+        {
+          "id": "c",
+          "text": "Run the end-to-end payment check against a senior employee's personal account so the traffic looks organic"
+        },
+        {
+          "id": "d",
+          "text": "Expose the new path to employees first behind a flag with a tested kill switch"
+        },
+        {
+          "id": "e",
+          "text": "Load-test production at 3x peak during business hours without announcing it, to get honest numbers"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "d"
+      ],
+      "optionNotes": {
+        "a": "Marked synthetic data lets you exercise real infrastructure without polluting money, metrics or ML features.",
+        "b": "Shadow traffic gives production-shaped input with suppressed side effects; diffing responses finds behavioral differences safely.",
+        "c": "Real people's accounts and real money in test flows mix test activity into financial records and fraud signals, and the person bears the consequences.",
+        "d": "Dogfooding behind a flag limits blast radius to people who can report problems, and the kill switch bounds the damage.",
+        "e": "An unannounced 3x load test is an incident you caused. Prod load tests need coordination, a ramp, abort criteria and off-peak scheduling."
+      },
+      "explanation": "Testing in production is legitimate when the blast radius is explicitly bounded: synthetic identities that downstream systems know to ignore, mirrored traffic with side effects suppressed, and exposure limited by flags with a kill switch. What separates it from recklessness is that every test has an owner, isolation from real customers and money, and a way to stop it.\n\nTakeaway: test in production with bounded blast radius and suppressed side effects, never with real customers' money or unannounced load.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-affected-build-misses-01",
+      "domain": "delivery",
+      "concepts": [
+        "monorepo-tooling",
+        "build-systems"
+      ],
+      "skill": "analyze",
+      "type": "multi",
+      "difficulty": 4,
+      "title": "Why affected-only CI skipped a project it broke",
+      "prompt": "Your monorepo CI runs only the projects affected by a PR, computed from the import graph plus the git diff against the merge base. A merged change broke `checkout-web`, but its tests never ran on the PR. Which of these can cause affected-detection to miss a project? Select all that apply.",
+      "language": null,
+      "estSeconds": 150,
+      "options": [
+        {
+          "id": "a",
+          "text": "`checkout-web` tests read JSON fixtures from `packages/catalog/fixtures/` via a filesystem path instead of an import"
+        },
+        {
+          "id": "b",
+          "text": "The change edited `tsconfig.base.json` at the repo root, which is not declared as an input of any project"
+        },
+        {
+          "id": "c",
+          "text": "`checkout-web` loads payment adapters with ``import(`@acme/${provider}-adapter`)``, built from a runtime string"
+        },
+        {
+          "id": "d",
+          "text": "`checkout-web` depends on 40 other packages, so it lands in the affected set for most PRs"
+        },
+        {
+          "id": "e",
+          "text": "CI diffs against the merge base with `origin/main` rather than the PR's previous commit"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "File reads are invisible to an import graph, so changing the fixtures never marks `checkout-web` affected.",
+        "b": "Root config that every project consumes must be a global input; otherwise changing it affects nothing in the graph.",
+        "c": "Static analysis cannot resolve a computed specifier, so the dependency edge to the adapters is missing.",
+        "d": "Many dependencies makes the project run more often, not less; it cannot explain a miss.",
+        "e": "Diffing against the merge base is the correct approach; diffing only the last commit is what would miss changes."
+      },
+      "explanation": "Affected-only CI is exactly as correct as its dependency graph. Every edge the tool cannot see is a test you will skip: runtime file reads, shared root configs and lockfiles not declared as inputs, and dynamic imports. The same blind spots poison remote caches, because cache keys hash the same declared inputs. Declare global inputs explicitly, ban or annotate dynamic cross-package loads, and run a periodic full build on main to catch what the graph misses.\n\nTakeaway: treat every undeclared dependency as a correctness bug in CI, and keep a full build running as the backstop.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-cve-upgrade-at-scale-01",
+      "domain": "delivery",
+      "concepts": [
+        "dependency-management"
+      ],
+      "skill": "lead",
+      "type": "multi",
+      "difficulty": 2,
+      "title": "Patching a critical CVE across 310 services took seven weeks",
+      "prompt": "A critical CVE in a widely used JSON library took seven weeks to patch across 310 services: two weeks just to find every affected service, and many teams were four major versions behind. Which investments most directly shorten the next one? Select all that apply.",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Generate an SBOM for every deployed artifact into a store you can query in minutes"
+        },
+        {
+          "id": "b",
+          "text": "Bot-opened upgrade PRs that auto-merge patch and minor bumps when CI passes, so services stay close to current"
+        },
+        {
+          "id": "c",
+          "text": "A shared base image and platform dependency set, so one fix flows to services through a rebuild"
+        },
+        {
+          "id": "d",
+          "text": "Freeze dependency versions and allow upgrades only during a quarterly upgrade week, to reduce churn"
+        },
+        {
+          "id": "e",
+          "text": "Fork the library into each repository so every team controls its own copy"
+        }
+      ],
+      "answer": [
+        "a",
+        "b",
+        "c"
+      ],
+      "optionNotes": {
+        "a": "Turns two weeks of asking around into a query over what is actually running.",
+        "b": "Small continuous upgrades keep the security fix a one-line bump instead of a four-major migration.",
+        "c": "Centralizes the fix: rebuild and redeploy instead of 310 separate code changes.",
+        "d": "Batching upgrades quarterly grows the version gap that made this CVE slow to fix.",
+        "e": "Creates 310 divergent copies that no upstream fix reaches."
+      },
+      "explanation": "Two things made this slow: not knowing where the library ran, and the distance between installed and fixed versions. An inventory of what is deployed (not just what manifests declare) solves the first. Continuous automated upgrades and shared platform layers solve the second, because the fix becomes a small bump that CI can verify. Freezes and forks feel like control but maximize drift.\n\nTakeaway: security response speed is set long before the CVE, by how current and how inventoried your dependencies are.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-order-flag-lifecycle-01",
+      "domain": "delivery",
+      "concepts": [
+        "feature-flags",
+        "trunk-based-development"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 1,
+      "title": "Lifecycle of a release flag from creation to removal",
+      "prompt": "Put the lifecycle of a release flag for a new search ranking in order.",
+      "language": null,
+      "estSeconds": 75,
+      "items": [
+        {
+          "id": "1",
+          "text": "Create the flag with an owner, a ticket and an expiry date, defaulting to off"
+        },
+        {
+          "id": "2",
+          "text": "Merge the new code path to trunk behind the flag, dark in production"
+        },
+        {
+          "id": "3",
+          "text": "Enable it for internal users and run the verification checklist"
+        },
+        {
+          "id": "4",
+          "text": "Ramp by percentage while watching guardrail metrics"
+        },
+        {
+          "id": "5",
+          "text": "Hold at 100% through a soak period with the kill switch still available"
+        },
+        {
+          "id": "6",
+          "text": "Remove the flag check and old code path, and deploy everywhere"
+        },
+        {
+          "id": "7",
+          "text": "Archive the flag in the flag service once evaluations reach zero"
+        }
+      ],
+      "explanation": "A release flag lets you merge early and release later: create it with ownership and an expiry so it cannot become orphaned debt, merge dark, dogfood, ramp, and soak. Retirement goes code first (make the winning path unconditional and deploy), then the flag, so no running binary ever falls back to a default when the flag disappears.\n\nTakeaway: a release flag is temporary from the day it is created, and its removal is part of the feature, not optional cleanup."
+    },
+    {
+      "id": "del-order-canary-ramp-01",
+      "domain": "delivery",
+      "concepts": [
+        "progressive-delivery",
+        "release-management"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Progressive rollout of a new service version",
+      "prompt": "Order the steps of a progressive rollout for a new version of a high-traffic API.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        {
+          "id": "1",
+          "text": "Build the artifact once and promote that same digest through every environment"
+        },
+        {
+          "id": "2",
+          "text": "Deploy to staging and run the smoke and contract suites"
+        },
+        {
+          "id": "3",
+          "text": "Start a 1% canary alongside an equal-size baseline of the current version"
+        },
+        {
+          "id": "4",
+          "text": "Run automated canary analysis on errors, latency and saturation for the bake time"
+        },
+        {
+          "id": "5",
+          "text": "Ramp to 10%, 50% and 100%, re-running the analysis at each step"
+        },
+        {
+          "id": "6",
+          "text": "Keep the previous version's replicas available for the rollback window, then scale them down"
+        }
+      ],
+      "explanation": "Build once so what you tested is exactly what you ship. Verify in staging, then expose a small slice of production with a fair control group, let automated analysis decide, and ramp in steps so each stage limits the blast radius. Keeping the old version warm until the rollback window passes makes rollback a traffic shift instead of a redeploy.\n\nTakeaway: every ramp step should have a pre-agreed pass/fail check and a rollback that costs seconds."
+    },
+    {
+      "id": "del-order-not-null-column-01",
+      "domain": "delivery",
+      "concepts": [
+        "database-migrations"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Add a NOT NULL column to a 900M-row Postgres table",
+      "prompt": "You need `orders.tenant_id` to be NOT NULL on a 900M-row Postgres 15 table serving 3,000 writes per second, with no downtime. Put the steps in order.",
+      "language": null,
+      "estSeconds": 120,
+      "items": [
+        {
+          "id": "1",
+          "text": "Add `tenant_id` as a nullable column with no default"
+        },
+        {
+          "id": "2",
+          "text": "Deploy code that sets `tenant_id` on every insert and update"
+        },
+        {
+          "id": "3",
+          "text": "Backfill existing rows in primary-key batches, throttled on replica lag"
+        },
+        {
+          "id": "4",
+          "text": "Add `CHECK (tenant_id IS NOT NULL) NOT VALID`, then run `VALIDATE CONSTRAINT`"
+        },
+        {
+          "id": "5",
+          "text": "Run `ALTER COLUMN tenant_id SET NOT NULL`, then drop the now-redundant check"
+        },
+        {
+          "id": "6",
+          "text": "Deploy code that relies on `tenant_id` always being present"
+        }
+      ],
+      "explanation": "Adding a nullable column is a quick catalog change. New writes must populate it before the backfill, or rows written during the backfill stay null. The backfill runs in small, throttled batches to avoid long locks and replica lag. Running `SET NOT NULL` directly would hold an ACCESS EXCLUSIVE lock while scanning 900M rows; instead, add the check as NOT VALID (instant), validate it under a lock that still allows reads and writes, and from Postgres 12 onward `SET NOT NULL` uses the validated check to skip the scan. Set a short `lock_timeout` on each DDL step so a queued lock cannot stall traffic. Only then can code assume the value exists.\n\nTakeaway: on big tables, split every constraint into a cheap declaration and an online validation, so no step holds a blocking lock while it scans.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-order-event-field-migration-01",
+      "domain": "delivery",
+      "concepts": [
+        "backward-compatibility",
+        "versioning"
+      ],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 3,
+      "title": "Replace a field in an event read by nine consumers",
+      "prompt": "`OrderPlaced` carries `customerId` (an integer). You need to replace it with `customerRef` (a string) without breaking any of nine consuming services. Put the steps in order.",
+      "language": null,
+      "estSeconds": 100,
+      "items": [
+        {
+          "id": "1",
+          "text": "Register a schema version adding optional `customerRef` that passes the registry's compatibility check"
+        },
+        {
+          "id": "2",
+          "text": "Deploy the producer writing both `customerId` and `customerRef`"
+        },
+        {
+          "id": "3",
+          "text": "Migrate each consumer to read `customerRef`, falling back to `customerId` when absent"
+        },
+        {
+          "id": "4",
+          "text": "Confirm no consumer reads `customerId`, and wait out the topic's retention and replay window"
+        },
+        {
+          "id": "5",
+          "text": "Stop writing `customerId` and remove it from the schema"
+        }
+      ],
+      "explanation": "This is expand and contract applied to an event contract. Expand the schema compatibly, dual-write, move readers one at a time with a fallback for old events still on the topic, verify through telemetry (not a Slack poll) that nobody reads the old field, and let retention age out events that only have the old field before removing it. Every step can roll back on its own.\n\nTakeaway: remove a field only when no deployed reader and no retained message still depends on it."
+    },
+    {
+      "id": "del-order-datastore-migration-01",
+      "domain": "delivery",
+      "concepts": [
+        "database-migrations",
+        "testing-in-production"
+      ],
+      "skill": "design",
+      "type": "ordering",
+      "difficulty": 4,
+      "title": "Move a hot table to a new datastore with no downtime",
+      "prompt": "You are moving the `sessions` table (2.1B rows, 40k reads/s) from MySQL to a key-value store without downtime or lost writes. Order the steps.",
+      "language": null,
+      "estSeconds": 150,
+      "items": [
+        {
+          "id": "1",
+          "text": "Dual-write: MySQL stays the source of truth, writes also go to the new store, and divergence is logged"
+        },
+        {
+          "id": "2",
+          "text": "Backfill historical rows into the new store with idempotent, version-aware upserts"
+        },
+        {
+          "id": "3",
+          "text": "Shadow-read from the new store, compare with MySQL, and fix mismatches until the rate is near zero"
+        },
+        {
+          "id": "4",
+          "text": "Flip reads to the new store behind a flag, keeping dual writes for rollback"
+        },
+        {
+          "id": "5",
+          "text": "Make the new store the source of truth and stop writing to MySQL"
+        },
+        {
+          "id": "6",
+          "text": "Decommission MySQL after the retention and rollback window"
+        }
+      ],
+      "explanation": "Dual writes start before the backfill so no write falls in the gap between them. The backfill must be idempotent and must not overwrite newer dual-written data (compare versions or timestamps). Shadow reads are testing in production: real traffic shows mismatches no staging test would. Reads flip behind a flag while MySQL still receives every write, so rollback is a flag change. Only after reads are proven do you cut MySQL out of the write path, and you delete it last.\n\nTakeaway: in a datastore migration, keep the old store a complete, live fallback until the new one has carried production reads on its own.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "del-ft-monorepo-ci-plan-01",
+      "domain": "delivery",
+      "concepts": [
+        "ci-cd",
+        "monorepo-tooling",
+        "build-systems"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "Get monorepo CI from 55 minutes to 15 without losing safety",
+      "prompt": "You own CI for a 900-engineer TypeScript and Go monorepo. Lay out your plan to get p50 PR time under 15 minutes within two quarters without weakening what CI catches. Say what you would measure first, what you would change and in what order, and how you would know it worked.",
+      "context": "```\nprojects: ~4,000    PRs/day: ~1,600    runners: autoscaled, ~$410k/yr\np50 PR CI: 55m     p90: 95m           every PR builds and tests everything\nretried runs: 6% (flaky tests)         remote cache: none\nmerge queue: one PR at a time, full pipeline per PR\n```",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Measures before changing: critical-path breakdown, queue wait vs execution time, per-test flake rates and their cost, so effort goes to the largest real contributors",
+          "Introduces affected-target selection from the dependency graph, with root configs and lockfiles as declared global inputs, and keeps a full build on main as a backstop for graph misses",
+          "Adds remote caching (and possibly remote execution) only after making actions hermetic, with cache writes restricted to trusted CI",
+          "Runs a flaky-test program: quarantine with owners and deadlines, track retry rates, and keep quarantined tests visible rather than deleted",
+          "Fixes the merge queue with batching or speculative parallel runs instead of serializing one full pipeline per PR",
+          "Rolls out incrementally with success metrics (p50/p90, cache hit rate, escaped defects, cost) and a developer survey, so speed gains are not bought with missed bugs"
+        ],
+        "redFlags": [
+          "Only adds bigger or more runners",
+          "Deletes or skips slow tests to hit the number",
+          "Moves most tests to nightly runs without a plan for the defects that escape",
+          "Turns on a remote cache without addressing hermeticity"
+        ],
+        "exemplar": "First a week of measurement: trace every pipeline into a critical path, split queue time from run time, and rank tests by duration times flake rate. With everything running on every PR, I expect most of the 55 minutes to be work the change cannot affect.\n\nPhase 1 (first six weeks): quarantine the worst flaky tests with owners and an SLA, since 6% retries add minutes to every PR, and replace the single-file merge queue with batched speculative runs.\n\nPhase 2: affected-only builds from the project graph. Lockfiles, root tsconfig and Go toolchain files become global inputs, dynamic cross-package loads get flagged in lint, and main runs the full suite every hour so graph misses show up within an hour, not in production.\n\nPhase 3: remote cache. Audit actions for hermeticity first (pinned toolchains, no PATH tools, no network), let only CI write, and track hit rate per target. Remote execution comes later if the critical path is still compute-bound.\n\nSuccess is p50 under 15 and p90 under 30, flat escaped-defect rate, runner cost flat or down, and a better DX survey score. I would publish the dashboard weekly so teams see the trade-offs we are making."
+      },
+      "explanation": "Strong answers treat CI speed as an engineering system: measure the critical path, stop doing work the change cannot affect (with a correct graph and a full-build backstop), cache only hermetic work, kill the flake tax, and fix queue serialization. Weak answers buy hardware or quietly drop coverage.\n\nTakeaway: fast CI comes from doing less redundant work correctly, not from doing the same work on more machines.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "del-ft-flag-debt-program-01",
+      "domain": "delivery",
+      "concepts": [
+        "feature-flags"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Run a feature-flag debt program across 30 teams",
+      "prompt": "Your org has 1,800 flags, and 1,100 have served a single value for more than 90 days. Last month a stale flag toggled by mistake took down checkout. You have been asked to fix flag debt across 30 teams without a central cleanup team. What do you do?",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "Classifies flags by type (release, experiment, operational kill switch, permission or entitlement) with different expected lifetimes, and exempts long-lived ops and permission flags from staleness rules",
+          "Builds the inventory from evaluation data (constant value served for N days) joined with code-reference scans, and assigns every flag an owning team",
+          "Makes removal cheap: automated or codemod PRs that delete the dead branch, and a removal order of code first, then the flag",
+          "Prevents new debt with required owner and expiry at creation, expiry reminders that create tickets, and a CI lint or limit per team",
+          "Reports stale-flag counts per team as a trend and agrees with engineering managers that cleanup is part of the definition of done, not volunteer work"
+        ],
+        "redFlags": [
+          "Bulk-deletes stale flags in the flag service",
+          "Runs a one-off cleanup sprint with nothing to stop the debt returning",
+          "Treats every flag as equally temporary, including kill switches",
+          "Expects teams to clean up with no tooling and no time allocated"
+        ],
+        "exemplar": "I would start by making the problem visible and cheap to fix, then stop it recurring.\n\nInventory: join flag-service evaluation data with a code search for every flag key. A flag serving one value for 90+ days is a candidate. Tag every flag by type, because kill switches and entitlement flags are meant to live for years and should be excluded and documented. Assign each flag an owner via the service's CODEOWNERS.\n\nCheap removal: a bot opens a PR per stale release flag that hardcodes the winning branch and deletes the other, so the team reviews instead of writes. The flag is archived only after the deploy shows zero evaluations, since deleting first is how a stale default bites.\n\nPrevention: the flag SDK wrapper rejects new flags without an owner, type and expiry. Expiry creates a ticket for the owning team two weeks ahead. Per-team stale counts go on the engineering dashboard as a trend.\n\nI would agree with EMs that flag removal is part of shipping, and review the trend monthly. The goal is under 10% stale in two quarters, not zero in a sprint."
+      },
+      "explanation": "Flag debt is a lifecycle problem. The fix is classification, ownership, cheap automated removal in the right order, and creation-time guardrails, backed by visible per-team metrics and EM agreement. One-off cleanups decay within months.\n\nTakeaway: make the right flag lifecycle the default path, because debt you only clean up will return.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-ft-rollback-criteria-01",
+      "domain": "delivery",
+      "concepts": [
+        "progressive-delivery",
+        "release-management"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 4,
+      "title": "Define rollback criteria for a payments API rollout",
+      "prompt": "You are setting the release policy for a payments authorization API (4,000 requests/s, 99.95% availability SLO). Define the rollback criteria for its canary and ramp stages: what signals, what thresholds, what is automatic versus human, and what must be true of a change before it is even eligible for this process.",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Uses SLIs and business signals compared against a concurrent baseline, such as 5xx rate, p99 latency and authorization approval rate, with minimum sample sizes and statistical tests rather than eyeballing",
+          "Splits hard thresholds that roll back automatically with no human approval from ambiguous signals that pause the ramp and page a human, and agrees all criteria before the deploy",
+          "Sets bake times long enough to catch delayed signals (async settlement, webhooks, queue lag, daily batch) and watches downstream error rates, not only the service's own",
+          "Requires changes to be reversible: schema changes expand-only, new data formats readable by the previous version, external side effects behind flags; otherwise needs an explicit roll-forward plan",
+          "Makes rollback fast and practiced: previous artifact retained, rollback is a traffic shift or redeploy of a known digest, and rollbacks are drilled"
+        ],
+        "redFlags": [
+          "Roll back if something looks off, with no defined thresholds",
+          "Only infrastructure metrics such as CPU and memory, with no business signal",
+          "Assumes every change can be rolled back, ignoring migrations and data already written",
+          "Absolute static thresholds with no baseline comparison"
+        ],
+        "exemplar": "Eligibility first: a change enters progressive rollout only if rolling it back is safe. Migrations are expand-only, any new data or event format is readable by the previous version, and new external calls sit behind a flag. Anything else ships with a written roll-forward plan and a named approver.\n\nSignals, each compared canary against a same-size baseline: 5xx rate, p99 latency, authorization approval rate by card network, issuer timeout rate, and error rates in the two downstream consumers. Each check needs a minimum sample (for example 20k requests) and a significance test.\n\nAutomatic rollback, no human: 5xx above baseline by 0.1 points, approval rate down 0.5 points, or p99 up 25%. Those breach the error budget fast. Pause and page: smaller or noisy deviations, or anomalies in delayed signals.\n\nBake: 30 minutes at 1%, 30 at 10%, and a 24-hour hold at 50% before 100%, because settlement and chargeback signals lag.\n\nRollback is a traffic shift to the retained previous version, takes under a minute, and we drill it monthly. All of this is agreed before the deploy, never debated during one."
+      },
+      "explanation": "Good rollback criteria are decided in advance, measured against a fair baseline, include business metrics and delayed signals, automate the obvious cases, and only apply to changes that are actually reversible. The last point is the one most answers miss: rollback criteria are meaningless if the change already wrote data the old version cannot read.\n\nTakeaway: a rollback policy starts by making changes reversible, then defines objective, pre-agreed triggers.",
+      "tags": [
+        "interview"
+      ]
+    },
+    {
+      "id": "del-ft-long-lived-branch-01",
+      "domain": "delivery",
+      "concepts": [
+        "trunk-based-development"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Talk a team out of a four-month rewrite branch",
+      "prompt": "A respected tech lead plans to rewrite the search indexing pipeline on a `rewrite-search` branch for four months with six engineers, merging main in weekly, then cutting over in one release. They argue that this keeps half-finished code out of production. How do you respond, and what do you propose instead?",
+      "language": null,
+      "estSeconds": 480,
+      "rubric": {
+        "keyPoints": [
+          "Names the concrete costs of the branch: conflicts grow with divergence, integration and review risk are deferred to one big-bang cutover, and there is no production feedback for four months",
+          "Proposes branch by abstraction or strangler: add a seam on trunk, build the new pipeline behind it, and migrate incrementally",
+          "Uses flags defaulted off and dark launches or shadow indexing to compare old and new output on real data before switching reads",
+          "Takes the lead's real concern seriously (stability, half-done code) and shows how flags, ownership and tests address it, possibly allowing a short throwaway spike branch",
+          "Reaches agreement through evidence and success criteria (for example parity metrics before cutover) rather than mandating"
+        ],
+        "redFlags": [
+          "Simply forbids branches by appeal to authority",
+          "Accepts the branch with weekly merges as the fix for divergence",
+          "Proposes merging unfinished code to trunk with no flag or seam",
+          "Ignores the cutover risk entirely"
+        ],
+        "exemplar": "I would start by agreeing with the goal: nobody wants a half-built pipeline serving queries. The branch does not deliver that, though. Main moves under six engineers for four months, so weekly merges become multi-day conflict sessions, the final review is unreviewable, and the cutover is the first time the new pipeline meets production data and load. That is the riskiest possible release shape.\n\nInstead: put an `Indexer` interface on trunk in week one, with today's pipeline as the only implementation. The new pipeline lands on trunk in small PRs behind that seam, off by default. Once it can run, we shadow-index a copy of production traffic into a separate index and diff document counts, field values and query relevance against the old one. Cutover is a flag that moves reads one tenant or shard at a time, with instant fallback.\n\nIf they need room to explore, a one or two week spike branch that gets thrown away is fine. I would propose this with clear parity criteria for the switch, and offer to pair on the seam so it costs them little."
+      },
+      "explanation": "Long-lived branches trade a feeling of safety for deferred, compounding integration risk. Branch by abstraction with flags and shadow comparison keeps code integrated and gives real production evidence before cutover, which addresses the stated concern better than isolation does.\n\nTakeaway: keep work integrated and hide it with seams and flags, because isolation only postpones the risk to the worst possible moment.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-ft-dora-space-dashboard-01",
+      "domain": "delivery",
+      "concepts": [
+        "developer-experience"
+      ],
+      "skill": "lead",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "The VP wants per-engineer productivity numbers",
+      "prompt": "Your VP of Engineering asks you to build a dashboard of commits, PRs merged and lines changed per engineer, to be used in performance calibration next cycle. They have read about DORA and SPACE and say this is the data-driven approach. How do you respond, and what do you build instead?",
+      "language": null,
+      "estSeconds": 600,
+      "rubric": {
+        "keyPoints": [
+          "States accurately what DORA's four keys measure (deployment frequency, lead time for changes, change failure rate, time to restore): the performance of a team's delivery system, not individual productivity or business value",
+          "States that SPACE frames productivity as several dimensions (satisfaction and well-being, performance, activity, communication and collaboration, efficiency and flow), that activity counts alone mislead, and that perceptual survey data is part of it",
+          "Explains the harm of individual activity metrics in reviews: Goodhart gaming, and penalizing reviews, mentoring, incident work and the staff-level work that produces few commits",
+          "Proposes a team-level alternative: DORA trends plus friction signals (CI time, review wait, deploy pain) plus a regular developer survey, used to find and fund bottlenecks",
+          "Addresses the VP's underlying need (which teams need help, whether investment pays off) and agrees guardrails such as no individual-level use and published definitions"
+        ],
+        "redFlags": [
+          "Builds the per-engineer dashboard as requested",
+          "Claims DORA or SPACE endorse ranking individuals",
+          "Refuses outright without offering anything that meets the VP's need",
+          "Treats lines of code as a productivity signal"
+        ],
+        "exemplar": "I would push back, but on the VP's goal rather than against it. Neither framework supports this use. DORA's four keys measure how well a team's delivery system performs: deploy frequency, lead time for changes, change failure rate and time to restore. They say nothing about individuals and nothing about whether we shipped the right thing. SPACE argues the opposite of activity counting: productivity spans satisfaction, performance, activity, collaboration and flow, no single metric captures it, and survey data counts alongside system data.\n\nPer-engineer commit and line counts in calibration will be gamed within a cycle, and they penalize exactly the people who review, mentor, run incidents and do cross-team design, which includes most of our staff engineers.\n\nWhat I would build: a team-level view of DORA trends, CI and review wait times, and a quarterly developer survey on friction and satisfaction. It answers what the VP actually needs: which teams are slowed by what, and whether our platform investment is moving the numbers. Guardrails we agree in writing: team-level only, definitions published, never an input to individual reviews. Individual performance stays with managers using impact evidence."
+      },
+      "explanation": "DORA measures delivery-system performance at team or service level; SPACE says productivity is multidimensional and that activity metrics alone mislead. Using either as an individual scorecard misreads both and invites gaming. The staff move is to meet the leader's real need with team-level, multi-signal data and explicit guardrails.\n\nTakeaway: measure the system to improve it, and keep activity counts away from individual evaluation.",
+      "references": [
+        "Forsgren, Storey, Maddila, Zimmermann, Houck and Butler, The SPACE of Developer Productivity (ACM Queue, 2021)",
+        "Forsgren, Humble and Kim, Accelerate (IT Revolution, 2018)"
+      ],
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-ft-internal-lib-breaking-01",
+      "domain": "delivery",
+      "concepts": [
+        "versioning",
+        "dependency-management"
+      ],
+      "skill": "design",
+      "type": "free_text",
+      "difficulty": 3,
+      "title": "Ship a breaking change to a library used by 120 services",
+      "prompt": "Your platform team owns `auth-middleware`, used by 120 services across separate repositories. To support signing-key rotation, token validation must change from a synchronous call to an asynchronous one, which breaks every caller. How do you version, ship and drive adoption of this change?",
+      "language": null,
+      "estSeconds": 540,
+      "rubric": {
+        "keyPoints": [
+          "Ships the async API alongside the old one in a minor release first, then removes the old API in a major, so migration is incremental and no consumer is forced to upgrade in lockstep",
+          "Deprecates the old API with a runtime signal (warning log or usage metric) and tracks adoption from a consumer inventory (dependency graph, SBOM or code search)",
+          "Lowers migration cost centrally: a codemod or bot PRs, a migration guide, and the platform team doing or pairing on the hard migrations",
+          "Sets a deadline tied to the real driver (key rotation) and a support policy for the previous major, such as security fixes backported for N months",
+          "Uses semver honestly: the removal is a major version even though the library is internal"
+        ],
+        "redFlags": [
+          "Publishes 4.0.0 and announces it in Slack",
+          "Releases a breaking change as a minor because the library is internal",
+          "Supports every old major indefinitely",
+          "Has no way of knowing which services still use the old API"
+        ],
+        "exemplar": "I would make the migration incremental and make the platform team carry most of the cost.\n\nRelease 3.8 (minor) adds `validateAsync()` next to the existing `validate()`, which keeps working. `validate()` starts emitting a deprecation metric tagged with service name, which, together with a code search across repos, gives a live adoption dashboard from day one.\n\nWe ship a codemod that rewrites the common call patterns and have a bot open PRs to all 120 repos. Teams review and merge; the dozen services with unusual integrations get a platform engineer to pair. A migration guide explains why: key rotation, which security needs live by the end of Q2.\n\nOnce the metric shows zero calls, or at the published deadline, 4.0.0 removes `validate()`. The 3.x line gets security backports for six months after 4.0 so stragglers are safe but have a reason to move.\n\nSemver stays honest: removal is a major even internally, because consumers' tooling and expectations depend on that signal."
+      },
+      "explanation": "Breaking changes at scale succeed through additive-first releases, measured adoption, centrally funded migration tooling, and a deadline with a reason. Announcing a new major and waiting leaves you supporting several majors for years.\n\nTakeaway: when you own a widely used library, you own the cost of migrating off its old API.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-ft-forward-compat-rollback-01",
+      "domain": "delivery",
+      "concepts": [
+        "backward-compatibility",
+        "release-management"
+      ],
+      "skill": "analyze",
+      "type": "free_text",
+      "difficulty": 5,
+      "title": "The rollback that crashed the old version",
+      "prompt": "Read the incident timeline. Explain why the rollback made things worse, and describe what you would change so releases like this are actually reversible.",
+      "context": "```\n10:00 inventory-svc v2.8 rolling out (40% of pods)\n       v2.8 writes cache entries  inv:{sku} = {\"qty\":{\"onHand\":5,\"reserved\":2}}\n       v2.7 wrote                 inv:{sku} = {\"qty\":5}\n10:25 alert: v2.8 p99 3x (unrelated N+1 query)\n10:27 rollback to v2.7 started\n10:29 v2.7: JsonMappingException: qty: expected int, got object (x 22k/min)\n10:31 v2.7 pods crashlooping, 503s on product pages\n10:38 on-call FLUSHALL on Redis\n10:39 primary DB CPU 100%, cache rebuild storm\n10:52 recovered\n```",
+      "language": null,
+      "estSeconds": 720,
+      "rubric": {
+        "keyPoints": [
+          "Identifies a forward-compatibility failure: v2.7 could not read data written by v2.8, and rolling back code does not roll back data in shared caches, queues or databases",
+          "Notes the same failure existed during the rollout itself, since v2.7 and v2.8 pods shared the cache at the same time",
+          "Proposes a two-step change: first release readers that tolerate the new shape everywhere, then start writing it in a later release (read-new before write-new, N-1 compatibility)",
+          "Versions persisted shapes, for example versioned cache keys like `inv:v3:{sku}` or an embedded schema version, so formats cannot collide and rollback reads its own namespace",
+          "Puts new-format writes behind a flag that can be turned off independently of a code rollback",
+          "Adds N-1 compatibility tests to CI (old reader against new writer) and rehearses rollback in canary; notes that flushing a hot cache under load causes a stampede"
+        ],
+        "redFlags": [
+          "Blames the rollback decision instead of the incompatible change",
+          "Proposes never rolling back and always fixing forward",
+          "Treats the cache as stateless because it is a cache",
+          "Says the answer is more staging testing without naming the mixed-version scenario"
+        ],
+        "exemplar": "The rollback failed because v2.8 changed the format of shared state. Rolling back code does not roll back data: every cache entry v2.8 wrote was unreadable by v2.7, so the old version crashlooped. It was already broken during the rollout, since 60% of pods were v2.7 reading entries the other 40% had just written; the crash just became total. Flushing Redis then sent every read to the database at once.\n\nFixes:\n\n1. Two-phase format changes. Release N teaches readers to accept both shapes and still writes the old one. Release N+1, once N is everywhere, writes the new shape. Rolling back from N+1 to N is then safe.\n2. Versioned keys. Write `inv:v3:{sku}` for the new shape so the versions never read each other's entries; a rollback simply reads its own namespace and warms gradually.\n3. Flag the new writes so they can be switched off without a code rollback.\n4. CI contract tests that run the previous release's reader against the new writer's output for caches, events and stored data, plus a rollback rehearsal at canary.\n\nAnd never flush a hot cache under load; let versioned keys or TTLs age it out."
+      },
+      "explanation": "Backward compatibility (new code reads old data) is commonly handled; forward compatibility (old code reads new data) is what rollbacks and mixed-version rollouts need, and is often missed. Any shared persisted state, caches included, must be readable by version N-1 for as long as N-1 might run.\n\nTakeaway: a release is only reversible if the previous version can read everything the new version writes.",
+      "tags": [
+        "interview",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "del-cr-flag-rollout-helper-01",
+      "domain": "delivery",
+      "concepts": [
+        "feature-flags"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 2,
+      "title": "Review a percentage rollout helper for new pricing",
+      "prompt": "This PR adds a helper to roll the new pricing engine out to 20% of users, plus its first call site. Review it.",
+      "context": "> **PR #4182:** Add `Rollout.isEnabled` for gradual launches. Allowlisted users always get the new path; everyone else is bucketed by percentage. First use: new pricing at 20%.",
+      "language": null,
+      "estSeconds": 360,
+      "code": {
+        "ts": "interface FlagConfig {\n  enabled: boolean;\n  allowlist: string[];\n}\n\nexport class Rollout {\n  constructor(private readonly flags: FlagClient) {}\n\n  async isEnabled(key: string, userId: string, percent: number): Promise<boolean> {\n    try {\n      const cfg: FlagConfig = await this.flags.fetch(key); //!issue:2\n      if (cfg.allowlist.includes(userId)) return true;\n      const bucket = Math.floor(Math.random() * 100); //!issue:1\n      return bucket < percent; //!issue:3\n    } catch {\n      return true; //!issue:4\n    }\n  }\n}\n\nexport async function priceCart(cart: Cart, rollout: Rollout): Promise<number> {\n  let total = 0;\n  for (const item of cart.items) {\n    const useNew = await rollout.isEnabled(\"new-pricing\", cart.userId, 20); //!issue:2,3\n    total += useNew ? newPrice(item) : legacyPrice(item);\n  }\n  return total;\n}",
+        "go": "type FlagConfig struct {\n\tEnabled   bool\n\tAllowlist []string\n}\n\ntype Rollout struct {\n\tflags FlagClient\n}\n\nfunc (r *Rollout) IsEnabled(ctx context.Context, key, userID string, percent int) bool {\n\tcfg, err := r.flags.Fetch(ctx, key) //!issue:2\n\tif err != nil {\n\t\treturn true //!issue:4\n\t}\n\tif slices.Contains(cfg.Allowlist, userID) {\n\t\treturn true\n\t}\n\tbucket := rand.Intn(100) //!issue:1\n\treturn bucket < percent //!issue:3\n}\n\nfunc PriceCart(ctx context.Context, cart Cart, r *Rollout) int64 {\n\tvar total int64\n\tfor _, item := range cart.Items {\n\t\tif r.IsEnabled(ctx, \"new-pricing\", cart.UserID, 20) { //!issue:2,3\n\t\t\ttotal += NewPrice(item)\n\t\t} else {\n\t\t\ttotal += LegacyPrice(item)\n\t\t}\n\t}\n\treturn total\n}",
+        "rust": "pub struct FlagConfig {\n    pub enabled: bool,\n    pub allowlist: Vec<String>,\n}\n\npub struct Rollout<C: FlagClient> {\n    flags: C,\n}\n\nimpl<C: FlagClient> Rollout<C> {\n    pub async fn is_enabled(&self, key: &str, user_id: &str, percent: u32) -> bool {\n        let cfg = match self.flags.fetch(key).await { //!issue:2\n            Ok(cfg) => cfg,\n            Err(_) => return true, //!issue:4\n        };\n        if cfg.allowlist.iter().any(|u| u == user_id) {\n            return true;\n        }\n        let bucket = rand::random::<u32>() % 100; //!issue:1\n        bucket < percent //!issue:3\n    }\n}\n\npub async fn price_cart<C: FlagClient>(cart: &Cart, rollout: &Rollout<C>) -> i64 {\n    let mut total = 0;\n    for item in &cart.items {\n        if rollout.is_enabled(\"new-pricing\", &cart.user_id, 20).await { //!issue:2,3\n            total += new_price(item);\n        } else {\n            total += legacy_price(item);\n        }\n    }\n    total\n}",
+        "csharp": "public sealed record FlagConfig(bool Enabled, IReadOnlyList<string> Allowlist);\n\npublic sealed class Rollout\n{\n    private readonly IFlagClient _flags;\n\n    public Rollout(IFlagClient flags) => _flags = flags;\n\n    public async Task<bool> IsEnabledAsync(string key, string userId, int percent)\n    {\n        try\n        {\n            FlagConfig cfg = await _flags.FetchAsync(key); //!issue:2\n            if (cfg.Allowlist.Contains(userId)) return true;\n            var bucket = Random.Shared.Next(100); //!issue:1\n            return bucket < percent; //!issue:3\n        }\n        catch (Exception)\n        {\n            return true; //!issue:4\n        }\n    }\n}\n\npublic static partial class Pricing\n{\n    public static async Task<long> PriceCartAsync(Cart cart, Rollout rollout)\n    {\n        long total = 0;\n        foreach (var item in cart.Items)\n        {\n            var useNew = await rollout.IsEnabledAsync(\"new-pricing\", cart.UserId, 20); //!issue:2,3\n            total += useNew ? NewPrice(item) : LegacyPrice(item);\n        }\n        return total;\n    }\n}",
+        "java": "record FlagConfig(boolean enabled, List<String> allowlist) {}\n\npublic final class Rollout {\n    private final FlagClient flags;\n\n    public Rollout(FlagClient flags) {\n        this.flags = flags;\n    }\n\n    public boolean isEnabled(String key, String userId, int percent) {\n        try {\n            FlagConfig cfg = flags.fetch(key); //!issue:2\n            if (cfg.allowlist().contains(userId)) return true;\n            int bucket = ThreadLocalRandom.current().nextInt(100); //!issue:1\n            return bucket < percent; //!issue:3\n        } catch (Exception e) {\n            return true; //!issue:4\n        }\n    }\n}\n\nfinal class Pricing {\n    static long priceCart(Cart cart, Rollout rollout) {\n        long total = 0;\n        for (LineItem item : cart.items()) {\n            boolean useNew = rollout.isEnabled(\"new-pricing\", cart.userId(), 20); //!issue:2,3\n            total += useNew ? newPrice(item) : legacyPrice(item);\n        }\n        return total;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Bucketing is random on every evaluation, so it is not sticky: the same user flips between old and new pricing across requests and even across items in one cart",
+          "fix": "Bucket deterministically with a stable hash of the flag key plus the user id (for example `hash(key + \":\" + userId) % 10000`), salted per flag so different rollouts get different user slices."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "The flag is fetched and evaluated per call: one network round trip per line item, flag-service load proportional to traffic, and values that can change in the middle of pricing one cart",
+          "fix": "Use an SDK that caches config locally and streams updates, and evaluate once per request (at the top of `priceCart`), passing the decision down."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "No kill switch: the 20% is hardcoded at the call site and `cfg.enabled` is never read, so stopping or ramping the rollout requires a code change and a deploy",
+          "fix": "Read the percentage and an `enabled` override from flag config; when `enabled` is false return false before any allowlist or bucketing, so one toggle turns the feature off everywhere."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "Any error from the flag service fails open to the new pricing path, so a flag-service outage moves 100% of users onto the unproven code",
+          "fix": "On error, fall back to the last known config or to a safe default of `false` (old path), and emit a metric so flag-service failures are visible."
+        }
+      ],
+      "explanation": "Percentage rollouts depend on three properties this helper lacks: stable assignment (a user stays in the same bucket, and buckets differ per flag), cheap and consistent evaluation (local cache, one decision per request), and a control plane you can change without deploying (config-driven percentage plus a kill switch). The error path compounds it by failing open into the risky branch. Together they would produce carts with mixed prices and no fast way to stop it.\n\nTakeaway: a rollout helper must be deterministic per user, evaluated once per request, controllable without a deploy, and safe by default when the flag system fails.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "del-cr-backfill-job-01",
+      "domain": "delivery",
+      "concepts": [
+        "database-migrations"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review a one-off backfill converting dollars to cents",
+      "prompt": "This one-off job converts `invoices.amount` from dollars to integer cents. It will run as a Kubernetes Job (`backoffLimit: 3`) against the production primary. Review it.",
+      "context": "`invoices`: 140M rows, about 600 writes/s at peak, two streaming replicas used for reads. `amount_unit` was added last week and is `'dollars'` on every existing row.",
+      "language": null,
+      "estSeconds": 420,
+      "code": {
+        "ts": "// One-off job: convert invoices.amount from dollars to integer cents.\nexport async function backfillInvoiceCents(pool: Pool, log: Logger): Promise<void> {\n  const client = await pool.connect();\n  try {\n    await client.query(\"BEGIN\"); //!issue:2\n    await client.query(\"LOCK TABLE invoices IN EXCLUSIVE MODE\"); //!issue:1\n    log.info(\"starting invoice cents backfill\");\n    const res = await client.query(\n      \"UPDATE invoices SET amount = amount * 100, amount_unit = 'cents'\" //!issue:1,3\n    );\n    await client.query(\"COMMIT\");\n    log.info(`backfill complete: ${res.rowCount} rows`); //!issue:4\n  } catch (err) {\n    await client.query(\"ROLLBACK\");\n    throw err;\n  } finally {\n    client.release();\n  }\n}",
+        "go": "// BackfillInvoiceCents converts invoices.amount from dollars to integer cents.\nfunc BackfillInvoiceCents(ctx context.Context, db *sql.DB, log *slog.Logger) error {\n\ttx, err := db.BeginTx(ctx, nil) //!issue:2\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer tx.Rollback()\n\n\tif _, err := tx.ExecContext(ctx, \"LOCK TABLE invoices IN EXCLUSIVE MODE\"); err != nil { //!issue:1\n\t\treturn err\n\t}\n\tlog.Info(\"starting invoice cents backfill\")\n\tres, err := tx.ExecContext(ctx,\n\t\t\"UPDATE invoices SET amount = amount * 100, amount_unit = 'cents'\") //!issue:1,3\n\tif err != nil {\n\t\treturn err\n\t}\n\tif err := tx.Commit(); err != nil {\n\t\treturn err\n\t}\n\tn, _ := res.RowsAffected()\n\tlog.Info(\"backfill complete\", \"rows\", n) //!issue:4\n\treturn nil\n}",
+        "rust": "/// One-off job: convert invoices.amount from dollars to integer cents.\npub async fn backfill_invoice_cents(pool: &PgPool) -> Result<(), sqlx::Error> {\n    let mut tx = pool.begin().await?; //!issue:2\n    sqlx::query(\"LOCK TABLE invoices IN EXCLUSIVE MODE\") //!issue:1\n        .execute(&mut *tx)\n        .await?;\n    tracing::info!(\"starting invoice cents backfill\");\n    let res = sqlx::query(\"UPDATE invoices SET amount = amount * 100, amount_unit = 'cents'\") //!issue:1,3\n        .execute(&mut *tx)\n        .await?;\n    tx.commit().await?;\n    tracing::info!(rows = res.rows_affected(), \"backfill complete\"); //!issue:4\n    Ok(())\n}",
+        "csharp": "// One-off job: convert invoices.amount from dollars to integer cents.\npublic static async Task BackfillInvoiceCentsAsync(NpgsqlDataSource db, ILogger log)\n{\n    await using var conn = await db.OpenConnectionAsync();\n    await using var tx = await conn.BeginTransactionAsync(); //!issue:2\n\n    await using (var lockCmd = new NpgsqlCommand(\"LOCK TABLE invoices IN EXCLUSIVE MODE\", conn, tx)) //!issue:1\n    {\n        await lockCmd.ExecuteNonQueryAsync();\n    }\n\n    log.LogInformation(\"starting invoice cents backfill\");\n    await using var cmd = new NpgsqlCommand(\n        \"UPDATE invoices SET amount = amount * 100, amount_unit = 'cents'\", conn, tx); //!issue:1,3\n    var rows = await cmd.ExecuteNonQueryAsync();\n    await tx.CommitAsync();\n    log.LogInformation(\"backfill complete: {Rows} rows\", rows); //!issue:4\n}",
+        "java": "// One-off job: convert invoices.amount from dollars to integer cents.\npublic void backfillInvoiceCents(DataSource ds) throws SQLException {\n    try (Connection conn = ds.getConnection()) {\n        conn.setAutoCommit(false); //!issue:2\n        try (Statement st = conn.createStatement()) {\n            st.execute(\"LOCK TABLE invoices IN EXCLUSIVE MODE\"); //!issue:1\n            log.info(\"starting invoice cents backfill\");\n            int rows = st.executeUpdate(\n                \"UPDATE invoices SET amount = amount * 100, amount_unit = 'cents'\"); //!issue:1,3\n            conn.commit();\n            log.info(\"backfill complete: {} rows\", rows); //!issue:4\n        } catch (SQLException e) {\n            conn.rollback();\n            throw e;\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "An explicit EXCLUSIVE table lock plus one unbatched UPDATE of 140M rows blocks every write to invoices for the whole run, and generates a huge burst of WAL that pushes replica lag up",
+          "fix": "Drop the table lock and update in small primary-key batches (for example 5k rows per transaction), sleeping between batches and pausing when replica lag or lock waits exceed a threshold."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "Not resumable: everything is one all-or-nothing transaction with no checkpoint, so a failure, timeout or pod eviction hours in rolls back all work and the retry starts from row one",
+          "fix": "Commit per batch and persist a checkpoint (last processed id) in a table or job state, so a restart continues where it stopped."
+        },
+        {
+          "id": "3",
+          "severity": "critical",
+          "summary": "Not idempotent: the UPDATE multiplies every row unconditionally, so any rerun (a Job retry after a commit, or a manual rerun) multiplies amounts by 100 again",
+          "fix": "Guard each row: `WHERE amount_unit = 'dollars' AND id BETWEEN $1 AND $2`, so already-converted rows are skipped. Better still, write a new `amount_cents` column (expand/contract) and leave the original untouched until readers switch."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "No progress reporting or rate visibility: the only signal is a log line at the very end, so operators cannot tell a slow run from a stuck one",
+          "fix": "Emit rows processed, batch latency and current checkpoint per batch as logs or metrics, and support a dry-run mode that reports the rows that would change."
+        }
+      ],
+      "explanation": "Production backfills need three properties: batched (short transactions that never hold broad locks), resumable (a durable checkpoint), and idempotent (rerunning any batch is harmless). This job has none, and `backoffLimit: 3` makes the idempotency bug likely to fire: if the pod dies after COMMIT but before exiting successfully, Kubernetes reruns it and every invoice is multiplied by 10,000. Changing units in place also means any application code still reading `amount` as dollars is wrong the moment the job commits, which is why a new column plus expand/contract is the safer shape.\n\nTakeaway: write every backfill as if it will be killed and rerun halfway through, because eventually it will be.",
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "del-diagram-progressive-platform-01",
+      "domain": "delivery",
+      "concepts": [
+        "progressive-delivery",
+        "ci-cd"
+      ],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 4,
+      "title": "Design a progressive delivery platform for 200 services",
+      "prompt": "Design the deployment platform that lets 200 microservice teams ship many times a day with automated canary analysis and automatic rollback. Sketch the components from merge to 100% traffic, and explain how a release is promoted, judged and rolled back, and how feature flags fit in.",
+      "context": "Kubernetes in three regions, mostly HTTP and gRPC services behind a shared ingress layer, a central metrics and tracing stack, and an existing feature flag service. Today teams deploy with hand-run scripts and roll back by redeploying an old tag.",
+      "language": null,
+      "estSeconds": 1200,
+      "rubric": {
+        "keyPoints": [
+          "Builds once and promotes an immutable, signed artifact digest through environments, recording desired state in a deploy controller rather than in ad hoc scripts",
+          "Splits traffic at the ingress or service mesh by weight (canary plus a same-size baseline), not by pod count alone",
+          "Runs automated analysis against observability data comparing canary to baseline on per-service SLIs, with statistical tests, minimum samples and per-step bake times",
+          "Rolls back automatically by shifting traffic to the retained previous version when hard thresholds trip, and pauses for a human on ambiguous results",
+          "Separates deploy from release: code ships dark and flags control exposure, with kill switches as the fastest mitigation for feature-level problems",
+          "Rolls out region by region with a pause between regions, so one bad release cannot reach all regions at once"
+        ],
+        "redFlags": [
+          "Rebuilds the artifact for each environment",
+          "Canary judged by a human watching dashboards with no defined thresholds",
+          "Rollback means rebuilding or redeploying from source",
+          "All regions updated at the same time"
+        ],
+        "exemplar": "Merge to trunk → CI builds one image, signs it and records the digest. A deploy controller (GitOps-style) owns desired state per service and region.\n\nPromotion: staging, then region 1 canary. The controller creates a canary and a same-size baseline of the current version and tells the ingress or mesh to send 1% to each. An analysis worker queries the metrics store for each service's declared SLIs (error rate, p99, saturation, plus an optional business metric), runs a statistical comparison with minimum sample sizes, and returns pass, fail or inconclusive after the bake time. Pass ramps 1, 10, 50, 100%. Fail shifts weights back to the stable version in seconds, and the previous ReplicaSet is kept for the rollback window. Inconclusive pauses and pages the owning team.\n\nRegions go one at a time with an hour between them. Deploy events are annotated on dashboards and traces.\n\nFlags are separate from deploys: features ship dark and the flag service controls exposure per cohort, with kill switches for fast mitigation. Services declare SLIs and thresholds in a manifest the platform validates, so teams own criteria and the platform owns mechanics.",
+        "requiredComponents": [
+          "load_balancer|api_gateway",
+          "service",
+          "observability",
+          "config_store",
+          "worker|scheduler"
+        ]
+      },
+      "explanation": "A strong design separates artifact (built once), deploy state (a controller), traffic (weighted at the edge), judgment (automated canary-vs-baseline analysis on observability data), and release exposure (flags). Rollback is a traffic shift to a retained version, and regions are staged to cap blast radius.\n\nTakeaway: make promotion and rollback machine decisions based on agreed SLIs, and keep humans for the ambiguous cases.",
+      "tags": [
+        "interview"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.DS_Store
+*.log
+api/api
+web/public/fonts/*.woff2
+web/public/fonts/*.woff
+web/public/fonts/*.otf
+.playwright-mcp/

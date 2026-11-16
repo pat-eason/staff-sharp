@@ -1,0 +1,1257 @@
+{
+  "file": "language_rust_cs_java",
+  "questions": [
+    {
+      "id": "lang-rust-mutex-guard-await-send-01",
+      "domain": "debugging",
+      "concepts": [
+        "send-sync",
+        "async-runtimes"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "std MutexGuard across .await breaks tokio::spawn",
+      "prompt": "Rust 2021 edition, tokio 1.x multi-threaded runtime. This fails to compile with `error: future cannot be sent between threads safely`, pointing at the `tokio::spawn` call. What is the cause, and what is the right fix?\n\n```rust\nuse std::sync::{Arc, Mutex};\n\nasync fn record_hit(stats: Arc<Mutex<Stats>>, client: reqwest::Client) {\n    let mut s = stats.lock().unwrap();\n    s.hits += 1;\n    let snapshot = s.clone();\n    let _ = client.post(\"http://metrics.internal/ingest\").json(&snapshot).send().await;\n}\n\n// in the request path\ntokio::spawn(record_hit(stats.clone(), client.clone()));\n```",
+      "language": "rust",
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "`std::sync::MutexGuard` is `!Send` and still alive at the `.await`, making the future `!Send`; end the guard in an inner block before awaiting"
+        },
+        {
+          "id": "b",
+          "text": "`Mutex<Stats>` is not `Sync`, so `Arc<Mutex<Stats>>` cannot cross threads; wrap `Stats` in an `RwLock` instead"
+        },
+        {
+          "id": "c",
+          "text": "`reqwest::Client` is not `Send` because it holds a connection pool; build a fresh client inside the task"
+        },
+        {
+          "id": "d",
+          "text": "`tokio::spawn` needs a `'static` future and `stats` is borrowed; move the clones into an `async move` block"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Every local live across an await point becomes part of the future's state, and the std guard is `!Send`.",
+        "b": "`Mutex<T>` is `Sync` whenever `T: Send`. That is the whole point of a mutex.",
+        "c": "`reqwest::Client` is `Send + Sync` and designed to be cloned and shared.",
+        "d": "Both arguments are owned values (`Arc` and `Client` clones), so the future is already `'static`."
+      },
+      "explanation": "An `async fn` compiles to a state machine that stores every value alive across an `.await`. `s` (a `std::sync::MutexGuard`) is alive until the end of the function, so it is stored in the future, and because the guard is `!Send` (a std mutex must be unlocked on the thread that locked it), the whole future is `!Send` and `tokio::spawn` rejects it.\n\nThe fix is to shrink the guard's scope: `let snapshot = { let mut s = stats.lock().unwrap(); s.hits += 1; s.clone() };` and then await. Switching to `tokio::sync::Mutex` also compiles, but it is slower and tempts people to hold the lock across network I/O; tokio's own guidance is to prefer the std mutex when the lock is never held across an await.\n\nTakeaway: treat this compile error as a feature, since it is the compiler telling you a lock would have been held across a network call.",
+      "tags": [
+        "classic",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-rust-blocking-in-async-01",
+      "domain": "performance",
+      "concepts": [
+        "concurrency-models",
+        "tail-latency"
+      ],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Password hashing on tokio workers stalls health checks",
+      "prompt": "An axum service runs on tokio 1.x (multi-thread runtime, 4 worker threads, 4 vCPU pod, Rust 2021). After `/login` started verifying argon2id hashes, p99 for the unrelated `/healthz` and `/catalog` endpoints went from 4 ms to 900 ms during login bursts, and liveness probes occasionally fail. Which change is the right fix?\n\n```rust\nasync fn login(State(app): State<AppState>, Json(req): Json<LoginReq>) -> Result<Json<Token>, AppError> {\n    let user = app.users.find_by_email(&req.email).await?;\n    // argon2id with production params: ~250 ms of CPU per call\n    let ok = verify_password(&user.password_hash, &req.password)?;\n    if !ok {\n        return Err(AppError::Unauthorized);\n    }\n    Ok(Json(app.tokens.issue(&user).await?))\n}\n```",
+      "language": "rust",
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Run the verify inside `tokio::task::spawn_blocking` and cap concurrent verifications with a semaphore sized near the core count"
+        },
+        {
+          "id": "b",
+          "text": "Add `tokio::task::yield_now().await` before and after the verify so the scheduler can interleave other tasks"
+        },
+        {
+          "id": "c",
+          "text": "Raise `worker_threads` to 64 so there is always an idle worker available for health checks"
+        },
+        {
+          "id": "d",
+          "text": "Wrap the verify in `tokio::time::timeout(Duration::from_millis(100), ...)` so slow hashes are cut off"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. CPU-heavy synchronous work belongs off the async workers; the semaphore keeps a burst from queuing hundreds of hashes.",
+        "b": "Tokio is cooperative: it can only switch tasks at an await. The 250 ms call itself never yields.",
+        "c": "Sixty-four threads on four cores just time-slice the same CPU; health checks still queue behind hashing and every task pays more context switching.",
+        "d": "A timeout can only fire at an await point, and the verify is a plain synchronous call, so there is nothing to cancel."
+      },
+      "explanation": "Tokio schedules tasks cooperatively on a small set of worker threads. A synchronous 250 ms CPU call inside an async fn occupies a worker for the full 250 ms; four concurrent logins occupy all four workers, and every other task on the runtime (health checks included) waits. That is the classic \"blocking the runtime\" failure.\n\n`spawn_blocking` moves the work to tokio's separate blocking pool so the async workers keep serving I/O. The blocking pool can grow to 512 threads by default, so pair it with a `Semaphore` (or a dedicated rayon pool) sized near the core count; otherwise a login burst still saturates the CPU, just from different threads. Yielding, timeouts and more workers all assume the runtime can preempt, and it cannot.\n\nTakeaway: in async Rust, anything that runs more than roughly 10 to 100 microseconds between awaits is blocking, and it needs its own pool with its own concurrency limit.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-rust-release-overflow-01",
+      "domain": "debugging",
+      "concepts": [
+        "integer-overflow",
+        "production-debugging"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "What a u32 multiply bills in a release build",
+      "prompt": "Rust 2021, default Cargo profiles with no overrides. A customer orders 50,000 units at $999.00 (99,900 cents). In staging (a debug build) the request panicked. What does the production binary (`cargo build --release`) put on the invoice?\n\n```rust\nfn line_total_cents(unit_price_cents: u32, quantity: u32) -> u32 {\n    unit_price_cents * quantity\n}\n```",
+      "language": "rust",
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "$7,000,327.04: release disables overflow checks, so the product wraps modulo 2^32"
+        },
+        {
+          "id": "b",
+          "text": "$42,949,672.95: release builds saturate unsigned arithmetic at `u32::MAX`"
+        },
+        {
+          "id": "c",
+          "text": "Nothing: the multiply panics with \"attempt to multiply with overflow\" in release too"
+        },
+        {
+          "id": "d",
+          "text": "An unpredictable amount: integer overflow is undefined behavior in release, as in C"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. 4,995,000,000 minus 2^32 (4,294,967,296) is 700,032,704 cents.",
+        "b": "Saturation only happens if you call `saturating_mul` explicitly.",
+        "c": "`overflow-checks` defaults to true only in the dev profile; the release profile turns them off.",
+        "d": "Overflow is never undefined behavior in safe Rust; with checks off it is defined to wrap (two's complement)."
+      },
+      "explanation": "Rust defines integer overflow as a bug that is detected in debug builds (panic) and, by default, wrapped in release builds, where `overflow-checks = false`. 99,900 × 50,000 = 4,995,000,000, which exceeds `u32::MAX` (4,294,967,295); wrapped, it becomes 700,032,704 cents, or $7,000,327.04. The debug panic in staging was the warning.\n\nFixes, in order of preference: use a money type with `checked_mul` and `checked_add` that returns an error; widen to `u64`/`i64` *and* keep checked arithmetic; and for financial code, consider `overflow-checks = true` in `[profile.release]`, which costs a few percent in arithmetic-heavy loops and turns silent corruption into a loud failure.\n\nTakeaway: \"it panicked in staging\" plus \"it worked in prod\" is a signal that release semantics differ, not that production is fine.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-rust-let-underscore-guard-01",
+      "domain": "debugging",
+      "concepts": [
+        "race-conditions",
+        "raii-guards"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Log rotation still races even though it takes the lock",
+      "prompt": "Rust 2021, tokio 1.x. Two background tasks can call `rotate_log` at nearly the same time. Every caller goes through `rotate_lock`, yet about once a week the `.1` file contains only a header line and a day of logs is gone. Why?\n\n```rust\npub struct AppState {\n    rotate_lock: tokio::sync::Mutex<()>,\n    log_path: PathBuf,\n}\n\nasync fn rotate_log(state: &AppState) -> std::io::Result<()> {\n    let _ = state.rotate_lock.lock().await;\n    let rotated = state.log_path.with_extension(\"1\");\n    tokio::fs::rename(&state.log_path, &rotated).await?;\n    let mut f = tokio::fs::File::create(&state.log_path).await?;\n    f.write_all(format!(\"# rotated at {}\\n\", now_rfc3339()).as_bytes()).await?;\n    Ok(())\n}\n```",
+      "language": "rust",
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "`let _ =` never binds the guard, so it is dropped at the end of that statement and the rest of the function runs unlocked"
+        },
+        {
+          "id": "b",
+          "text": "A tokio `MutexGuard` is released whenever the task is suspended at a later `.await`, so the rename and create run unprotected"
+        },
+        {
+          "id": "c",
+          "text": "The guard is held, but `tokio::fs` runs the syscalls on the blocking pool, outside the mutex's protection"
+        },
+        {
+          "id": "d",
+          "text": "`tokio::sync::Mutex` is fair rather than exclusive, so a second waiter is admitted once the first has waited too long"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. `_` is a pattern that binds nothing, so the temporary guard dies at the semicolon. `let _guard =` keeps it to the end of scope.",
+        "b": "Tokio's guard is designed to be held across awaits; suspension does not release it.",
+        "c": "The lock protects the sequence of operations no matter which thread executes the syscall.",
+        "d": "Tokio's mutex is FIFO-fair and still strictly exclusive."
+      },
+      "explanation": "`let _ = expr;` evaluates the expression and drops the result immediately, because the wildcard pattern does not bind. `let _guard = expr;` binds a real variable that lives to the end of the block. Here the lock is acquired and released on the same line, so two rotations can interleave: A renames log to log.1, B renames the fresh log over log.1 (destroying A's day of logs), and log.1 ends up holding only a header.\n\nrustc's deny-by-default `let_underscore_lock` lint catches this pattern for the standard library's lock guards, but not for `tokio::sync` or `parking_lot` guards, which is why this compiles cleanly. The same bug shows up with tracing spans (`let _ = span.enter();`).\n\nTakeaway: for any RAII guard, the name is the lifetime, so `_` and `_guard` mean completely different things.",
+      "tags": [
+        "gotcha",
+        "classic"
+      ]
+    },
+    {
+      "id": "lang-rust-refcell-reentrant-01",
+      "domain": "debugging",
+      "concepts": [
+        "reentrancy",
+        "production-debugging"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Plugin host panics the first time a plugin loads",
+      "prompt": "Rust 2021. A single-threaded plugin host dispatches events to listeners. The first time a `PluginLoaded` event fires, the process panics with a `BorrowMutError` raised from `subscribe`. The plugin loader's listener is shown in the comment at the bottom. Find the bug.",
+      "language": "rust",
+      "estSeconds": 180,
+      "code": {
+        "rust": "use std::cell::RefCell;\n\ntype Listener = Box<dyn Fn(&EventBus, &Event)>;\n\npub struct EventBus {\n    listeners: RefCell<Vec<Listener>>,\n}\n\nimpl EventBus {\n    pub fn new() -> Self {\n        Self { listeners: RefCell::new(Vec::new()) }\n    }\n\n    pub fn subscribe(&self, f: Listener) {\n        self.listeners.borrow_mut().push(f); //!issue:1\n    }\n\n    pub fn publish(&self, event: &Event) {\n        for listener in self.listeners.borrow().iter() { //!issue:1\n            listener(self, event);\n        }\n    }\n}\n\n// Registered by the plugin loader at startup:\n// bus.subscribe(Box::new(|bus, ev| {\n//     if let Event::PluginLoaded(p) = ev {\n//         bus.subscribe(p.make_listener());\n//     }\n// }));"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`publish` holds a shared `borrow()` for the whole loop, and a listener re-enters `subscribe`, whose `borrow_mut()` panics",
+          "fix": "Do not hold the borrow while calling out. Store listeners as `Rc<dyn Fn>`, clone a snapshot (`let snapshot = self.listeners.borrow().clone();`) and iterate that, or queue subscriptions made during dispatch and append them after the loop."
+        }
+      ],
+      "explanation": "The temporary `Ref` returned by `self.listeners.borrow()` in the `for` expression lives for the entire loop. While it is alive, the plugin loader's listener calls `bus.subscribe`, which asks for `borrow_mut()`; `RefCell` enforces the borrow rules at runtime and panics instead of allowing a mutation of the `Vec` being iterated (which would be a use-after-free in C++).\n\nThe fix is to stop calling arbitrary code while holding the borrow: snapshot the listener list (cheap with `Rc<dyn Fn>`) or defer mutations until dispatch finishes. Also decide the semantics explicitly: should a listener added during dispatch see the current event? The snapshot approach says no.\n\nTakeaway: `RefCell` moves borrow checking to runtime, so any callback invoked while a borrow is live is a potential reentrancy panic, and the fix is structural, not `try_borrow_mut`.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-rust-unwrap-user-input-01",
+      "domain": "security",
+      "concepts": [
+        "input-validation",
+        "error-handling"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "One query string crash-loops the whole search fleet",
+      "prompt": "Rust 2021, axum 0.7 on tokio 1.x. The release profile is in the context. Every pod in the search deployment restarted within the same minute, repeatedly, starting when a new partner integration went live. Find the bug.",
+      "context": "```toml\n# Cargo.toml\n[profile.release]\npanic = \"abort\"\nlto = true\n```\n\n```\n10:42:07.113 INFO  GET /search?q=boots&page= partner=acme\n10:42:07.114 (pod terminated, exit code 134)\n```",
+      "language": "rust",
+      "estSeconds": 150,
+      "code": {
+        "rust": "const PAGE_SIZE: u32 = 50;\n\n#[derive(Deserialize)]\npub struct SearchParams {\n    q: String,\n    page: Option<String>,\n}\n\npub async fn search(\n    State(app): State<AppState>,\n    Query(params): Query<SearchParams>,\n) -> Result<Json<SearchResults>, AppError> {\n    let page: u32 = params.page.as_deref().unwrap_or(\"1\").parse().unwrap(); //!issue:1\n    let offset = page.saturating_sub(1).saturating_mul(PAGE_SIZE);\n    let rows = app.index.search(&params.q, offset, PAGE_SIZE).await?;\n    Ok(Json(SearchResults { page, rows }))\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`parse().unwrap()` on client input panics on `page=` (empty string), and with `panic = \"abort\"` one request kills the process",
+          "fix": "Treat it as a validation error: declare `page: Option<u32>` so the `Query` extractor rejects bad values with 400, or `parse().map_err(|_| AppError::BadRequest(\"page\"))?`."
+        }
+      ],
+      "explanation": "`unwrap_or(\"1\")` only handles a *missing* parameter. `page=` deserializes to `Some(\"\")`, and `\"\".parse::<u32>()` is an error, so `unwrap()` panics. With the default `panic = \"unwind\"`, hyper would lose just that connection. This crate sets `panic = \"abort\"` (often done to shrink binaries), so the panic aborts the whole process (exit 134, SIGABRT). The partner retries, the load balancer spreads the retries, and every pod dies in turn.\n\nIn a request handler, every `unwrap`/`expect` on data derived from the request is a remote crash primitive. Push parsing into typed extractors (`Option<u32>`), map errors to 4xx, and reserve `expect` for true invariants. A `clippy::unwrap_used` lint in handler modules catches regressions.\n\nTakeaway: a panic on user input is a denial-of-service bug, and the panic strategy in Cargo.toml decides whether it costs one connection or the whole fleet.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-rust-lazy-iterator-01",
+      "domain": "debugging",
+      "concepts": [
+        "lazy-evaluation",
+        "must-use"
+      ],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Audit flusher that never writes anything",
+      "prompt": "Rust 2021. Compliance reports that the audit table has been empty since this refactor shipped. No write failures were counted and the service logs no errors. Find the bug.",
+      "language": "rust",
+      "estSeconds": 120,
+      "code": {
+        "rust": "pub struct AuditFlusher {\n    sink: AuditSink,\n    pending: Vec<AuditEvent>,\n}\n\nimpl AuditFlusher {\n    /// Writes every pending event to the audit sink, then clears the buffer.\n    /// Write failures are counted but never block the flush.\n    pub fn flush(&mut self) {\n        let sink = &self.sink;\n        let _ = self.pending.iter().map(|e| { //!issue:1\n            if sink.write(e).is_err() {\n                metrics::counter!(\"audit_write_failures\").increment(1);\n            }\n        });\n        self.pending.clear();\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`map` is lazy and the iterator is never consumed, so the closure (and every write) never runs; `let _ =` silenced the `#[must_use]` warning",
+          "fix": "Use a plain `for e in &self.pending { ... }` (or `.for_each(...)`) for side effects, and drain only what was written."
+        }
+      ],
+      "explanation": "Iterator adapters in Rust do nothing until something pulls from them. `self.pending.iter().map(...)` just builds a `Map` struct; the closure runs only when a consumer such as `for`, `collect` or `for_each` drives it. `Map` is `#[must_use]`, so the compiler warned, and `let _ =` (probably added to quiet the warning) turned the warning into silence. The buffer is then cleared, so events are dropped rather than written.\n\nUse `for` loops for side effects; reserve `map` for transformations whose results you keep.\n\nTakeaway: `let _ =` on a `#[must_use]` value is a code-review red flag because it is usually hiding exactly the bug the warning was for.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-rust-iflet-scrutinee-deadlock-01",
+      "domain": "debugging",
+      "concepts": [
+        "deadlocks",
+        "raii-guards"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 5,
+      "title": "Schema cache deadlocks on the first unknown subject",
+      "prompt": "Rust **2021 edition** (this matters), std threads. After each deploy the cache is warmed from a snapshot and the ingest workers run fine until the first message whose schema subject is not in the snapshot. Then every worker hangs: thread dumps show all of them parked in `futex_wait` under `SchemaCache::get`, CPU at 0%, no panic. Find the bug.",
+      "language": "rust",
+      "estSeconds": 300,
+      "code": {
+        "rust": "use std::collections::HashMap;\nuse std::sync::{Arc, Mutex};\n\n#[derive(Clone)]\npub struct SchemaCache {\n    inner: Arc<Mutex<HashMap<String, Arc<Schema>>>>,\n    registry: RegistryClient,\n}\n\nimpl SchemaCache {\n    pub fn get(&self, subject: &str) -> Result<Arc<Schema>, RegistryError> {\n        if let Some(schema) = self.inner.lock().unwrap().get(subject) { //!issue:1\n            Ok(Arc::clone(schema))\n        } else {\n            let schema = Arc::new(self.registry.fetch_blocking(subject)?);\n            self.inner.lock().unwrap().insert(subject.to_string(), Arc::clone(&schema)); //!issue:1\n            Ok(schema)\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "In edition 2021 the `MutexGuard` temporary from the `if let` scrutinee lives until the end of the whole `if let ... else`, so the `else` branch locks the same non-reentrant mutex again on the same thread",
+          "fix": "End the first lock in its own statement: `let cached = self.inner.lock().unwrap().get(subject).cloned();` then `if let Some(s) = cached { ... }`. Fetch outside any lock and re-lock only to insert (or use a single-flight per subject)."
+        }
+      ],
+      "explanation": "Temporaries created in an `if let` scrutinee are not dropped when the pattern fails. In Rust 2021 they live until the end of the entire `if let` / `else` expression, so the guard returned by `self.inner.lock()` is still held inside `else`. `std::sync::Mutex` is not reentrant: the docs say locking a mutex the current thread already holds will not return (it may deadlock or panic). Here it deadlocks, and because the first worker holds the lock forever, every other worker blocks behind it, hits included.\n\nRust 2024 changed this rule (`if_let_rescope`): scrutinee temporaries are dropped before the `else` block, which is exactly why the edition matters. Do not rely on the edition, though: bind the lookup result in its own `let`, which ends the guard at the semicolon, and keep the slow registry fetch outside the lock so one slow fetch cannot stall all workers.\n\nTakeaway: in Rust, the lifetime of a lock guard is decided by temporary-lifetime rules you cannot see, so give guards explicit statements and names whenever control flow branches.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-rust-async-quote-review-01",
+      "domain": "performance",
+      "concepts": [
+        "concurrency-models",
+        "tail-latency",
+        "caching"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review an async FX quote service",
+      "prompt": "Rust 2021, tokio 1.x multi-thread runtime, reqwest with a default `Client`. This PR adds currency conversion to the pricing API, which serves ~2,000 quote requests/s across ~30 currencies. Review it for production readiness and mark every line with a real problem.",
+      "language": "rust",
+      "estSeconds": 420,
+      "code": {
+        "rust": "pub struct PriceService {\n    http: reqwest::Client,\n    fx_cache: tokio::sync::Mutex<HashMap<String, f64>>,\n    catalog: Arc<Vec<Product>>,\n}\n\nimpl PriceService {\n    pub async fn quote(&self, currency: &str) -> anyhow::Result<Vec<Quote>> {\n        let mut cache = self.fx_cache.lock().await; //!issue:1\n        let rate = match cache.get(currency) {\n            Some(r) => *r,\n            None => {\n                let mut attempt = 0;\n                let r = loop {\n                    match self.fetch_rate(currency).await { //!issue:1\n                        Ok(r) => break r,\n                        Err(e) if attempt < 3 => {\n                            attempt += 1;\n                            tracing::warn!(?e, attempt, \"fx fetch failed, retrying\");\n                            std::thread::sleep(Duration::from_millis(200 * attempt)); //!issue:2\n                        }\n                        Err(e) => return Err(e),\n                    }\n                };\n                cache.insert(currency.to_string(), r); //!issue:5\n                r\n            }\n        };\n        drop(cache);\n\n        let mut quotes = Vec::new();\n        for product in self.catalog.iter() {\n            let tags = product.tags.clone(); //!issue:3\n            if tags.contains(&\"hidden\".to_string()) { //!issue:3\n                continue;\n            }\n            quotes.push(Quote { sku: product.sku.clone(), price: product.base_price * rate });\n        }\n        Ok(quotes)\n    }\n\n    async fn fetch_rate(&self, currency: &str) -> anyhow::Result<f64> {\n        let url = format!(\"https://fx.internal/v1/rates/{currency}\");\n        let body: FxResponse = self.http.get(url).send().await?.json().await?; //!issue:4\n        Ok(body.rate)\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "One global async mutex is held across the FX fetch and its retries, so a miss for any currency stalls every quote request for every currency",
+          "fix": "Look up under the lock, release it, fetch without holding it, then re-lock to insert. Use a per-currency single-flight (or a cache crate such as moka with `get_with`) to stop duplicate fetches."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "`std::thread::sleep` inside an async fn blocks a runtime worker thread (while also holding the cache lock)",
+          "fix": "Use `tokio::time::sleep(...).await`, with jittered exponential backoff."
+        },
+        {
+          "id": "3",
+          "severity": "minor",
+          "summary": "Clones every product's tag `Vec<String>` and allocates a `String` per product on each request in the hot loop",
+          "fix": "`if product.tags.iter().any(|t| t == \"hidden\") { continue; }`, or precompute a `hidden: bool` on the catalog; preallocate `quotes` with capacity."
+        },
+        {
+          "id": "4",
+          "severity": "major",
+          "summary": "reqwest's default `Client` has no request timeout, so a hung FX call holds the global lock indefinitely",
+          "fix": "Build the client with `.timeout(...)` and `.connect_timeout(...)`, or wrap the call in `tokio::time::timeout`, and keep a total budget across retries."
+        },
+        {
+          "id": "5",
+          "severity": "minor",
+          "summary": "Rates are cached forever with no TTL, so quotes use stale FX rates until the process restarts",
+          "fix": "Store the fetch time with the rate and refresh after a TTL (serving stale while revalidating if the FX service is down)."
+        }
+      ],
+      "explanation": "The headline problem is lock scope. `tokio::sync::Mutex` makes it legal to hold a lock across `.await`, and this code uses that to hold one global lock across a network call, its retries, and a blocking sleep. At 2,000 requests/s, a single cold currency (or a slow FX service) queues every request behind it, and with no timeout on reqwest's default client a single hung connection freezes all quotes. `std::thread::sleep` makes it worse by parking a worker thread outright.\n\nThe hot-loop clones are minor individually, but at 2,000 requests/s times the catalog size they show up in allocation profiles. The missing TTL is a correctness issue for anything priced in FX.\n\nTakeaway: an async mutex is not a licence to hold locks across I/O; keep critical sections to memory operations and put the network call outside them.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-rust-ledger-settle-review-01",
+      "domain": "code_quality",
+      "concepts": [
+        "integer-overflow",
+        "error-handling",
+        "type-design"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review a settlement job that converts currencies",
+      "prompt": "Rust 2021, built with `cargo build --release` and default profiles. This function feeds the nightly reconciliation diff. Amounts are integer minor units, and single USD treasury postings reach 10^9 cents. The reporting currency is IDR, so FX rates (integers in parts per million, 1.0 = 1,000,000) reach about 1.6 × 10^10 (16,000 IDR per USD). The CSV comes from a bank's SFTP drop. Review it and mark every line with a real problem.",
+      "language": "rust",
+      "estSeconds": 420,
+      "code": {
+        "rust": "use std::collections::HashMap;\n\n/// Converts postings to the reporting currency and returns per-account totals,\n/// in a stable order for the reconciliation diff.\n/// CSV columns: account,amount_minor,fx_rate_ppm\npub fn settle(csv: &str) -> Vec<(String, i32)> {\n    let mut totals: HashMap<String, i64> = HashMap::new();\n    for line in csv.lines().skip(1) {\n        let cols: Vec<&str> = line.split(',').collect();\n        let amount: i64 = cols[1].trim().parse().unwrap(); //!issue:1\n        let rate_ppm: i64 = cols[2].trim().parse().unwrap(); //!issue:1\n        let converted = amount * rate_ppm / 1_000_000; //!issue:2\n        *totals.entry(cols[0].to_string()).or_insert(0) += converted; //!issue:2\n    }\n    totals\n        .into_iter() //!issue:3\n        .map(|(account, total)| (account, total as i32)) //!issue:4\n        .collect()\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Indexing `cols[1]`/`cols[2]` and `parse().unwrap()` on an external file: one short or malformed row (or a stray blank line) panics and aborts the whole settlement",
+          "fix": "Return `Result<_, SettleError>` with the line number, use a CSV parser with typed records, and decide explicitly whether bad rows fail the run or go to a reject file."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "`amount * rate_ppm` overflows i64 for large USD postings converted to IDR (10^9 × 1.6 × 10^10 = 1.6 × 10^19 > 9.2 × 10^18) and silently wraps in release; the `+=` can wrap too",
+          "fix": "Multiply in `i128` (`(amount as i128 * rate_ppm as i128) / 1_000_000`), use `checked_add` for the totals, and apply an explicit rounding rule instead of truncating division."
+        },
+        {
+          "id": "3",
+          "severity": "minor",
+          "summary": "`HashMap` iteration order is randomized per process, contradicting the documented stable order and making the reconciliation diff noisy",
+          "fix": "Use a `BTreeMap`, or sort the output by account before returning it."
+        },
+        {
+          "id": "4",
+          "severity": "critical",
+          "summary": "`total as i32` silently truncates any total beyond ±2,147,483,647 minor units, which in IDR is only about 21 million rupiah (roughly $1,300), producing plausible-looking wrong numbers",
+          "fix": "Return `i64` (or `i128`), or use `i32::try_from(total)` and fail loudly."
+        }
+      ],
+      "explanation": "Two of these bugs produce wrong money without any error. In a release build, `amount * rate_ppm` wraps on overflow (overflow checks are off by default), and a 10^9-cent USD posting times a rate of about 1.6 × 10^10 ppm is 1.6 × 10^19, well past `i64::MAX` (about 9.2 × 10^18). Then `as i32` truncates totals bigger than about 2.1 billion minor units, which in IDR is a small account. Neither panics, so the reconciliation shows confident garbage.\n\nThe `unwrap`s have the opposite failure: one bad row from the bank kills the run. That is loud, but it means a single stray blank line stops settlement for everyone. The random `HashMap` order is minor but makes the diff tool flag every line as changed.\n\nIn Rust, `as` between integer types never fails and `*` only checks in debug builds; financial code should make those choices explicit with `i128`, `checked_*` and `try_from`.\n\nTakeaway: Rust's safety guarantees are about memory, not arithmetic, so money code needs explicit overflow and conversion policy.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-cs-sync-over-async-deadlock-01",
+      "domain": "debugging",
+      "concepts": [
+        "deadlocks",
+        "thread-pool-starvation"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Same .Result call: fine in ASP.NET Core, frozen in WPF",
+      "prompt": ".NET 8 / C# 12. A shared `PricingClient` package is used by an ASP.NET Core 8 API and a WPF desktop app, and both call `GetQuote`. In the API it works (slow under heavy load, but it finishes). In WPF, clicking \"Refresh\" (a synchronous click handler calling `GetQuote`) freezes the window forever on the first call. What explains the difference?\n\n```csharp\npublic sealed class PricingClient(HttpClient http)\n{\n    public Quote GetQuote(string sku) => GetQuoteAsync(sku).Result;\n\n    public async Task<Quote> GetQuoteAsync(string sku)\n    {\n        var json = await http.GetStringAsync($\"/quotes/{sku}\");\n        return JsonSerializer.Deserialize<Quote>(json)!;\n    }\n}\n```",
+      "language": "csharp",
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "The UI thread's `SynchronizationContext` makes the `await` resume on that thread, which is blocked in `.Result`; ASP.NET Core has no such context, so it resumes on the pool"
+        },
+        {
+          "id": "b",
+          "text": "`HttpClient` is not thread-safe on the dispatcher thread, so the request waits for a previous request on the same client that never completes"
+        },
+        {
+          "id": "c",
+          "text": "`.Result` deadlocks in both hosts, but Kestrel detects blocked request threads and resumes them on a new thread after a timeout, which is why the API is slow"
+        },
+        {
+          "id": "d",
+          "text": "WPF projects default `ConfigureAwait` to `false`, so the continuation has no thread to resume on and the task never completes"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. The continuation needs the UI thread, and the UI thread is waiting for the continuation.",
+        "b": "`HttpClient` is safe for concurrent use, and this is the first call.",
+        "c": "Kestrel does no such thing. Under load the API is slow because blocking threads in `.Result` starves the thread pool.",
+        "d": "There is no project-level default; `ConfigureAwait(true)` (capture the context) is the behavior everywhere, and that capture is what deadlocks."
+      },
+      "explanation": "`await` captures `SynchronizationContext.Current` and posts the continuation back to it. In WPF that context is the dispatcher, a single UI thread. `.Result` blocks that thread waiting for the task, and the task cannot complete until its continuation runs on that same thread: a deadlock. ASP.NET Core removed the request `SynchronizationContext`, so continuations run on any pool thread and no deadlock occurs. Sync-over-async still blocks a pool thread per call there, which causes thread-pool starvation and the slowness under load.\n\nThe real fix is async all the way: make the click handler `async void` (event handlers are the legitimate use) and `await client.GetQuoteAsync(sku)`. Library code should also use `ConfigureAwait(false)`, but using it to make a sync wrapper \"safe\" is fragile: one awaited call deeper in the chain without it reintroduces the deadlock.\n\nTakeaway: the same sync-over-async code fails differently per host (deadlock with a SynchronizationContext, starvation without one), so remove the blocking rather than tuning around it.",
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "lang-cs-httpclient-lifetime-01",
+      "domain": "performance",
+      "concepts": [
+        "connection-pooling",
+        "network"
+      ],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Fix per-call HttpClient without breaking DNS failover",
+      "prompt": ".NET 8 on Linux. A service does `using var client = new HttpClient();` for every outbound call to a partner API. At about 800 requests/s it starts failing with `SocketException (99): Cannot assign requested address`, and `ss -s` shows about 28,000 sockets in TIME-WAIT. The partner does blue/green cutovers by changing DNS records. Which change fixes the exhaustion without introducing a new production problem?",
+      "language": "csharp",
+      "estSeconds": 90,
+      "options": [
+        {
+          "id": "a",
+          "text": "Use `IHttpClientFactory` (a typed client), or one long-lived `HttpClient` over a `SocketsHttpHandler` with `PooledConnectionLifetime` set to a few minutes"
+        },
+        {
+          "id": "b",
+          "text": "Replace it with one `static readonly HttpClient` using the default handler, created at startup and reused for the life of the process"
+        },
+        {
+          "id": "c",
+          "text": "Keep per-call clients but set `DefaultRequestHeaders.ConnectionClose = true` so every socket is closed cleanly after its request"
+        },
+        {
+          "id": "d",
+          "text": "Keep per-call clients and lower the kernel's `net.ipv4.tcp_fin_timeout` to 5 seconds so TIME-WAIT sockets recycle faster"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Connections are pooled and reused, and they are recycled periodically so DNS changes are picked up.",
+        "b": "Fixes exhaustion, but the default `PooledConnectionLifetime` is infinite, so pooled connections keep going to the old blue hosts after the DNS cutover.",
+        "c": "Still a new TCP and TLS handshake per request; the churn and port pressure remain.",
+        "d": "On Linux `tcp_fin_timeout` governs FIN-WAIT-2, not TIME-WAIT, which is fixed at 60 seconds. It treats the symptom anyway."
+      },
+      "explanation": "Each `HttpClient` you dispose closes its connection pool, so per-call clients open a fresh TCP (and TLS) connection per request and leave the client side of each in TIME-WAIT for 60 seconds. At 800 requests/s that is about 48,000 sockets per minute, enough to exhaust the ephemeral port range.\n\nA single shared client fixes the churn, but the default handler keeps connections forever, so it never re-resolves DNS. `SocketsHttpHandler.PooledConnectionLifetime` (for example 2 to 5 minutes) bounds that; `IHttpClientFactory` gets the same effect by rotating handlers (2-minute default `HandlerLifetime`) and adds DI-friendly configuration and resilience handlers.\n\nTakeaway: an `HttpClient` is a connection pool, so share it, and give its connections a finite lifetime so the pool follows DNS.",
+      "tags": [
+        "classic",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-cs-mutable-struct-copy-01",
+      "domain": "debugging",
+      "concepts": [
+        "value-semantics",
+        "type-design"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Where a mutable struct's mutation actually lands",
+      "prompt": ".NET 8 / C# 12 top-level program. A retry budget was changed from a class to a struct \"to cut allocations\". What does this print?\n\n```csharp\nvar arr = new[] { new RetryBudget(3) };\nvar list = new List<RetryBudget> { new(3) };\nvar dict = new Dictionary<string, RetryBudget> { [\"payments\"] = new(3) };\n\narr[0].Spend();\nlist[0].Spend();\ndict[\"payments\"].Spend();\n\nvar a = arr[0].Remaining;\nvar l = list[0].Remaining;\nvar d = dict[\"payments\"].Remaining;\nConsole.WriteLine($\"{a} {l} {d}\");\n\npublic struct RetryBudget\n{\n    public int Remaining;\n    public RetryBudget(int n) => Remaining = n;\n    public void Spend() => Remaining--;\n}\n```",
+      "language": "csharp",
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "`2 3 3`"
+        },
+        {
+          "id": "b",
+          "text": "`2 2 2`"
+        },
+        {
+          "id": "c",
+          "text": "`3 3 3`"
+        },
+        {
+          "id": "d",
+          "text": "It does not compile: CS1612 on the `list[0]` and `dict[...]` lines"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. An array element is a variable, so the call mutates it in place; the `List` and `Dictionary` indexers return copies, and the copies are mutated and discarded.",
+        "b": "That is class semantics, which is what the code had before the change.",
+        "c": "Array element access does not copy; `arr[0].Spend()` receives a reference to the element itself.",
+        "d": "CS1612 fires for assigning a field of a returned struct (`list[0].Remaining--`), not for calling a method on it, which silently mutates a temporary."
+      },
+      "explanation": "Array element access yields a *variable*, so a struct method called on `arr[0]` receives `this` by reference and mutates the stored element. A `List<T>` or `Dictionary<TKey,TValue>` indexer is a method returning `T` by value, so `list[0].Spend()` mutates a temporary copy that is immediately thrown away. The compiler blocks the obvious form (`list[0].Remaining--` is CS1612) but allows method calls, so the bug compiles silently. `readonly` fields and `in` parameters cause similar defensive copies.\n\nFixes: make value types immutable (`readonly struct` with methods that return new values), keep mutable state in classes, or, when you really need in-place mutation for performance, use `CollectionsMarshal.AsSpan(list)[0]` or `CollectionsMarshal.GetValueRefOrNullRef(dict, key)`.\n\nTakeaway: \"class to struct to save allocations\" changes semantics, not just performance, so mutable structs should fail review by default.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-cs-icu-indexof-crlf-01",
+      "domain": "debugging",
+      "concepts": [
+        "encoding",
+        "production-debugging"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 5,
+      "title": "Line splitter stops finding newlines after a .NET 8 port",
+      "prompt": "A log-shipping tool moved from .NET Framework 4.8 on Windows to .NET 8 on Linux (`mcr.microsoft.com/dotnet/runtime:8.0`, Debian-based, ICU present, invariant globalization off, `CurrentCulture` en-US). Its line splitter no longer splits CRLF files. What does this print on the new platform?\n\n```csharp\nstring s = \"Hello\\r\\nWorld\";\nbool contains = s.Contains(\"\\n\");\nint byString = s.IndexOf(\"\\n\");\nint byChar = s.IndexOf('\\n');\nConsole.WriteLine($\"{contains} {byString} {byChar}\");\n```",
+      "language": "csharp",
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "`True -1 6`"
+        },
+        {
+          "id": "b",
+          "text": "`True 6 6`"
+        },
+        {
+          "id": "c",
+          "text": "`False -1 6`"
+        },
+        {
+          "id": "d",
+          "text": "`False -1 -1`"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. `Contains(string)` and `IndexOf(char)` are ordinal; `IndexOf(string)` is culture-sensitive, and ICU treats `\\r\\n` as one unit, so a lone `\\n` is not found inside it.",
+        "b": "That is the old Windows NLS behavior the tool was written against.",
+        "c": "`string.Contains(string)` performs an ordinal comparison, so it finds the `\\n`.",
+        "d": "`IndexOf(char)` is always ordinal and returns 6."
+      },
+      "explanation": "Some `string` overloads are culture-sensitive by default and some are ordinal, and that is the trap. `IndexOf(string)`, `StartsWith(string)`, `EndsWith(string)` and `Compare` use the current culture; `Contains(string)`, `IndexOf(char)`, `Replace` and `==` are ordinal. On .NET 5+ (Linux always, and Windows too) culture-sensitive operations go through ICU, which treats the `\\r\\n` sequence as a single unit for linguistic comparison, so `\"Hello\\r\\nWorld\".IndexOf(\"\\n\")` returns -1. Under NLS on .NET Framework it returned 6. Microsoft documents this as a .NET 5 globalization breaking change.\n\nThe fix is to pass `StringComparison.Ordinal` for anything that is protocol, file-format or identifier text, and turn on analyzers CA1307/CA1309/CA1310 so the overload choice is explicit.\n\nTakeaway: string APIs that silently consult the current culture are a portability bug waiting for a runtime or OS change, so machine text should always be compared ordinally.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-cs-async-lambda-foreach-01",
+      "domain": "debugging",
+      "concepts": [
+        "async-void",
+        "fire-and-forget"
+      ],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Invoice emails that are sent twice and crash the worker",
+      "prompt": ".NET 8 / C# 12. A background job calls `NotifyAsync`, wrapped in try/catch, and commits its unit of work immediately after `NotifyAsync` returns. Symptoms: most `MarkNotified` changes are never saved, so customers get duplicate emails on the next run; and twice last month the whole worker process crashed with an unhandled `SmtpException` that never reached the job's catch block. Find the bug.",
+      "language": "csharp",
+      "estSeconds": 150,
+      "code": {
+        "csharp": "public sealed class InvoiceNotifier(IEmailSender email, ILogger<InvoiceNotifier> log)\n{\n    public async Task NotifyAsync(IReadOnlyList<Invoice> invoices, CancellationToken ct)\n    {\n        var batch = invoices.Where(i => i.Status == InvoiceStatus.Finalized).ToList();\n        log.LogInformation(\"Sending {Count} invoice emails\", batch.Count);\n\n        batch.ForEach(async invoice => //!issue:1\n        {\n            await email.SendAsync(invoice.CustomerEmail, Render(invoice), ct);\n            invoice.MarkNotified();\n        });\n\n        log.LogInformation(\"Invoice emails sent\");\n    }\n\n    private static string Render(Invoice i) => $\"Invoice {i.Number}: {i.Total:C}\";\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`List<T>.ForEach` takes an `Action<T>`, so the async lambda becomes `async void`: nothing awaits the sends, `NotifyAsync` returns immediately, and exceptions are rethrown on the thread pool, crashing the process",
+          "fix": "Use `foreach (var invoice in batch) { await email.SendAsync(...); invoice.MarkNotified(); }`, or `await Parallel.ForEachAsync(batch, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (inv, t) => ...)`."
+        }
+      ],
+      "explanation": "An async lambda passed where an `Action<T>` is expected compiles to `async void`. `ForEach` starts every lambda, each runs until its first `await`, and `ForEach` returns. `NotifyAsync` logs \"sent\" and completes while the emails are still in flight, the job commits before `MarkNotified` runs, and the next run resends. An exception in an `async void` method has no `Task` to land in, so it is raised on the thread pool as an unhandled exception, which terminates a .NET process. No try/catch around the caller can see it.\n\nAsync void is acceptable only for UI event handlers. Analyzers such as VSTHRD101 (\"avoid unsupported async delegates\") flag async lambdas passed to `Action` parameters.\n\nTakeaway: an async lambda is only as async as the delegate type it is converted to, so check the parameter type, not the lambda.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "lang-cs-linq-deferred-select-01",
+      "domain": "debugging",
+      "concepts": [
+        "lazy-evaluation",
+        "multiple-enumeration"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Import validation that never rejects a row",
+      "prompt": ".NET 8 / C# 12. `rows` is an in-memory `List<CsvRow>`. Since this shipped, the nightly import reports 0 failed rows every night, and rows that should fail validation are landing in the database. `ImportJob.Validate()` works correctly in its unit tests. Find the bug.",
+      "language": "csharp",
+      "estSeconds": 180,
+      "code": {
+        "csharp": "public ImportReport Import(IEnumerable<CsvRow> rows)\n{\n    IEnumerable<ImportJob> jobs = rows.Select(r => new ImportJob(r)); //!issue:1\n\n    foreach (var job in jobs)\n    {\n        job.Validate(); // populates job.Errors\n    }\n\n    var failed = jobs.Where(j => j.Errors.Count > 0).ToList(); //!issue:1\n    var accepted = jobs.Where(j => j.Errors.Count == 0).ToList(); //!issue:1\n\n    _repository.SaveAll(accepted);\n    return new ImportReport(accepted.Count, failed.Select(f => f.ToSummary()).ToList());\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`jobs` is a deferred query, so each enumeration runs `new ImportJob(r)` again: validation mutates the first set of objects, and `failed`/`accepted` are built from fresh, unvalidated ones",
+          "fix": "Materialize once: `var jobs = rows.Select(r => new ImportJob(r)).ToList();` (better, make `Validate()` return a result instead of mutating, and partition that)."
+        }
+      ],
+      "explanation": "`Select` does not create objects; it creates a recipe that creates objects each time it is enumerated. The `foreach` builds and validates one set of `ImportJob`s and then drops them. The two `Where(...).ToList()` calls each build a brand-new set whose `Errors` lists are empty, so `failed` is always empty and `accepted` contains every row, valid or not.\n\nThe tell is an `IEnumerable<T>` built from a projection that allocates and is then enumerated more than once. Rider/ReSharper's \"possible multiple enumeration\" inspection exists for exactly this. Materializing with `ToList()` fixes it; designing `Validate` to return errors instead of mutating state makes the bug impossible.\n\nTakeaway: in LINQ, a variable of type `IEnumerable<T>` is a query, not a collection, so materialize before you mutate or enumerate twice.",
+      "tags": [
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-cs-for-loop-closure-01",
+      "domain": "debugging",
+      "concepts": [
+        "race-conditions",
+        "closures"
+      ],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Shard reindex that skips shards and goes out of range",
+      "prompt": ".NET 8 / C# 12. The nightly reindex intermittently fails with `IndexOutOfRangeException`, and on nights it succeeds, some shards are rebuilt twice while others are never rebuilt. Find the bug.",
+      "language": "csharp",
+      "estSeconds": 120,
+      "code": {
+        "csharp": "public async Task ReindexAsync(string[] shards, CancellationToken ct)\n{\n    var tasks = new List<Task>();\n    for (var i = 0; i < shards.Length; i++)\n    {\n        tasks.Add(Task.Run(() => _indexer.RebuildAsync(shards[i], ct), ct)); //!issue:1\n    }\n\n    await Task.WhenAll(tasks);\n    _log.LogInformation(\"Reindexed {Count} shards\", shards.Length);\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Every lambda captures the same `for` loop variable `i`, which is read when the task runs, often after the loop has advanced or finished (`i == shards.Length`)",
+          "fix": "Copy to a local inside the loop (`var shard = shards[i];` and capture `shard`), or use `foreach`, which gets a fresh variable per iteration since C# 5."
+        }
+      ],
+      "explanation": "A C# closure captures the variable, not its value. A `for` loop declares `i` once for the whole loop, so all the lambdas share it and read `shards[i]` whenever `Task.Run` gets around to executing them. Some run while `i` still matches, some see a later index (duplicates and skips), and any that run after the loop see `i == shards.Length` and throw.\n\nC# 5 changed `foreach` to give each iteration its own variable, but `for` keeps the old semantics. Copying into a local declared inside the loop body fixes it, and `Parallel.ForEachAsync(shards, ...)` would also bound the concurrency, which matters once shards number in the hundreds.\n\nTakeaway: when a closure outlives a loop iteration, capture a per-iteration local, never the loop counter.",
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "lang-cs-efcore-n-plus-one-01",
+      "domain": "performance",
+      "concepts": [
+        "n-plus-one",
+        "query-optimization"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Daily order report issues 4,001 queries",
+      "prompt": ".NET 8, EF Core 8. The `DbContext` is configured with `UseLazyLoadingProxies()`. The daily report endpoint takes 14 s for a day with 2,000 orders and allocates heavily; the SQL log shows about 4,001 queries per call. Find the problems.",
+      "language": "csharp",
+      "estSeconds": 210,
+      "code": {
+        "csharp": "public async Task<IReadOnlyList<OrderRow>> GetDailyReportAsync(DateOnly day, CancellationToken ct)\n{\n    var start = day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);\n    var end = start.AddDays(1);\n\n    var orders = await _db.Orders //!issue:2\n        .Where(o => o.PlacedAt >= start && o.PlacedAt < end)\n        .OrderBy(o => o.PlacedAt)\n        .ToListAsync(ct);\n\n    var rows = new List<OrderRow>(orders.Count);\n    foreach (var order in orders)\n    {\n        rows.Add(new OrderRow(\n            order.Id,\n            order.Customer.DisplayName, //!issue:1\n            order.Lines.Sum(l => l.Quantity * l.UnitPrice), //!issue:1\n            order.PlacedAt));\n    }\n    return rows;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Lazy loading fires one query for `Customer` and one for `Lines` per order: 1 + 2 × 2,000 round trips (N+1), and the line sum is computed in memory",
+          "fix": "Project in the query so EF emits one SQL statement: `.Select(o => new OrderRow(o.Id, o.Customer.DisplayName, o.Lines.Sum(l => l.Quantity * l.UnitPrice), o.PlacedAt))`."
+        },
+        {
+          "id": "2",
+          "severity": "minor",
+          "summary": "A read-only report materializes full tracked entities (plus proxies and lazy-loaded children) into the change tracker",
+          "fix": "Use a projection (never tracked) or `AsNoTracking()` for read paths, and consider turning lazy loading off so N+1 cannot happen silently."
+        }
+      ],
+      "explanation": "With lazy-loading proxies, touching `order.Customer` or `order.Lines` on a loaded entity issues a query. Inside a loop over 2,000 orders that is 4,000 extra round trips; at a few milliseconds each, that accounts for the 14 seconds. Every order, customer and line is also snapshotted in the change tracker for a request that never saves anything.\n\nProjecting with `Select` into the DTO lets EF translate the navigation access and the `Sum` into a single SQL query with joins and aggregation, and projections are not tracked. `Include` would also remove the N+1, but it still pulls every line row into memory to sum on the client.\n\nTakeaway: lazy loading turns a property access into a network call, so read paths should project exactly the columns they need in one query.",
+      "tags": [
+        "on-the-job",
+        "classic"
+      ]
+    },
+    {
+      "id": "lang-cs-docs-controller-review-01",
+      "domain": "security",
+      "concepts": [
+        "input-validation",
+        "authn-authz",
+        "xss-csrf"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review a document controller behind request localization",
+      "prompt": ".NET 8 / ASP.NET Core 8. This controller serves rendered documents from an internal storage service, whose keys are case-insensitive. Documents under `internal/` must never be served by this public endpoint. The relevant `Program.cs` setup is in the context. Review the controller and mark every line with a real problem.",
+      "context": "```csharp\n// Program.cs\nvar supported = new[] { \"en-US\", \"de-DE\", \"tr-TR\" };\napp.UseRequestLocalization(o => o\n    .SetDefaultCulture(\"en-US\")\n    .AddSupportedCultures(supported)\n    .AddSupportedUICultures(supported));\n```\nDocument titles are entered by customers in the authoring tool.",
+      "language": "csharp",
+      "estSeconds": 480,
+      "code": {
+        "csharp": "[ApiController]\n[Route(\"docs\")]\npublic sealed class DocsController(StorageSettings settings, IWebHostEnvironment env) : ControllerBase\n{\n    [HttpGet(\"{**path}\")]\n    public IActionResult Get(string path)\n    {\n        if (path.ToLower().StartsWith(\"internal/\")) //!issue:1\n            return Forbid();\n\n        var http = new HttpClient { BaseAddress = settings.StorageUri }; //!issue:2\n        var meta = http.GetFromJsonAsync<DocMeta>($\"meta/{path}\").Result; //!issue:3\n        if (meta is null) return NotFound();\n\n        var templatePath = Path.Combine(env.ContentRootPath, \"templates\", meta.Template);\n        var reader = new StreamReader(System.IO.File.OpenRead(templatePath)); //!issue:4\n        var html = reader.ReadToEnd().Replace(\"{{title}}\", meta.Title); //!issue:5\n        return Content(html, \"text/html\");\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Culture-sensitive `ToLower()`/`StartsWith` on a security check: with `?culture=tr-TR`, `\"INTERNAL/x\".ToLower()` yields a dotless `ı`, the check passes, and the case-insensitive storage serves the internal document",
+          "fix": "Compare ordinally (`path.StartsWith(\"internal/\", StringComparison.OrdinalIgnoreCase)`), and better, authorize on document metadata (an `IsInternal` flag from storage) instead of path strings."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "A new `HttpClient` per request (never disposed) creates a new connection pool per call, leading to socket exhaustion under load",
+          "fix": "Inject a typed client from `IHttpClientFactory`."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "Sync-over-async `.Result` blocks a thread-pool thread per request and causes thread-pool starvation under load",
+          "fix": "Make the action `async Task<IActionResult>` and `await` the call, passing `HttpContext.RequestAborted`."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "`StreamReader`/`FileStream` is never disposed, so file handles leak until finalization",
+          "fix": "`using var reader = ...` or `await System.IO.File.ReadAllTextAsync(templatePath)`, and cache templates in memory."
+        },
+        {
+          "id": "5",
+          "severity": "major",
+          "summary": "A customer-entered title is spliced into HTML without encoding (stored XSS)",
+          "fix": "HTML-encode (`HtmlEncoder.Default.Encode(meta.Title)`) or render through Razor, which encodes by default; add a CSP."
+        }
+      ],
+      "explanation": "The critical bug needs two facts together. `UseRequestLocalization` sets `CultureInfo.CurrentCulture` per request from the query string, cookie or `Accept-Language`, so the attacker chooses the culture. `string.ToLower()` and `StartsWith(string)` use the current culture, and in Turkish uppercase `I` lowercases to dotless `ı` (U+0131). `GET /docs/INTERNAL/payroll?culture=tr-TR` lowercases to `ınternal/payroll`, the deny check passes, and the case-insensitive storage service returns the internal document. Deny-lists built on string normalization are fragile; authorization should come from data about the resource.\n\nThe rest is standard ASP.NET Core review material: per-request `HttpClient` and `.Result` both fail under load, the undisposed reader leaks handles, and customer-controlled titles injected into raw HTML are stored XSS.\n\nTakeaway: any security decision that depends on case-folding or culture-aware string APIs must be ordinal, and ideally should not be a string check at all.",
+      "tags": [
+        "gotcha",
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-cs-outbox-publisher-review-01",
+      "domain": "code_quality",
+      "concepts": [
+        "concurrency",
+        "error-handling",
+        "resource-leaks"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 4,
+      "title": "Review an outbox publisher BackgroundService",
+      "prompt": ".NET 8 / C# 12 generic host with default options. `IBrokerChannel.PublishAsync` returns a `ValueTask<bool>` backed by a pooled `IValueTaskSource`. `IOutboxStore.ReadPending` is an iterator (`yield return`) that opens a connection and runs the query each time it is enumerated. Review this worker and mark every line with a real problem.",
+      "language": "csharp",
+      "estSeconds": 480,
+      "code": {
+        "csharp": "public sealed class OutboxPublisher(IOutboxStore store, IBrokerChannel channel, ILogger<OutboxPublisher> log)\n    : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        while (!stoppingToken.IsCancellationRequested)\n        {\n            var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken); //!issue:3\n            cts.CancelAfter(TimeSpan.FromSeconds(30));\n\n            IEnumerable<OutboxMessage> pending = store.ReadPending(batchSize: 500);\n            log.LogInformation(\"Outbox batch size {Count}\", pending.Count()); //!issue:2\n\n            foreach (var msg in pending) //!issue:2\n            {\n                ValueTask<bool> publish = channel.PublishAsync(msg, cts.Token);\n                var acked = await publish; //!issue:5\n                if (acked)\n                    await store.MarkSentAsync(msg.Id, cts.Token);\n                log.LogDebug(\"Message {Id} acked={Acked}\", msg.Id, await publish); //!issue:1\n            }\n\n            await Task.Delay(TimeSpan.FromSeconds(1)); //!issue:4\n        }\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The same `ValueTask` is awaited twice; once the pooled source is consumed it may be reused, so the second await can return another publish's result, throw, or hang",
+          "fix": "Await a `ValueTask` exactly once and reuse the stored result (`acked`); if you truly need multiple consumers, call `.AsTask()` once."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "`pending` is enumerated twice: `Count()` runs the 500-row query once and `foreach` runs it again, doubling database load, and the two runs can see different rows",
+          "fix": "Materialize once (`var batch = store.ReadPending(500).ToList();`) or count while iterating."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "A linked `CancellationTokenSource` is created every loop and never disposed, so its registration on the long-lived `stoppingToken` accumulates (a slow memory leak)",
+          "fix": "`using var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);` inside the loop."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "`Task.Delay` ignores `stoppingToken`, so shutdown waits for the delay",
+          "fix": "`await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);` and treat `OperationCanceledException` on shutdown as normal."
+        },
+        {
+          "id": "5",
+          "severity": "major",
+          "summary": "No exception handling in the loop: one broker error or the 30 s timeout escapes `ExecuteAsync`, and since .NET 6 the default `BackgroundServiceExceptionBehavior.StopHost` stops the whole process",
+          "fix": "Catch per message (or per batch), log, and back off, distinguishing shutdown cancellation from the per-batch timeout."
+        }
+      ],
+      "explanation": "`ValueTask` trades safety for allocation-free completion: a pooled `IValueTaskSource` can be recycled as soon as its result is consumed, so a `ValueTask` may be awaited once and only once. The second `await publish` is undefined behavior at the API level and can return another message's ack. `Task` is forgiving here; `ValueTask` is not.\n\nThe iterator-backed `IEnumerable` is the LINQ multiple-enumeration trap with a database behind it. Undisposed linked token sources keep their callback registered on the parent token for as long as the parent lives, which for `stoppingToken` is the whole process, so memory grows a little every loop. And because the host stops on an unhandled `BackgroundService` exception by default, the missing try/catch turns one broker timeout into an outage of the whole outbox.\n\nTakeaway: in long-running .NET workers, every per-iteration allocation, registration and unhandled exception is multiplied by uptime, so review the loop body as if it runs a million times, because it will.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-java-long-reference-equality-01",
+      "domain": "debugging",
+      "concepts": [
+        "autoboxing",
+        "production-debugging"
+      ],
+      "skill": "recall",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "Ownership check passes in tests, 403s in production",
+      "prompt": "Java 21. An authorization helper passes every integration test, but in production customers intermittently get 403 on their own orders. Both getters return `Long` (boxed). The integration tests seed customers with ids 1 to 20; production ids are in the tens of millions. What is happening?\n\n```java\nboolean ownsOrder(Order order, Session session) {\n    return order.getCustomerId() == session.getCustomerId();\n}\n```",
+      "language": "java",
+      "estSeconds": 60,
+      "options": [
+        {
+          "id": "a",
+          "text": "`==` compares `Long` references, and `Long.valueOf` caches only -128 to 127, so small test ids share instances while large production ids do not"
+        },
+        {
+          "id": "b",
+          "text": "`==` unboxes both sides to `int`, and ids above `Integer.MAX_VALUE` are truncated, so different ids can compare equal or unequal at random"
+        },
+        {
+          "id": "c",
+          "text": "The JIT's escape analysis removes the boxes in long-running tests but not in production, which changes what `==` compares"
+        },
+        {
+          "id": "d",
+          "text": "`==` on boxed types unboxes only when assertions are enabled with `-ea`, which the test runner sets and production does not"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Two boxed operands are compared by identity; only one primitive operand triggers unboxing.",
+        "b": "Nothing unboxes here, and `Long` would unbox to `long`, not `int`.",
+        "c": "Escape analysis must preserve program semantics; it cannot change identity comparison results.",
+        "d": "Assertions have no effect on operator semantics."
+      },
+      "explanation": "When both operands of `==` are reference types, Java compares identity, even for `Long` and `Integer`. Autoboxing goes through `Long.valueOf`, which is required to return cached instances for values in -128..127, so test ids 1 to 20 are always the same objects and `==` happens to work. Production ids come from JDBC or JSON as distinct `Long` objects, so `==` is false even when the values match. (`-XX:AutoBoxCacheMax` widens only the `Integer` cache, never `Long`'s.)\n\nFix with `Objects.equals(a, b)` (null-safe) or compare primitives (`a.longValue() == b.longValue()`), and turn on static analysis that flags boxed `==` (for example Error Prone's `ReferenceEquality` or IntelliJ's \"number comparison using ==\").\n\nTakeaway: tests with small, friendly ids hide boxed-identity bugs, so seed fixtures with realistic magnitudes.",
+      "tags": [
+        "classic",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-java-volatile-counter-01",
+      "domain": "debugging",
+      "concepts": [
+        "race-conditions",
+        "memory-model"
+      ],
+      "skill": "apply",
+      "type": "mcq",
+      "difficulty": 2,
+      "title": "A volatile request counter that loses increments",
+      "prompt": "Java 21. A service counts requests with the field below, incremented from 32 request threads. A load test sends exactly 1,000,000 requests and the counter ends between 940,000 and 990,000. A teammate says \"it's `volatile`, so it's thread-safe.\" What is going on, and what is the right fix?\n\n```java\nprivate volatile long requestCount;\n\nvoid onRequest() { requestCount++; }\n\nlong snapshot() { return requestCount; }\n```",
+      "language": "java",
+      "estSeconds": 75,
+      "options": [
+        {
+          "id": "a",
+          "text": "`volatile` gives visibility and atomic single reads and writes, but `++` is a read, an add and a write, so concurrent increments are lost; use `LongAdder` or `AtomicLong`"
+        },
+        {
+          "id": "b",
+          "text": "Writes to a `volatile long` are split into two 32-bit halves, so torn values lose counts; switching the field to `volatile int` fixes it"
+        },
+        {
+          "id": "c",
+          "text": "The JIT caches `requestCount` in a register despite `volatile`; declaring `onRequest` `final` prevents that optimization"
+        },
+        {
+          "id": "d",
+          "text": "Counts are lost when `snapshot()` reads during an in-flight write; making `snapshot()` `synchronized` fixes it"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Visibility is not atomicity. `LongAdder` is the better fit for a hot, write-mostly counter.",
+        "b": "The JLS (17.7) guarantees that reads and writes of `volatile long` and `volatile double` are atomic.",
+        "c": "`volatile` forbids caching the value; `final` on a method is about overriding, not memory.",
+        "d": "Reads do not lose writes. The lost updates come from racing increments, and a synchronized reader does nothing to stop them."
+      },
+      "explanation": "`requestCount++` compiles to read, add one, write. Two threads can both read 41 and both write 42. `volatile` guarantees each read sees the latest write and that the read and write individually are atomic, but nothing makes the three-step sequence atomic, so increments are lost under contention.\n\n`AtomicLong.incrementAndGet()` makes the increment a single CAS. For a counter written by many threads and read rarely, `LongAdder` is better still: it stripes the count across cells to avoid CAS contention and sums on read. `synchronized` on `onRequest` also works but serializes every request on one monitor.\n\nTakeaway: `volatile` is for flags and published references, not for read-modify-write state.",
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "lang-java-virtual-thread-pinning-01",
+      "domain": "performance",
+      "concepts": [
+        "concurrency-models",
+        "tail-latency"
+      ],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 4,
+      "title": "Virtual threads cap out at 160 requests per second",
+      "prompt": "Java 21 (not 24+), default virtual-thread scheduler, 8 vCPUs. A service moved to `Executors.newVirtualThreadPerTaskExecutor()` expecting thousands of concurrent requests. Each request calls the method below, and the JDBC query takes about 50 ms. Throughput tops out at about 160 requests/s however much load is offered; CPU is near idle and the JDBC pool (max 100) shows only about 8 active connections. Account ids are uniformly distributed. What is the most likely cause?\n\n```java\nprivate final Object[] stripes = IntStream.range(0, 1024)\n        .mapToObj(i -> new Object()).toArray();\n\nAccount loadAccount(long id) {\n    synchronized (stripes[(int) (id & 1023)]) {\n        return accountDao.findById(id); // blocking JDBC, ~50 ms\n    }\n}\n```",
+      "language": "java",
+      "estSeconds": 120,
+      "options": [
+        {
+          "id": "a",
+          "text": "Blocking inside `synchronized` pins each virtual thread to its carrier in Java 21, so only 8 queries run at once (8 × 20/s); use a `ReentrantLock`"
+        },
+        {
+          "id": "b",
+          "text": "JDBC is a synchronous API, so virtual threads cannot overlap JDBC calls at all; the service needs R2DBC to scale past one query per core"
+        },
+        {
+          "id": "c",
+          "text": "1,024 stripes is too few, so requests collide on hot stripes and serialize; raise it to 65,536 stripes"
+        },
+        {
+          "id": "d",
+          "text": "`newVirtualThreadPerTaskExecutor()` caps concurrent tasks at the core count by default; pass a higher limit to the factory"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. A pinned virtual thread cannot unmount while it blocks, so it holds one of the 8 carrier threads for the full 50 ms.",
+        "b": "Blocking JDBC on virtual threads is the intended use case: the socket read unmounts the virtual thread unless something pins it.",
+        "c": "With uniform ids across 1,024 stripes, collisions among about 8 in-flight requests are rare, and they would not produce a ceiling exactly equal to the carrier count.",
+        "d": "The executor has no concurrency cap; it starts one virtual thread per task. The scheduler's parallelism limits *mounted* threads, which only matters when they cannot unmount."
+      },
+      "explanation": "Virtual threads scale by unmounting from their carrier (platform) thread whenever they block. In Java 21 a virtual thread cannot unmount while it holds a monitor (`synchronized`) or is inside a native frame, so blocking I/O inside `synchronized` pins the carrier. The default scheduler has one carrier per core, 8 here, so at most 8 queries are in flight: 8 × (1000 ms / 50 ms) = 160 requests/s, with idle CPU and an idle connection pool. That arithmetic is the giveaway.\n\nReplace the monitor with `java.util.concurrent.locks.ReentrantLock`, which parks the virtual thread without pinning. Confirm with `-Djdk.tracePinnedThreads=full` or the JFR `jdk.VirtualThreadPinned` event, and check the JDBC driver and pool too, since older drivers use `synchronized` internally. JDK 24 (JEP 491) removed pinning for `synchronized`, which is why the version matters.\n\nTakeaway: on Java 21, adopting virtual threads means auditing every `synchronized` that surrounds blocking I/O, including in your dependencies.",
+      "tags": [
+        "on-the-job",
+        "gotcha"
+      ]
+    },
+    {
+      "id": "lang-java-completablefuture-common-pool-01",
+      "domain": "performance",
+      "concepts": [
+        "concurrency-models",
+        "latency-budgets"
+      ],
+      "skill": "design",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Fan-out with supplyAsync slows an unrelated batch job",
+      "prompt": "Java 21, an 8 vCPU container, default JVM flags. A pricing endpoint fans out to 6 vendor APIs in parallel. At 40 concurrent requests its p99 climbs to 4 s, even though each vendor call takes 80 to 300 ms, and an unrelated batch job in the same JVM that uses `parallelStream()` slows to a crawl. What is the best fix?\n\n```java\nList<CompletableFuture<Price>> calls = vendors.stream()\n        .map(v -> CompletableFuture.supplyAsync(() -> v.fetchPrice(sku))) // blocking HTTP\n        .toList();\nList<Price> prices = calls.stream().map(CompletableFuture::join).toList();\n```",
+      "language": "java",
+      "estSeconds": 105,
+      "options": [
+        {
+          "id": "a",
+          "text": "Give `supplyAsync` a dedicated executor for blocking I/O (on Java 21, a virtual-thread-per-task executor) and add a per-call `orTimeout`"
+        },
+        {
+          "id": "b",
+          "text": "Set `-Djava.util.concurrent.ForkJoinPool.common.parallelism=256` so the shared pool has enough threads for the blocking calls"
+        },
+        {
+          "id": "c",
+          "text": "Replace `join()` with `get()`, which returns the waiting thread to the pool until the future completes"
+        },
+        {
+          "id": "d",
+          "text": "Replace the futures with `vendors.parallelStream().map(v -> v.fetchPrice(sku)).toList()` and let the JVM size the parallelism"
+        }
+      ],
+      "answer": [
+        "a"
+      ],
+      "optionNotes": {
+        "a": "Correct. Blocking work gets its own executor, so it can neither starve nor be starved by CPU-bound users of the common pool.",
+        "b": "Masks the symptom by oversubscribing the pool that parallel streams also use for CPU work, and the two workloads stay coupled.",
+        "c": "`get()` blocks the calling thread just like `join()`; the difference is checked versus unchecked exceptions.",
+        "d": "Parallel streams run on the same common pool, so this makes the starvation worse."
+      },
+      "explanation": "`supplyAsync` without an executor runs on `ForkJoinPool.commonPool()`, whose parallelism defaults to available processors minus one: 7 threads here. Forty requests × 6 vendors = 240 blocking calls competing for 7 threads, so calls queue for seconds, and every `parallelStream()` in the JVM shares the same starved pool. (If the common pool's parallelism is below 2, `CompletableFuture` falls back to a new thread per task, which hides the problem on tiny containers.)\n\nGive blocking I/O its own executor. On Java 21 a virtual-thread-per-task executor is the natural fit; bound the fan-out with a semaphore or the HTTP client's connection limits, and add per-call timeouts so one slow vendor cannot hold the request.\n\nTakeaway: the common pool is for short CPU-bound tasks, and any blocking call submitted to it without an explicit executor is a shared-resource bug.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-java-equals-without-hashcode-01",
+      "domain": "debugging",
+      "concepts": [
+        "memory-leaks",
+        "cache-invalidation"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Price cache with a 0% hit rate and a growing heap",
+      "prompt": "Java 21. After this cache shipped, pricing API traffic did not drop at all, the cache's hit rate metric reads 0%, and the heap grows until the pod is OOM-killed every few hours. Find the bug.",
+      "language": "java",
+      "estSeconds": 150,
+      "code": {
+        "java": "// PriceKey.java\npublic final class PriceKey {\n    private final String sku;\n    private final String region;\n\n    public PriceKey(String sku, String region) {\n        this.sku = sku;\n        this.region = region;\n    }\n\n    @Override\n    public boolean equals(Object o) { //!issue:1\n        if (this == o) return true;\n        if (!(o instanceof PriceKey other)) return false;\n        return sku.equals(other.sku) && region.equals(other.region);\n    }\n}\n\n// PriceCache.java\npublic final class PriceCache {\n    private final Map<PriceKey, Money> cache = new ConcurrentHashMap<>();\n    private final PricingClient client;\n\n    public PriceCache(PricingClient client) {\n        this.client = client;\n    }\n\n    public Money price(String sku, String region) {\n        return cache.computeIfAbsent(new PriceKey(sku, region), k -> client.fetch(sku, region));\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "`equals` is overridden without `hashCode`, so equal keys get identity hash codes, land in different buckets, and never match",
+          "fix": "Override `hashCode` consistently (`Objects.hash(sku, region)`), or replace the class with `record PriceKey(String sku, String region)`. Also bound the cache (size and TTL, for example Caffeine)."
+        }
+      ],
+      "explanation": "Hash-based collections look up the bucket by `hashCode()` first and only then call `equals`. Without an override, `hashCode()` is identity-based, so two `PriceKey(\"A1\", \"eu\")` instances almost always hash differently and the map never finds the earlier entry. Every call misses, fetches, and inserts another entry, so the map grows without bound, which is both the 0% hit rate and the OOM.\n\nThe `equals`/`hashCode` contract (equal objects must have equal hash codes) is the reason records exist for value types. Static analysis (Error Prone's `EqualsHashCode`, SpotBugs `HE_EQUALS_NO_HASHCODE`) catches it, and an unbounded `ConcurrentHashMap` as a cache deserves a review comment on its own.\n\nTakeaway: any type used as a map key should be a record or have generated `equals`/`hashCode`, and any cache needs a bound.",
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "lang-java-concurrent-modification-01",
+      "domain": "debugging",
+      "concepts": [
+        "iterator-invalidation"
+      ],
+      "skill": "apply",
+      "type": "bug_hunt",
+      "difficulty": 1,
+      "title": "Session eviction throws ConcurrentModificationException",
+      "prompt": "Java 21. The eviction job throws `java.util.ConcurrentModificationException` a few times an hour, and some expired sessions survive runs that do not throw. A teammate proposes `Collections.synchronizedList` because \"the methods are already synchronized, so it must be another thread.\" Find the bug.",
+      "language": "java",
+      "estSeconds": 120,
+      "code": {
+        "java": "public final class SessionRegistry {\n    private final List<Session> sessions = new ArrayList<>();\n\n    public synchronized void add(Session s) {\n        sessions.add(s);\n    }\n\n    public synchronized int evictExpired(Instant now) {\n        int evicted = 0;\n        for (Session s : sessions) { //!issue:1\n            if (s.expiresAt().isBefore(now)) {\n                sessions.remove(s); //!issue:1\n                s.close();\n                evicted++;\n            }\n        }\n        return evicted;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "The list is structurally modified with `sessions.remove(s)` while the enhanced-for iterator is walking it, on the same thread",
+          "fix": "Use `sessions.removeIf(s -> { if (s.expiresAt().isBefore(now)) { s.close(); return true; } return false; })`, or an explicit `Iterator` with `it.remove()`."
+        }
+      ],
+      "explanation": "`ConcurrentModificationException` is about modifying a collection during iteration, not necessarily about threads. The enhanced `for` uses an `ArrayList` iterator, which checks a modification counter on `next()`; calling `sessions.remove(s)` directly bumps it, and the following `next()` throws. A synchronized list would not change anything, since it is all one thread.\n\nThe intermittency has a mechanism: when the removed element is the second-to-last, `hasNext()` returns false right away, so no exception is thrown and the last session is silently skipped. That explains the expired sessions that survive. `removeIf` or `Iterator.remove()` modify the list through the iteration safely.\n\nTakeaway: read CME as \"you mutated what you're iterating\" before reaching for concurrency fixes.",
+      "tags": [
+        "classic"
+      ]
+    },
+    {
+      "id": "lang-java-double-checked-locking-01",
+      "domain": "debugging",
+      "concepts": [
+        "memory-model",
+        "safe-publication"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 4,
+      "title": "Null routes on cold pods right after deploys",
+      "prompt": "Java 21, running on ARM (Graviton) nodes. Right after deploys, a handful of requests on freshly started pods fail with `NullPointerException` in `route()` because `routes` is null, even though `RouteLoader.loadFromConfig()` never returns null. Nobody can reproduce it locally on x86 laptops. Find the bug.",
+      "language": "java",
+      "estSeconds": 240,
+      "code": {
+        "java": "public final class RoutingTable {\n    private static RoutingTable instance; //!issue:1\n\n    private Map<String, Route> routes;\n    private Instant loadedAt;\n\n    private RoutingTable(Map<String, Route> routes) {\n        this.routes = routes;\n        this.loadedAt = Instant.now();\n    }\n\n    public static RoutingTable get() {\n        if (instance == null) {\n            synchronized (RoutingTable.class) {\n                if (instance == null) {\n                    instance = new RoutingTable(RouteLoader.loadFromConfig()); //!issue:1\n                }\n            }\n        }\n        return instance;\n    }\n\n    public Route route(String host) {\n        return routes.get(host);\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "Double-checked locking without `volatile` (and with non-final fields): a thread on the unsynchronized fast path can see a non-null `instance` before the constructor's field writes are visible",
+          "fix": "Use the holder idiom (`private static class Holder { static final RoutingTable INSTANCE = ...; }`) or declare `instance` `volatile`; also make `routes` and `loadedAt` `final`."
+        }
+      ],
+      "explanation": "The first `instance == null` check reads the field without synchronization, so there is no happens-before edge between the constructing thread's writes and the reading thread. The JIT and weakly ordered hardware such as ARM may make the write of the reference visible before the writes to `routes` and `loadedAt`, so another thread sees a non-null `instance` whose `routes` is still null. x86's stronger store ordering makes it far rarer there, which is why it does not reproduce on laptops.\n\n`volatile` on `instance` restores the happens-before edge (the JSR-133 fix). Simpler and lazy by construction: the initialization-on-demand holder idiom, where class initialization provides the locking. Making the fields `final` also helps, because final-field semantics guarantee they are visible once the constructor completes.\n\nTakeaway: double-checked locking needs `volatile`, and in modern Java you rarely need to write it at all, since the holder idiom and final fields make safe publication the default.",
+      "references": [
+        "Goetz et al., Java Concurrency in Practice, ch. 16 (The Java Memory Model)"
+      ],
+      "tags": [
+        "classic",
+        "interview"
+      ]
+    },
+    {
+      "id": "lang-java-threadlocal-tenant-leak-01",
+      "domain": "security",
+      "concepts": [
+        "multi-tenancy",
+        "authn-authz"
+      ],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 3,
+      "title": "Customer sees another company's invoices",
+      "prompt": "Java 21, Spring Boot 3 on Tomcat with its default platform-thread pool (virtual threads disabled). A customer reports seeing another company's invoices. The request in question came from a misconfigured internal job that omitted `X-Tenant-Id`; the team expected such requests to fail with `MissingTenantException`. Find the bug.",
+      "language": "java",
+      "estSeconds": 210,
+      "code": {
+        "java": "public final class TenantContext {\n    private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();\n\n    public static void set(String tenantId) { CURRENT.set(tenantId); }\n    public static String get() { return CURRENT.get(); }\n    public static void clear() { CURRENT.remove(); }\n}\n\n@Component\npublic class TenantFilter extends OncePerRequestFilter {\n    @Override\n    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)\n            throws ServletException, IOException {\n        String tenant = req.getHeader(\"X-Tenant-Id\");\n        if (tenant != null && !tenant.isBlank()) {\n            TenantContext.set(tenant); //!issue:1\n        }\n        chain.doFilter(req, res); //!issue:1\n    }\n}\n\n// Repository layer:\n// String tenant = TenantContext.get();\n// if (tenant == null) throw new MissingTenantException();\n// return jdbc.query(\"SELECT ... WHERE tenant_id = ?\", mapper, tenant);"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "The `ThreadLocal` is set but never cleared, so a pooled Tomcat thread keeps the previous request's tenant, and a request without the header inherits it",
+          "fix": "Wrap the chain in `try { chain.doFilter(req, res); } finally { TenantContext.clear(); }`, and reject a missing tenant in the filter with 400 instead of relying on a downstream null check."
+        }
+      ],
+      "explanation": "Tomcat reuses a fixed pool of worker threads. `TenantContext.set` stores the tenant on the current thread, and nothing removes it after the request. The next request served by that thread starts with the previous request's tenant already set. A request with the header overwrites it, which is why normal traffic looks fine; a request without the header skips `set`, so the repository's `null` check passes with someone else's tenant id and returns their invoices.\n\nEvery `ThreadLocal.set` in pooled code needs a matching `remove()` in `finally`. That covers servlet filters, executors and message listeners, and it also prevents classloader leaks on redeploy. Two more points a staff reviewer would raise: the tenant should come from the authenticated principal, not a client-supplied header, and per-request virtual threads would hide the leak here but do not fix the design (Java 21's `ScopedValue` is a preview API built for exactly this).\n\nTakeaway: request context on a pooled thread must be cleared in `finally`, and a missing tenant must fail closed at the edge.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-java-export-service-review-01",
+      "domain": "code_quality",
+      "concepts": [
+        "concurrency",
+        "error-handling",
+        "api-ergonomics"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 3,
+      "title": "Review a CSV export built on a parallel stream",
+      "prompt": "Java 21. This export runs for up to 50,000 customer ids. `CustomerRepository.findById` returns `Optional<Customer>` and, like `OrderRepository.totalFor`, makes a blocking database call. Some ids belong to customers that were deleted. Review it and mark every line with a real problem.",
+      "language": "java",
+      "estSeconds": 360,
+      "code": {
+        "java": "public final class ExportService {\n    private final CustomerRepository customers;\n    private final OrderRepository orders;\n\n    public ExportService(CustomerRepository customers, OrderRepository orders) {\n        this.customers = customers;\n        this.orders = orders;\n    }\n\n    public Path export(List<Long> customerIds, Optional<String> region) throws IOException { //!issue:4\n        List<String> lines = new ArrayList<>();\n        customerIds.parallelStream().forEach(id -> { //!issue:1,5\n            Optional<Customer> customer = customers.findById(id);\n            String name = customer.get().displayName(); //!issue:2\n            BigDecimal total = orders.totalFor(id, region.orElse(\"ALL\"));\n            lines.add(id + \",\" + name + \",\" + total); //!issue:1\n        });\n\n        Path out = Files.createTempFile(\"export-\", \".csv\");\n        BufferedWriter w = Files.newBufferedWriter(out); //!issue:3\n        w.write(\"customer_id,name,total\");\n        w.newLine();\n        for (String line : lines) {\n            w.write(line);\n            w.newLine();\n        }\n        w.close(); //!issue:3\n        return out;\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "critical",
+          "summary": "A non-thread-safe `ArrayList` is mutated from parallel-stream worker threads: rows are silently lost, nulls appear, or `ArrayIndexOutOfBoundsException` is thrown",
+          "fix": "Make the stream produce the result: `customerIds.stream().map(id -> ...).toList()`; never mutate shared state from `forEach` in a parallel stream."
+        },
+        {
+          "id": "2",
+          "severity": "major",
+          "summary": "`Optional.get()` without a presence check throws `NoSuchElementException` for deleted customers and aborts the whole export",
+          "fix": "Decide the policy explicitly: skip with `flatMap`/`ifPresent`, or `orElseThrow(() -> new ExportException(id))` with context."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "The writer is not in try-with-resources, so any exception from `write` leaks the file handle and leaves a partial, unflushed file",
+          "fix": "`try (BufferedWriter w = Files.newBufferedWriter(out)) { ... }`, and delete the temp file on failure."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "`Optional` used as a parameter type: callers can still pass `null`, and call sites get noisier",
+          "fix": "Take a nullable `String region` (or an overload without it) and keep `Optional` for return types."
+        },
+        {
+          "id": "5",
+          "severity": "major",
+          "summary": "Blocking database calls on the parallel stream run on the shared `ForkJoinPool.commonPool()`, starving every other user of the common pool and capping concurrency at cores minus one",
+          "fix": "Run the lookups sequentially with batched queries (`findAllById`, one grouped totals query), or on a bounded dedicated executor."
+        }
+      ],
+      "explanation": "The critical bug is shared mutable state in a parallel stream. `ArrayList.add` is not atomic, so concurrent adds overwrite each other's slots or race the internal resize: you get lost rows (the worst case, because the export \"succeeds\"), null entries, or an exception. Making the stream return values (`map(...).toList()`) removes the shared state and, as a bonus, preserves encounter order.\n\nThe parallel stream is also the wrong tool for blocking I/O: it runs on the JVM-wide common pool. At 50,000 ids the real fix is two batched queries instead of 100,000 round trips. `Optional.get()` reintroduces the null-pointer failure `Optional` was meant to prevent, and the unclosed writer leaks handles on the failure path.\n\nTakeaway: parallel streams are for CPU-bound, side-effect-free transformations, so shared collections or blocking calls inside one are a review blocker.",
+      "tags": [
+        "on-the-job"
+      ]
+    },
+    {
+      "id": "lang-java-archive-uploader-review-01",
+      "domain": "code_quality",
+      "concepts": [
+        "error-handling",
+        "concurrency-models",
+        "resource-leaks"
+      ],
+      "skill": "analyze",
+      "type": "code_review",
+      "difficulty": 5,
+      "title": "Review an uploader whose failures are undiagnosable",
+      "prompt": "Java 21, 8 vCPU container. `BlobOutputStream.close()` completes the multipart upload, and throws `IOException(\"Upload aborted\")` if the stream was aborted by an earlier network error. Last week the nightly archive job failed with only `IllegalStateException: upload failed: Upload aborted` in the logs; it took a day to learn that the real cause was a `SocketTimeoutException`. Separately, one file was archived truncated after a local disk read error. Review the class and mark every line with a real problem.",
+      "language": "java",
+      "estSeconds": 540,
+      "code": {
+        "java": "public final class ArchiveUploader {\n    private final BlobClient client;\n\n    public ArchiveUploader(BlobClient client) {\n        this.client = client;\n    }\n\n    public List<Receipt> uploadAll(List<Path> files) {\n        List<CompletableFuture<Receipt>> futures = files.stream()\n                .map(f -> CompletableFuture.supplyAsync(() -> uploadUnchecked(f))) //!issue:1\n                .toList();\n        return futures.stream().map(CompletableFuture::join).toList(); //!issue:4\n    }\n\n    private Receipt uploadUnchecked(Path file) {\n        try {\n            return upload(file);\n        } catch (IOException e) {\n            throw new IllegalStateException(\"upload failed: \" + e.getMessage()); //!issue:3\n        }\n    }\n\n    private Receipt upload(Path file) throws IOException {\n        BlobOutputStream out = client.openUpload(file.getFileName().toString());\n        try {\n            Files.copy(file, out);\n        } finally {\n            out.close(); //!issue:2\n        }\n        return out.receipt();\n    }\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Blocking uploads run on `ForkJoinPool.commonPool()` (7 threads here), which throttles the job and starves every other common-pool user in the JVM",
+          "fix": "Pass a dedicated executor, for example `Executors.newVirtualThreadPerTaskExecutor()`, with a `Semaphore` bounding concurrent uploads."
+        },
+        {
+          "id": "2",
+          "severity": "critical",
+          "summary": "`close()` in `finally` both masks the primary exception (its own `Upload aborted` replaces the `SocketTimeoutException`) and commits a partial upload when `Files.copy` fails on the local read",
+          "fix": "Use try-with-resources so close failures become suppressed exceptions, and on any copy failure call `out.abort()` before close so a partial blob is never committed."
+        },
+        {
+          "id": "3",
+          "severity": "major",
+          "summary": "The wrapper drops the cause: only the message survives, losing the stack trace, the exception type and any suppressed exceptions",
+          "fix": "Chain the cause: `throw new UncheckedIOException(\"upload failed: \" + file, e);`."
+        },
+        {
+          "id": "4",
+          "severity": "minor",
+          "summary": "`join()` with no timeout: one hung upload blocks the job forever, and the first failure abandons the other in-flight futures without reporting them",
+          "fix": "Apply `orTimeout(...)` per upload, wait with `allOf`, and collect successes and failures into a per-file result report."
+        }
+      ],
+      "explanation": "Both incidents trace to `upload()`. When `Files.copy` throws (the socket timeout), the `finally` block calls `close()`, which throws its own `IOException(\"Upload aborted\")`. In Java, an exception thrown from `finally` replaces the one in flight, so the `SocketTimeoutException` is gone. try-with-resources exists to fix exactly this: the body's exception stays primary and the close failure is attached via `addSuppressed`. Then `uploadUnchecked` throws away even that by copying only `getMessage()`, so neither the stack trace nor the suppressed exceptions survive.\n\nThe truncated archive is the other half of the same design: when the *local* read fails, the remote stream is healthy, so `close()` happily commits whatever bytes were sent. A resource whose close means \"commit\" needs an explicit abort path. Common-pool blocking and the unbounded `join` are the usual `CompletableFuture` review items.\n\nTakeaway: when close() has side effects, use try-with-resources plus an explicit abort, and always chain causes, because failure paths are what on-call actually reads.",
+      "tags": [
+        "on-the-job"
+      ]
+    }
+  ]
+}

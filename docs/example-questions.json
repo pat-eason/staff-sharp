@@ -1,0 +1,120 @@
+{
+  "file": "example",
+  "questions": [
+    {
+      "id": "ex-cache-stampede-01",
+      "domain": "system_design",
+      "concepts": ["caching", "backpressure"],
+      "skill": "analyze",
+      "type": "mcq",
+      "difficulty": 3,
+      "title": "Hot key expiry takes down the database",
+      "prompt": "A product page cache entry with a 60 s TTL is read 40k times per second. Every minute, p99 latency spikes and the primary database CPU hits 100% for about 3 seconds. Which change fixes the root cause with the least new infrastructure?",
+      "context": "```\n12:00:00.012 cache MISS product:8812 (x 3,912 in 200ms)\n12:00:00.240 db  pool exhausted (max=200)\n```",
+      "language": null,
+      "estSeconds": 90,
+      "options": [
+        { "id": "a", "text": "Raise the TTL to 10 minutes so the miss happens less often" },
+        { "id": "b", "text": "Coalesce concurrent misses so one request recomputes while the rest wait or serve stale" },
+        { "id": "c", "text": "Add two read replicas behind the cache" },
+        { "id": "d", "text": "Increase the connection pool size to 2,000" }
+      ],
+      "answer": ["b"],
+      "optionNotes": {
+        "a": "Spikes become rarer but just as large.",
+        "c": "Spreads the herd but every replica still gets thousands of identical queries.",
+        "d": "Moves the bottleneck into the database itself."
+      },
+      "explanation": "This is a cache stampede: thousands of concurrent misses for one key. Request coalescing (single-flight), probabilistic early refresh or serve-stale-while-revalidate removes the herd. Longer TTLs and more capacity only change the size or frequency of the spike.",
+      "references": ["Vattani et al., Optimal Probabilistic Cache Stampede Prevention (VLDB 2015)"],
+      "tags": ["classic", "on-the-job"]
+    },
+    {
+      "id": "ex-qps-estimate-01",
+      "domain": "problem_solving",
+      "concepts": ["back-of-envelope"],
+      "skill": "apply",
+      "type": "numeric",
+      "difficulty": 2,
+      "title": "Average write QPS for a check-in feature",
+      "prompt": "50M daily active users each check in 2 times a day, spread evenly over the day. Roughly how many writes per second does that average out to?",
+      "language": null,
+      "estSeconds": 60,
+      "numeric": { "answer": 1157, "unit": "writes/second", "fullCreditRatio": 1.3, "zeroCreditRatio": 3 },
+      "explanation": "100M writes / 86,400 s ≈ 1,157 writes/s. A useful shortcut: 1M per day ≈ 11.6 per second."
+    },
+    {
+      "id": "ex-expand-contract-01",
+      "domain": "delivery",
+      "concepts": ["database-migrations", "backward-compatibility"],
+      "skill": "apply",
+      "type": "ordering",
+      "difficulty": 2,
+      "title": "Rename a column with zero downtime",
+      "prompt": "Put the steps for renaming `users.fullname` to `users.display_name` on a live service in order.",
+      "language": null,
+      "estSeconds": 90,
+      "items": [
+        { "id": "1", "text": "Add the nullable `display_name` column" },
+        { "id": "2", "text": "Deploy code that writes both columns" },
+        { "id": "3", "text": "Backfill `display_name` from `fullname` in batches" },
+        { "id": "4", "text": "Deploy code that reads `display_name`" },
+        { "id": "5", "text": "Stop writing `fullname`, then drop it" }
+      ],
+      "explanation": "Expand, migrate, contract: every step stays compatible with the code version before and after it, so any deploy can roll back."
+    },
+    {
+      "id": "ex-rate-limiter-01",
+      "domain": "system_design",
+      "concepts": ["rate-limiting"],
+      "skill": "design",
+      "type": "diagram",
+      "difficulty": 3,
+      "title": "Global rate limiter for a public API",
+      "prompt": "Design a rate limiter that enforces 1,000 requests per minute per API key across 40 stateless API pods in two regions. Sketch the components and explain the algorithm and the failure behaviour.",
+      "language": null,
+      "estSeconds": 900,
+      "rubric": {
+        "keyPoints": [
+          "Picks a concrete algorithm (token bucket or sliding window) and explains why",
+          "Keeps counters in a shared low-latency store, updated atomically (for example a Lua script or INCR with expiry)",
+          "Addresses cross-region: per-region budgets or async sync, with the accuracy tradeoff stated",
+          "Defines fail-open vs fail-closed when the counter store is down",
+          "Returns 429 with Retry-After and rate-limit headers"
+        ],
+        "redFlags": ["Counts in pod memory only", "A synchronous cross-region call on every request"],
+        "exemplar": "Gateway → rate-limit check against a regional Redis (sliding window counter via Lua, keyed by api key and minute) → service. Each region gets half the budget, rebalanced every few seconds. Redis down → fail open with a local token bucket as a coarse cap, and alert.",
+        "requiredComponents": ["load_balancer|api_gateway", "rate_limiter", "cache", "service"]
+      },
+      "explanation": "Strong answers name the algorithm, the atomic shared counter, the cross-region accuracy tradeoff and the failure mode."
+    },
+    {
+      "id": "ex-retry-loop-01",
+      "domain": "debugging",
+      "concepts": ["retry-storms", "error-handling"],
+      "skill": "analyze",
+      "type": "bug_hunt",
+      "difficulty": 2,
+      "title": "Retry helper that hammers a struggling dependency",
+      "prompt": "This helper wraps calls to a payments API. During the last incident it made the outage worse. Find the bug.",
+      "language": null,
+      "estSeconds": 180,
+      "code": {
+        "ts": "export async function withRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {\n  let lastErr: unknown;\n  for (let i = 0; i < attempts; i++) {\n    try {\n      return await fn();\n    } catch (err) {\n      lastErr = err;\n      await sleep(100); //!issue:1\n    }\n  }\n  throw lastErr;\n}",
+        "go": "func WithRetry[T any](fn func() (T, error), attempts int) (T, error) {\n\tvar zero T\n\tvar lastErr error\n\tfor i := 0; i < attempts; i++ {\n\t\tv, err := fn()\n\t\tif err == nil {\n\t\t\treturn v, nil\n\t\t}\n\t\tlastErr = err\n\t\ttime.Sleep(100 * time.Millisecond) //!issue:1\n\t}\n\treturn zero, lastErr\n}",
+        "rust": "pub async fn with_retry<T, E, F, Fut>(mut f: F, attempts: u32) -> Result<T, E>\nwhere\n    F: FnMut() -> Fut,\n    Fut: std::future::Future<Output = Result<T, E>>,\n{\n    let mut last = None;\n    for _ in 0..attempts {\n        match f().await {\n            Ok(v) => return Ok(v),\n            Err(e) => last = Some(e),\n        }\n        tokio::time::sleep(Duration::from_millis(100)).await; //!issue:1\n    }\n    Err(last.expect(\"attempts must be > 0\"))\n}",
+        "csharp": "public static async Task<T> WithRetry<T>(Func<Task<T>> fn, int attempts = 5)\n{\n    Exception? last = null;\n    for (var i = 0; i < attempts; i++)\n    {\n        try { return await fn(); }\n        catch (Exception ex)\n        {\n            last = ex;\n            await Task.Delay(100); //!issue:1\n        }\n    }\n    throw last!;\n}",
+        "java": "public static <T> T withRetry(Callable<T> fn, int attempts) throws Exception {\n    Exception last = null;\n    for (int i = 0; i < attempts; i++) {\n        try {\n            return fn.call();\n        } catch (Exception e) {\n            last = e;\n            Thread.sleep(100); //!issue:1\n        }\n    }\n    throw last;\n}"
+      },
+      "issues": [
+        {
+          "id": "1",
+          "severity": "major",
+          "summary": "Fixed 100 ms delay with no backoff or jitter, and every error is retried",
+          "fix": "Use exponential backoff with full jitter, cap total retry time, and only retry retryable errors (timeouts, 503, 429 honoring Retry-After)."
+        }
+      ],
+      "explanation": "A constant short delay synchronizes every client into waves of retries that multiply load on a degraded dependency. Exponential backoff with jitter spreads them out; retry budgets cap amplification."
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+/* ---------------------------------------------------------------------------------------------
+   Viewport coverage: phone portrait (≥360) and landscape, tablet portrait and landscape, laptop,
+   desktop, and large monitors up to 4K. Component files hold their own small breakpoints; this file
+   holds the cross-cutting ones.
+   --------------------------------------------------------------------------------------------- */
+
+/* Wide controls never push the page sideways: they scroll inside themselves instead. */
+.seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.seg::-webkit-scrollbar { display: none; }
+.seg button { white-space: nowrap; flex: none; }
+.chart-svg { touch-action: pan-y; } /* keep page scrolling on touch; taps still show the tooltip */
+img, video { max-width: 100%; } /* not svg: React Flow draws edges in zero-width SVGs that must overflow */
+
+/* Touch screens get larger hit targets. */
+@media (pointer: coarse) {
+  .chip { height: 36px; }
+  .btn.sm { min-height: 36px; }
+  .btn.sm.icon { width: 36px; height: 36px; }
+  .dot { width: 34px; height: 34px; }
+  .code-line { min-height: 26px; align-items: center; }
+  .knob-step { width: 30px; height: 30px; }
+}
+
+/* ---------------------------------------------------------------- tablet portrait and phones */
+@media (max-width: 900px) {
+  /* a bare 1fr track grows to its widest child's min-content; clamp it so the page never scrolls sideways */
+  .shell, .shell.collapsed { grid-template-columns: minmax(0, 1fr); }
+  .main { min-width: 0; max-width: 100%; }
+  .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+  .main { padding: 22px 16px 120px; }
+  .page-head { margin-bottom: 18px; }
+  .page-head > .row { width: 100%; }
+  .glass, .porcelain { padding: 18px; border-radius: 20px; }
+  .lcd.big .lcd-value { font-size: 30px; }
+  /* the session leaves room under the content for the docked watch */
+  .session { padding-bottom: 210px; }
+}
+
+/* ---------------------------------------------------------------- phones */
+@media (max-width: 600px) {
+  body { font-size: 14.5px; }
+  .sidebar { padding: 8px 10px; gap: 6px; }
+  .brand-mark { width: 32px; height: 32px; }
+  .brand-name { display: none; }
+  .nav a { padding: 9px; }
+  .nav { gap: 0; }
+  .glass, .porcelain { padding: 16px; }
+  .page-head .btn.lg { flex: 1 1 auto; }
+  .lcd { min-width: 0; flex: 1 1 calc(50% - 12px); }
+  .grid.four { grid-template-columns: 1fr; }
+  .bar-row { grid-template-columns: minmax(84px, 0.8fr) minmax(0, 1fr) 44px 26px; gap: 8px; font-size: 12.5px; }
+  .knobs { justify-content: space-between; gap: 12px; }
+  .knob { --knob: 64px; }
+  .qfoot { flex-direction: column; align-items: stretch; }
+  .qfoot .row { justify-content: space-between; }
+  .qfoot .btn.primary { flex: 1; }
+  .option { padding: 12px 13px; gap: 11px; }
+  .presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .preset { padding: 13px; }
+  .days { gap: 4px; }
+  .day { width: 64px; }
+  .day-bead { width: 44px; height: 44px; font-size: 13px; }
+  .code { font-size: 12px; }
+  .code-num { width: 34px; padding-right: 8px; }
+  .code-editor, .code-comment, .code-issue { margin-left: 34px; margin-right: 8px; min-width: 240px; }
+  .wizard-steps li { padding-right: 10px; font-size: 12px; }
+  .data-table td, .data-table th { padding: 9px 10px; }
+  .sparks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chart-legend { display: none; } /* the lines carry direct labels */
+  .timeline { padding-left: 18px; }
+  .timeline-dot { left: -18px; }
+}
+@media (max-width: 380px) {
+  .presets, .sparks { grid-template-columns: 1fr; }
+}
+
+/* ---------------------------------------------------------------- short screens (phone landscape) */
+@media (max-height: 520px) and (orientation: landscape) {
+  .sidebar { position: static; }
+  .watch-dock { right: 8px; bottom: 6px; }
+  .watch-dock .sw { --sw-size: 104px; }
+  .sw-readout { padding: 3px 10px; }
+  .sw-time { font-size: 14px; }
+  .sw-hint { display: none; }
+  .session { padding-bottom: 150px; }
+  .scramble { min-height: 220px; }
+  .diagram { height: 340px; }
+}
+
+/* ---------------------------------------------------------------- laptops and up */
+.main { margin-inline: auto; }
+@media (min-width: 1800px) {
+  .main { max-width: 1560px; }
+  .presets { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+}
+
+/* Large and 4K monitors at 100% OS scaling: scale the whole UI so type and controls stay legible
+   instead of floating small in a sea of navy. */
+/* Viewport units scale with zoom too, so full-height pieces divide by the same factor. */
+:root { --ui-zoom: 1; }
+.shell { zoom: var(--ui-zoom); min-height: calc(100vh / var(--ui-zoom)); }
+@media (min-width: 900px) { .sidebar { height: calc(100vh / var(--ui-zoom)); } }
+@media (min-width: 2400px) { :root { --ui-zoom: 1.25; } }
+@media (min-width: 3200px) { :root { --ui-zoom: 1.6; } }
+@media (max-width: 600px) {
+  .sw-hint { display: none; }
+  .sw-readout { gap: 6px; padding: 4px 10px; }
+  .sw-time { font-size: 15px; }
+}
